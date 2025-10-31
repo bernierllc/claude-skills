@@ -1,0 +1,13 @@
+# Google Docs Editor Skill - Python Dependencies
+
+# Google API Client Libraries
+google-auth>=2.30.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.140.0
+
+# HTTP library
+requests>=2.31.0
+
+# Anthropic API (for intelligent merging)
+anthropic>=0.39.0

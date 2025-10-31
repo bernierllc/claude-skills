@@ -1,0 +1,75 @@
+📝 Meeting Notes — Customer Feedback on To-Do App
+
+Date: October 31, 2025
+Attendees:
+
+Product Manager: Sarah Lin
+
+Customer: Alex Rivera
+
+1. Purpose
+
+To gather customer insights about their favorite to-do app, understand why they love it, and identify opportunities for improvement or new feature ideas.
+
+2. Customer's Current To-Do App Usage
+
+App: Todoist (primary), with occasional use of Apple Reminders for personal items.
+
+Usage Context:
+
+Uses it daily for work and personal planning.
+
+Keeps multiple project lists (Work, Home, Travel, Personal Development).
+
+Syncs across devices (phone, laptop, tablet).
+
+Integrates with Google Calendar and Slack.
+
+What They Love:
+
+Simplicity & Clean Interface: Easy to add and view tasks without feeling overwhelmed.
+
+Smart Scheduling: Automatic suggestion of due dates and prioritization.
+
+Recurring Tasks: Particularly likes natural language input ("every Monday," "next week").
+
+Cross-Platform Sync: Seamless experience across devices.
+
+Karma System: The gamified progress tracker helps them stay motivated.
+
+3. Pain Points & Improvement Areas
+
+Challenges:
+
+Overwhelming task lists: Wants more intelligent grouping or "focus mode" to hide non-urgent tasks.
+
+Limited Collaboration: Hard to assign and track shared tasks across teams or family members.
+
+Lack of Context: Tasks often need attachments (notes, screenshots, or links) for context.
+
+Notifications: Too frequent or generic; would prefer more personalized reminders based on time of day or location.
+
+4. Desired Features & Suggestions
+Category    Feature Request    Notes
+Personalization    AI-assisted task prioritization    Suggests tasks to tackle first based on past behavior or calendar context.
+Contextual Integration    Attach files, voice notes, or quick links to tasks    "Sometimes I just want to attach a photo of a receipt or a note."
+Focus Mode    Smart filtering to hide low-priority items    "Let me focus only on today or what's due soon."
+Collaboration    Shared lists with real-time updates    Especially for coordinating errands with family or team members.
+Reminders    Location-aware and adaptive notifications    "Remind me to buy groceries when I'm near a store."
+Motivation    More visual progress tracking    Charts or streaks showing productivity over time.
+5. Product Manager Observations
+
+Customer is power-user adjacent: uses advanced features but still values simplicity.
+
+Main opportunity areas: task context, intelligent filtering, and adaptive reminders.
+
+Potential direction: blend productivity and personal well-being — an app that reduces cognitive load instead of adding more lists.
+
+6. Next Steps
+Action Item    Owner    Due Date
+Analyze competitors' approaches to focus and prioritization    Sarah Lin    Nov 7, 2025
+Prototype "Focus Mode" view    Product Design    Nov 14, 2025
+Conduct follow-up interview with Alex for usability testing    PM Team    TBD
+7. Summary
+
+Alex's feedback highlights that even satisfied users crave simplicity with intelligence — a to-do app that not only tracks tasks but guides focus and adapts to daily rhythms. Prioritizing AI-powered insights, contextual inputs, and personalized reminders could set the app apart.
