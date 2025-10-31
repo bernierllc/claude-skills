@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 import re
 
+from .updates_tab_manager import UpdatesTabManager
+
 
 @dataclass
 class CommentedRange:
@@ -79,6 +81,8 @@ class ContentInserter:
             editor: GoogleDocsEditor instance
         """
         self.editor = editor
+        self._document_state = {}  # Session state per document
+        self.updates_manager = UpdatesTabManager(editor)
 
     def find_commented_ranges(self, doc_id: str) -> List[CommentedRange]:
         """
@@ -643,3 +647,83 @@ class ContentInserter:
             content = content + '\n\n'
 
         return content
+
+    # Updates Tab Session State Methods
+
+    def _get_document_state(self, doc_id: str) -> dict:
+        """
+        Get session state for a document.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            State dictionary or empty dict
+        """
+        return self._document_state.get(doc_id, {})
+
+    def _set_document_state(self, doc_id: str, state: dict):
+        """
+        Set session state for a document.
+
+        Args:
+            doc_id: Document ID
+            state: State dictionary
+        """
+        if doc_id not in self._document_state:
+            self._document_state[doc_id] = {}
+        self._document_state[doc_id].update(state)
+
+    def _is_first_update(self, doc_id: str) -> bool:
+        """
+        Check if this is the first update to this document in this session.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            True if first update (not yet asked user)
+        """
+        state = self._get_document_state(doc_id)
+        return not state.get('asked_user', False)
+
+    def _should_prompt_for_updates(self, doc_id: str) -> bool:
+        """
+        Check if we should prompt user about updates tab.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            True if should prompt (first update, no existing updates)
+        """
+        state = self._get_document_state(doc_id)
+
+        # Don't prompt if already asked
+        if state.get('asked_user', False):
+            return False
+
+        # Don't prompt if updates location already detected
+        if state.get('has_updates_tab', False):
+            return False
+
+        # First update, no existing updates: should prompt
+        return True
+
+    def _check_existing_updates(self, doc_id: str):
+        """
+        Check for existing updates location and update state.
+
+        Args:
+            doc_id: Document ID
+        """
+        location = self.updates_manager.detect_updates_location(doc_id)
+
+        if location:
+            # Found existing updates location
+            # TODO: Analyze pattern in implementation
+            self._set_document_state(doc_id, {
+                'has_updates_tab': True,
+                'asked_user': True,  # Don't ask if already exists
+                'location': location,
+            })
