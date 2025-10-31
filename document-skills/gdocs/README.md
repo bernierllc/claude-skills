@@ -1,6 +1,6 @@
-# Google Docs Writing and Editing Skill
+# ![Bernier LLC](../../assets/bernier-logo-25.png) Google Docs Writing and Editing Skill
 
-**Status:** Production-Ready ✅
+**Status:** Production-Ready ✅ | **Author:** Bernier LLC
 
 A Claude skill that writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text. It doesn't just insert content - it **analyzes**, **synthesizes**, and **integrates** intelligently.
 

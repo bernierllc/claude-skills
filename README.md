@@ -25,34 +25,36 @@ The example skills in this repo are open source (Apache 2.0). We've also include
 
 This repository includes a diverse collection of example skills demonstrating different capabilities:
 
+**Legend:** ![Anthropic](assets/anthropic-emoji-16.png) = Anthropic-authored | ![Bernier LLC](assets/bernier-emoji-16.png) = Bernier LLC-authored
+
 ## Creative & Design
-- **algorithmic-art** - Create generative art using p5.js with seeded randomness, flow fields, and particle systems
-- **canvas-design** - Design beautiful visual art in .png and .pdf formats using design philosophies
-- **slack-gif-creator** - Create animated GIFs optimized for Slack's size constraints
+- ![Anthropic](assets/anthropic-emoji-16.png) **algorithmic-art** - Create generative art using p5.js with seeded randomness, flow fields, and particle systems
+- ![Anthropic](assets/anthropic-emoji-16.png) **canvas-design** - Design beautiful visual art in .png and .pdf formats using design philosophies
+- ![Anthropic](assets/anthropic-emoji-16.png) **slack-gif-creator** - Create animated GIFs optimized for Slack's size constraints
 
 ## Development & Technical
-- **artifacts-builder** - Build complex claude.ai HTML artifacts using React, Tailwind CSS, and shadcn/ui components
-- **mcp-server** - Guide for creating high-quality MCP servers to integrate external APIs and services
-- **webapp-testing** - Test local web applications using Playwright for UI verification and debugging
+- ![Anthropic](assets/anthropic-emoji-16.png) **artifacts-builder** - Build complex claude.ai HTML artifacts using React, Tailwind CSS, and shadcn/ui components
+- ![Anthropic](assets/anthropic-emoji-16.png) **mcp-server** - Guide for creating high-quality MCP servers to integrate external APIs and services
+- ![Anthropic](assets/anthropic-emoji-16.png) **webapp-testing** - Test local web applications using Playwright for UI verification and debugging
 
 ## Enterprise & Communication
-- **brand-guidelines** - Apply Anthropic's official brand colors and typography to artifacts
-- **internal-comms** - Write internal communications like status reports, newsletters, and FAQs
-- **theme-factory** - Style artifacts with 10 pre-set professional themes or generate custom themes on-the-fly
+- ![Anthropic](assets/anthropic-emoji-16.png) **brand-guidelines** - Apply Anthropic's official brand colors and typography to artifacts
+- ![Anthropic](assets/anthropic-emoji-16.png) **internal-comms** - Write internal communications like status reports, newsletters, and FAQs
+- ![Anthropic](assets/anthropic-emoji-16.png) **theme-factory** - Style artifacts with 10 pre-set professional themes or generate custom themes on-the-fly
 
 ## Meta Skills
-- **skill-creator** - Guide for creating effective skills that extend Claude's capabilities
-- **template-skill** - A basic template to use as a starting point for new skills
+- ![Anthropic](assets/anthropic-emoji-16.png) **skill-creator** - Guide for creating effective skills that extend Claude's capabilities
+- ![Anthropic](assets/anthropic-emoji-16.png) **template-skill** - A basic template to use as a starting point for new skills
 
 # Document Skills
 
-The `document-skills/` subdirectory contains skills that Anthropic developed to help Claude create various document file formats. These skills demonstrate advanced patterns for working with complex file formats and binary data:
+The `document-skills/` subdirectory contains skills for working with various document file formats. These skills demonstrate advanced patterns for working with complex file formats and binary data:
 
-- **docx** - Create, edit, and analyze Word documents with support for tracked changes, comments, formatting preservation, and text extraction
-- **gdocs** - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
-- **pdf** - Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms
-- **pptx** - Create, edit, and analyze PowerPoint presentations with support for layouts, templates, charts, and automated slide generation
-- **xlsx** - Create, edit, and analyze Excel spreadsheets with support for formulas, formatting, data analysis, and visualization
+- ![Anthropic](assets/anthropic-emoji-16.png) **docx** - Create, edit, and analyze Word documents with support for tracked changes, comments, formatting preservation, and text extraction
+- ![Bernier LLC](assets/bernier-emoji-16.png) **gdocs** - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
+- ![Anthropic](assets/anthropic-emoji-16.png) **pdf** - Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms
+- ![Anthropic](assets/anthropic-emoji-16.png) **pptx** - Create, edit, and analyze PowerPoint presentations with support for layouts, templates, charts, and automated slide generation
+- ![Anthropic](assets/anthropic-emoji-16.png) **xlsx** - Create, edit, and analyze Excel spreadsheets with support for formulas, formatting, data analysis, and visualization
 
 **Important Disclaimer:** These document skills are point-in-time snapshots and are not actively maintained or updated. Versions of these skills ship pre-included with Claude. They are primarily intended as reference examples to illustrate how Anthropic approaches developing more complex skills that work with binary file formats and document structures.
 
