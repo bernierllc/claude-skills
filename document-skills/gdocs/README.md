@@ -1,27 +1,27 @@
-# Google Docs Intelligent Merge Skill
+# Google Docs Writing and Editing Skill
 
-**Status:** Production-Ready (Phases 1-5 Complete) ✅
+**Status:** Production-Ready ✅
 
-A Claude skill that transforms raw meeting notes, transcripts, and research into professional, document-appropriate content for Google Docs. It doesn't just insert content - it **analyzes**, **synthesizes**, and **integrates** intelligently.
+A Claude skill that writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text. It doesn't just insert content - it **analyzes**, **synthesizes**, and **integrates** intelligently.
 
 ## Key Innovation
 
-Converts 3000+ character meeting transcripts into 3-sentence executive summaries that match your document's tone, style, and purpose.
+Converts raw, unstructured content into polished, professional text that matches your document's tone, style, and purpose. For example: 3000+ character rough notes become 3-sentence executive summaries.
 
 ## What Makes This Different
 
-### ❌ Traditional Approach (Smart Dumping)
+### ❌ Traditional Approach (Raw Insertion)
 ```
-Input:  Detailed meeting notes (3,000+ chars)
-Action: Finds right section, appends entire transcript
-Result: Document bloated, unprofessional
+Input:  Raw content (3,000+ chars of rough notes)
+Action: Finds right section, appends everything
+Result: Document bloated, unprofessional, needs cleanup
 ```
 
 ### ✅ Our Approach (Intelligent Synthesis)
 ```
-Input:  Detailed meeting notes (3,000+ chars)
+Input:  Raw content (3,000+ chars of rough notes)
 Action: Analyzes document, extracts key insights, synthesizes
-Result: 3 executive-level sentences (440 chars), presentation-ready
+Result: Professional, concise text (440 chars), presentation-ready
 ```
 
 ## Features
