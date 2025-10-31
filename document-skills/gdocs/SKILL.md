@@ -65,6 +65,13 @@ Result: Professional, presentation-ready integration
 - One-time setup with automatic token refresh
 - No need to re-authenticate
 
+### 6. Update Tracking
+- Automatic update logging to Updates tab/section
+- Detection of existing updates locations (tabs and headers)
+- Pattern analysis (prepend vs append, formatting)
+- Interactive user prompts on first update
+- Session-based state tracking
+
 ## Setup Required
 
 Before using this skill, you must complete one-time setup (~5-10 minutes):
@@ -108,6 +115,36 @@ When the user provides meeting notes and a Google Doc URL, Claude (in conversati
    - Insert at optimal location
    - Set NORMAL_TEXT style (proper formatting)
    - Add attribution comment
+   - **Log update** to Updates tab (if enabled)
+
+### Updates Tab Tracking (Automatic)
+
+The skill can automatically track changes in an "Updates" tab or section:
+
+**First Update to Document:**
+Claude will ask once per document, per session:
+```
+"Would you like me to create an Updates tab to track changes?
+ 1. Yes, prepend (newest first)
+ 2. Yes, append (newest last)
+ 3. No, don't track"
+```
+
+**Existing Updates Detected:**
+If the document already has an "Updates", "Changelog", or "Update Log" tab/section:
+- Automatically detects the pattern (newest first vs last)
+- Logs updates following the established format
+- Never prompts the user
+
+**Update Entry Format:**
+```
+**October 31, 2025**
+- Summary: Added market research insights
+- Sections modified: Market Analysis
+- Source: Customer feedback meeting on 10/31/25
+```
+
+See `docs/UPDATES_TAB_USAGE.md` for detailed interaction patterns.
 
 ### Python API (Programmatic)
 
