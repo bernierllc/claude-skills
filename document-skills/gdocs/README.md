@@ -28,11 +28,14 @@ Result: 3 executive-level sentences (440 chars), presentation-ready
 
 - 🧠 **Intelligent Synthesis** - Extracts key insights, not raw dumps
 - 📊 **Document Analysis** - Understands purpose, audience, tone, style
+- 📑 **Multi-Tab Support** - Automatically targets correct tab from URL
+- 🏗️ **Structure-Aware** - Handles tables, lists, paragraphs intelligently
 - ✏️ **Smart Insertion** - Comment-aware, proper formatting (NORMAL_TEXT)
-- 💬 **Source Attribution** - Documents where content came from
+- 💬 **Triple Attribution** - Contextual comments + inline markers + formatting
 - 🔄 **OAuth Authentication** - Secure, one-time setup
 - 📏 **Length Matching** - Respects document's length patterns
 - 🎨 **Style Matching** - Adapts to executive vs detailed writing
+- ⚠️ **Word Doc Detection** - Graceful handling of .docx limitations
 
 ## Quick Start
 

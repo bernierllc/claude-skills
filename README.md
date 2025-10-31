@@ -49,6 +49,7 @@ This repository includes a diverse collection of example skills demonstrating di
 The `document-skills/` subdirectory contains skills that Anthropic developed to help Claude create various document file formats. These skills demonstrate advanced patterns for working with complex file formats and binary data:
 
 - **docx** - Create, edit, and analyze Word documents with support for tracked changes, comments, formatting preservation, and text extraction
+- **gdocs** - Intelligent Google Docs assistant that synthesizes meeting notes into executive summaries, merges content with proper formatting, and adds visual attribution. Supports multi-tab documents and structure-aware insertion
 - **pdf** - Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms
 - **pptx** - Create, edit, and analyze PowerPoint presentations with support for layouts, templates, charts, and automated slide generation
 - **xlsx** - Create, edit, and analyze Excel spreadsheets with support for formulas, formatting, data analysis, and visualization
