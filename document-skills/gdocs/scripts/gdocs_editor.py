@@ -176,6 +176,15 @@ class GoogleDocsEditor:
         except HttpError as error:
             if error.resp.status == 404:
                 raise ValueError(f"Document not found: {doc_id}. This might be a Word document (.docx), which cannot be edited via the Google Docs API.")
+            elif error.resp.status == 400 and "not supported" in str(error).lower():
+                raise ValueError(
+                    f"This is a Word document (.docx) stored in Google Drive, not a native Google Doc.\n"
+                    f"The Google Docs API cannot read or edit .docx files.\n\n"
+                    f"Options:\n"
+                    f"1. Convert to Google Doc: In Google Drive, right-click → Open with → Google Docs\n"
+                    f"2. Use the docx skill instead for Word documents\n"
+                    f"3. Download the .docx file and work with it locally"
+                )
             elif error.resp.status == 403:
                 raise PermissionError(f"No permission to access document: {doc_id}")
             else:
