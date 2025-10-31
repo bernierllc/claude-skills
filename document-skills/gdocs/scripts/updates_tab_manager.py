@@ -6,6 +6,8 @@ Handles detection, pattern analysis, and logging of document updates.
 
 from typing import Optional, List
 import re
+from datetime import datetime
+from dateutil import parser as date_parser
 
 from .updates_structures import UpdatesLocation, UpdatesPattern, UpdateInfo
 from .gdocs_editor import GoogleDocsEditor
@@ -115,3 +117,97 @@ class UpdatesTabManager:
         header_location = self._detect_updates_header(analysis.sections)
 
         return header_location
+
+    def _parse_date(self, text: str) -> Optional[datetime]:
+        """
+        Parse date from text using multiple formats.
+
+        Args:
+            text: Text potentially containing date
+
+        Returns:
+            datetime object if parsed, None otherwise
+        """
+        if not text:
+            return None
+
+        try:
+            # Use dateutil parser for flexible date parsing
+            return date_parser.parse(text, fuzzy=True)
+        except (ValueError, TypeError):
+            return None
+
+    def _extract_first_date(self, text: str) -> Optional[datetime]:
+        """
+        Extract first date found in multiline text.
+
+        Args:
+            text: Multiline text
+
+        Returns:
+            First date found, or None
+        """
+        for line in text.split('\n'):
+            date = self._parse_date(line)
+            if date:
+                return date
+        return None
+
+    def _detect_prepend_from_entries(self, entries: List[str]) -> bool:
+        """
+        Detect if updates are prepended (newest first) or appended (newest last).
+
+        Args:
+            entries: List of entry texts (at least 3 preferred)
+
+        Returns:
+            True if prepend (newest first), False if append (newest last)
+        """
+        if len(entries) < 3:
+            # Default to prepend (most common for changelogs)
+            return True
+
+        # Extract dates from first 3 entries
+        dates = []
+        for entry in entries[:3]:
+            date = self._extract_first_date(entry)
+            if date:
+                dates.append(date)
+
+        if len(dates) < 2:
+            # Not enough dates to determine pattern
+            return True  # Default
+
+        # Check if dates are descending (newest first = prepend)
+        # or ascending (oldest first = append)
+        if dates[0] > dates[1]:
+            return True  # Prepend (newest first)
+        else:
+            return False  # Append (oldest first)
+
+    def _format_update_entry_default(self, info: UpdateInfo) -> str:
+        """
+        Format update entry using default template.
+
+        Args:
+            info: UpdateInfo with entry details
+
+        Returns:
+            Formatted text for update entry
+        """
+        # Format date
+        date_str = info.date.strftime('%B %d, %Y')  # "October 31, 2025"
+
+        # Format sections list
+        sections_str = ', '.join(info.sections_modified)
+
+        # Build entry
+        entry_parts = [
+            f"**{date_str}**",
+            f"- Summary: {info.summary}",
+            f"- Sections modified: {sections_str}",
+            f"- Source: {info.source_attribution}",
+            ""  # Blank line after entry
+        ]
+
+        return '\n'.join(entry_parts)

@@ -11,3 +11,4 @@ requests>=2.31.0
 
 # Anthropic API (for intelligent merging)
 anthropic>=0.39.0
+python-dateutil>=2.8.2
