@@ -211,3 +211,68 @@ class UpdatesTabManager:
         ]
 
         return '\n'.join(entry_parts)
+
+    def log_update(
+        self,
+        doc_id: str,
+        location: UpdatesLocation,
+        info: UpdateInfo,
+        prepend: bool = True
+    ) -> bool:
+        """
+        Log an update to the updates section.
+
+        Args:
+            doc_id: Document ID
+            location: Where to log (tab or header)
+            info: Update information
+            prepend: If True, add at top (newest first). If False, add at bottom.
+
+        Returns:
+            True if successful
+        """
+        # Format the entry
+        entry_text = self._format_update_entry_default(info)
+
+        # Calculate insertion point
+        if location.is_tab():
+            # For tabs, insert at beginning or end of tab content
+            doc = self.editor.get_document(doc_id, include_tabs_content=True)
+            tab_body = self.editor.get_tab_body(doc, location.tab_id)
+
+            if prepend:
+                # Insert after tab title/header (usually index 1)
+                insertion_index = 1
+            else:
+                # Insert at end of tab
+                content = tab_body.get('content', [])
+                insertion_index = content[-1].get('endIndex', 1) if content else 1
+        else:
+            # For headers, insert after the header
+            if prepend:
+                # Right after header
+                insertion_index = location.header_index + 1
+            else:
+                # Would need to find next header or end of section
+                # For now, insert right after header (simpler)
+                insertion_index = location.header_index + 1
+
+        # Insert the text
+        requests = [
+            {
+                'insertText': {
+                    'location': {'index': insertion_index},
+                    'text': entry_text
+                }
+            }
+        ]
+
+        try:
+            self.editor.docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+            return True
+        except Exception as e:
+            print(f"Error logging update: {e}")
+            return False
