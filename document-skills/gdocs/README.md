@@ -375,6 +375,14 @@ Potential improvements (not committed):
 
 Proprietary - See LICENSE.txt
 
+### Third-Party Dependencies
+
+This skill uses several third-party libraries. For complete license information about dependencies:
+- Google API libraries (Apache 2.0)
+- Anthropic Python SDK (MIT)
+
+See `GDOCS_THIRD_PARTY_LICENSES.md` for detailed attribution and license texts.
+
 ## Support
 
 For issues, questions, or feature requests:
