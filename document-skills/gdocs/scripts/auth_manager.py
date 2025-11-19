@@ -66,11 +66,19 @@ class AuthManager:
         # If credentials are invalid or don't exist, authenticate
         if not self.credentials or not self.credentials.valid:
             if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-                # Refresh expired credentials
-                print("Refreshing expired credentials...")
-                self.credentials.refresh(Request())
-            else:
-                # Run OAuth flow
+                # Try to refresh expired credentials
+                try:
+                    print("Refreshing expired credentials...")
+                    self.credentials.refresh(Request())
+                    print("✓ Token refreshed successfully")
+                except Exception as e:
+                    print(f"✗ Token refresh failed: {e}")
+                    print("Re-authenticating with OAuth flow...")
+                    # Clear credentials to force OAuth flow below
+                    self.credentials = None
+
+            # Run OAuth flow if credentials are None or refresh failed
+            if not self.credentials:
                 if not self.credentials_path.exists():
                     raise FileNotFoundError(
                         f"OAuth credentials not found at {self.credentials_path}\n"

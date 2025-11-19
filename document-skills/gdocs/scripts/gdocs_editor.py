@@ -50,10 +50,26 @@ class GoogleDocsEditor:
     def _ensure_authenticated(self):
         """Ensure we have valid credentials and service objects."""
         if not self.docs_service or not self.drive_service:
-            creds = self.auth_manager.get_credentials()
-            self.docs_service = build('docs', 'v1', credentials=creds)
-            self.drive_service = build('drive', 'v3', credentials=creds)
-            self.comment_manager = CommentManager(self.drive_service)
+            try:
+                creds = self.auth_manager.get_credentials()
+                self.docs_service = build('docs', 'v1', credentials=creds)
+                self.drive_service = build('drive', 'v3', credentials=creds)
+                self.comment_manager = CommentManager(self.drive_service)
+            except FileNotFoundError as e:
+                # credentials.json not found
+                raise FileNotFoundError(
+                    f"{e}\n\n"
+                    f"To set up OAuth credentials:\n"
+                    f"  1. Read: {self.auth_manager.credentials_path.parent}/oauth_setup.md\n"
+                    f"  2. Download credentials.json to: {self.auth_manager.credentials_path}"
+                )
+            except Exception as e:
+                # Other authentication errors
+                print(f"\n✗ Authentication failed: {e}")
+                print(f"\nTo re-authenticate manually:")
+                print(f"  1. Delete expired tokens: rm {self.auth_manager.token_path}")
+                print(f"  2. Re-run authentication: python examples/test_auth.py")
+                raise
 
     @staticmethod
     def extract_doc_id(doc_url_or_id: str) -> str:
@@ -189,6 +205,54 @@ class GoogleDocsEditor:
                 raise PermissionError(f"No permission to access document: {doc_id}")
             else:
                 raise
+
+    def create_document(self, title: str, initial_content: Optional[str] = None) -> Dict[str, str]:
+        """
+        Create a new Google Doc.
+
+        Args:
+            title: Title for the new document
+            initial_content: Optional initial content to insert
+
+        Returns:
+            Dictionary with 'doc_id' and 'doc_url' keys
+
+        Example:
+            >>> editor = GoogleDocsEditor()
+            >>> result = editor.create_document('My New Document')
+            >>> print(f"Created: {result['doc_url']}")
+        """
+        self._ensure_authenticated()
+
+        # Create the document
+        document = self.docs_service.documents().create(body={
+            'title': title
+        }).execute()
+
+        doc_id = document.get('documentId')
+        doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+
+        # Add initial content if provided
+        if initial_content:
+            requests = [{
+                'insertText': {
+                    'location': {
+                        'index': 1,
+                    },
+                    'text': initial_content
+                }
+            }]
+
+            self.docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+
+        return {
+            'doc_id': doc_id,
+            'doc_url': doc_url,
+            'title': title
+        }
 
     def analyze_document(self, doc_url_or_id: str, include_comments: bool = True) -> DocumentAnalysis:
         """
