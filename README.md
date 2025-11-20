@@ -52,6 +52,7 @@ The `document-skills/` subdirectory contains skills for working with various doc
 
 - 🅰️ **docx** - Create, edit, and analyze Word documents with support for tracked changes, comments, formatting preservation, and text extraction
 - ![Bernier LLC](assets/bernier-emoji-16.png) **gdocs** - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
+- ![Bernier LLC](assets/bernier-emoji-16.png) **gslides** - Complete Google Slides solution with 6 phases: Foundation, Creation, Visual Design (WCAG compliance, brand guidelines), Data Visualization (11 chart types), AI-Powered Content Generation (FREE - no API key!), and Quality Assurance. Transform raw notes into beautiful, brand-compliant presentations in seconds
 - 🅰️ **pdf** - Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms
 - 🅰️ **pptx** - Create, edit, and analyze PowerPoint presentations with support for layouts, templates, charts, and automated slide generation
 - 🅰️ **xlsx** - Create, edit, and analyze Excel spreadsheets with support for formulas, formatting, data analysis, and visualization
