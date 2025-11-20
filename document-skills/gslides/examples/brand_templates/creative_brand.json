@@ -1,0 +1,27 @@
+{
+  "name": "Bold Creative Agency",
+  "colors": {
+    "primary": "#FF6B35",
+    "secondary": "#004E89",
+    "accents": ["#F7B801", "#1AA7EC", "#E63946"],
+    "neutrals": ["#FFFBF7", "#F0F0F0", "#2C2C2C", "#0A0A0A"]
+  },
+  "typography": {
+    "headline": {
+      "family": "Poppins",
+      "weight": "bold"
+    },
+    "body": {
+      "family": "Lato",
+      "weight": "regular"
+    }
+  },
+  "spacing": {
+    "slide_margin": 70,
+    "element_gap": 30,
+    "title_margin": 45,
+    "content_padding": 35
+  },
+  "logo_url": null,
+  "voice_tone": "Bold, creative, and expressive. Show personality and stand out from the crowd."
+}

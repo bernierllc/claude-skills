@@ -1,0 +1,27 @@
+{
+  "name": "Acme Corporation",
+  "colors": {
+    "primary": "#003B5C",
+    "secondary": "#6B7280",
+    "accents": ["#0066CC", "#10B981"],
+    "neutrals": ["#F9FAFB", "#E5E7EB", "#D1D5DB", "#111827"]
+  },
+  "typography": {
+    "headline": {
+      "family": "Roboto",
+      "weight": "bold"
+    },
+    "body": {
+      "family": "Roboto",
+      "weight": "regular"
+    }
+  },
+  "spacing": {
+    "slide_margin": 60,
+    "element_gap": 20,
+    "title_margin": 40,
+    "content_padding": 30
+  },
+  "logo_url": null,
+  "voice_tone": "Professional, authoritative, and trustworthy. Focus on expertise and reliability."
+}

@@ -1,0 +1,27 @@
+{
+  "name": "TechStart Innovation",
+  "colors": {
+    "primary": "#8B5CF6",
+    "secondary": "#EC4899",
+    "accents": ["#06B6D4", "#F59E0B", "#10B981"],
+    "neutrals": ["#FAFAFA", "#F3F4F6", "#374151", "#1F2937"]
+  },
+  "typography": {
+    "headline": {
+      "family": "Montserrat",
+      "weight": "bold"
+    },
+    "body": {
+      "family": "Open Sans",
+      "weight": "regular"
+    }
+  },
+  "spacing": {
+    "slide_margin": 50,
+    "element_gap": 25,
+    "title_margin": 35,
+    "content_padding": 25
+  },
+  "logo_url": null,
+  "voice_tone": "Innovative, energetic, and forward-thinking. Emphasize disruption and growth."
+}

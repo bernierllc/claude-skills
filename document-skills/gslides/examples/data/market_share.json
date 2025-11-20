@@ -1,0 +1,12 @@
+{
+  "companies": [
+    "Our Company",
+    "Competitor A",
+    "Competitor B",
+    "Competitor C",
+    "Others"
+  ],
+  "market_share": [28, 25, 18, 15, 14],
+  "previous_year": [22, 26, 20, 16, 16],
+  "growth": [6, -1, -2, -1, -2]
+}

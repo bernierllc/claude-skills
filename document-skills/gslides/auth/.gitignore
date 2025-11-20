@@ -1,0 +1,4 @@
+# Protect OAuth credentials
+credentials.json
+*.json
+!credentials.json.example

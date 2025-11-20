@@ -1,0 +1,22 @@
+# Google API Client Libraries
+google-auth>=2.30.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.140.0
+
+# HTTP library
+requests>=2.31.0
+
+# Image processing (for visual analysis and color extraction)
+Pillow>=10.0.0
+
+# Color manipulation and analysis
+colorthief>=0.2.1     # Extract color palettes from images
+webcolors>=1.13       # Color name/hex conversion
+
+# Data visualization (for chart generation)
+matplotlib>=3.7.0
+pandas>=2.0.0
+
+# Optional: Advanced color analysis
+colormath>=3.0.0      # Color space conversions and delta-E calculations
