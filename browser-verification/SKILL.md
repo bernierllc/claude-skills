@@ -11,7 +11,17 @@ Automated manual QA using browser tools against verification checklists in `docs
 
 **Core principle:** Verify in the browser, not in your head. Evidence from the DOM, console, and network — not assumptions.
 
-**Thoroughness mandate:** Loading a page is NOT verification. Every page you visit gets a full audit: every interactive element clicked, every form tested, every console message read, every network request inspected, every server log checked. You are a QA completionist — if something is on the page, you test it. No skipping, no shortcuts, no "looks fine." If you cannot prove it works with evidence, it is not verified.
+## Verification Depth
+
+This skill operates at three depth levels. **Ask the user which depth they want** if not specified. Default to **standard** if they don't have a preference.
+
+| Depth | When to use | What it does |
+|---|---|---|
+| **Smoke** | Quick sanity check, CI gate, "does it load?" | Load every page in scope, check for render errors, console errors, and failed network requests. No interaction testing. |
+| **Standard** | Post-feature verification, routine QA | Walk every checklist item, check console + network per item, basic exploration of uncovered elements. |
+| **Deep** | Pre-deploy to production, regression after major refactor, "test everything" | Full completionist audit: every interactive element tested, every form with edge cases, server logs, CRUD round-trips, accessibility checks. Nothing skipped. |
+
+**Keyword detection:** If the user says "quick check", "smoke test", "does it load", or "sanity check" → **smoke**. If they say "verify", "check the feature", or "QA" → **standard**. If they say "deep", "thorough", "everything", "full audit", or "production readiness" → **deep**.
 
 ## When to Use
 
@@ -31,9 +41,9 @@ You MUST complete these in order:
 5. **Fix or log issues**
 6. **Produce log file and summary**
 
-## Step 1: Determine Scope
+## Step 1: Determine Scope and Depth
 
-Ask the user or infer from context:
+Ask the user or infer from context. You need two things: **scope** (which pages/features) and **depth** (smoke, standard, or deep). If the user only specifies one, ask for the other or use defaults (standard depth, git-diff-based scope).
 
 ```dot
 digraph scope {
@@ -160,7 +170,65 @@ digraph startup {
 
 **Staging/Production:** Tell the user which role/email to log in as. Wait for confirmation before proceeding.
 
-### 4b. Per-Page Deep Audit (MANDATORY for every page visited)
+---
+
+### Depth: Smoke
+
+**Goal:** Confirm pages load without errors. No interaction testing.
+
+**For each page in scope:**
+1. Navigate to the page
+2. Verify it renders (no blank screen, no error page, no 500)
+3. Read console messages — flag any errors or warnings (`mcp__claude-in-chrome__read_console_messages` or `mcp__playwright__browser_console_messages`)
+4. Read network requests — flag any 4xx/5xx responses (`mcp__claude-in-chrome__read_network_requests` or `mcp__playwright__browser_network_requests`)
+5. Record: PASS (page loads clean), FAIL (with what broke), or BLOCKED
+
+**Smoke does NOT include:** clicking buttons, filling forms, testing CRUD, checking server logs, or exploring beyond the page load. If you find yourself interacting with elements, you've exceeded smoke depth — stop and confirm with the user.
+
+**Record per page:**
+- Status: PASS | FAIL | BLOCKED
+- Console errors (list each one, or "none observed")
+- Network errors (list each one, or "none observed")
+- Screenshot if FAIL
+
+---
+
+### Depth: Standard
+
+**Goal:** Walk every checklist item and verify it works with evidence.
+
+**4b. Walk the Checklist**
+
+For each checklist item:
+1. Perform the action described
+2. Check if the expected result matches what's in the browser
+3. Read console messages after the action — flag errors and warnings
+4. Read network requests after the action — flag 4xx/5xx and slow requests (> 2s)
+5. Record result: PASS, FAIL (with details), or BLOCKED (precondition not met)
+
+**A checklist item is not PASS unless you have evidence from the DOM, console, AND network that it works.** "It looked right" is not evidence.
+
+**4c. Basic Exploration**
+
+After completing the checklist for a page, do a quick scan for obvious gaps:
+- Are there interactive elements on the page that no checklist item covered?
+- If yes, test the most important ones (primary actions, navigation, forms)
+- Note any functionality not covered by the checklist — propose additions to verification docs
+
+**Record per item:**
+- Status: PASS | FAIL | FIXED | SYSTEMIC | BLOCKED
+- For FAIL: What actually happened vs. what was expected
+- Console errors (list each one — "none observed" is valid, "not checked" is NOT)
+- Network errors (list each one — "none observed" is valid, "not checked" is NOT)
+- Screenshots if useful
+
+---
+
+### Depth: Deep
+
+**Goal:** Completionist audit. Every element, every edge case, every log source. Nothing is assumed to work.
+
+**4b. Per-Page Deep Audit (MANDATORY for every page visited)**
 
 **This audit runs on EVERY page you navigate to, whether it's part of a checklist item or not.** Loading a page without completing this audit is a skill violation.
 
@@ -197,19 +265,19 @@ digraph startup {
 22. Check Supabase logs if database operations are involved
 23. Correlate any server-side errors with the client-side behavior you observed
 
-### 4c. Walk the Checklist
+**4c. Walk the Checklist**
 
 For each checklist item:
 1. Perform the action described
 2. Check if the expected result matches what's in the browser
-3. Run the console audit (step 14-16 above) — this is not a suggestion, it is required
-4. Run the network audit (step 17-20 above) — this is not a suggestion, it is required
-5. Run the server log audit (step 21-23 above) if local
+3. Run the console audit (steps 14-16 above) — this is not a suggestion, it is required
+4. Run the network audit (steps 17-20 above) — this is not a suggestion, it is required
+5. Run the server log audit (steps 21-23 above) if local
 6. Record result: PASS, FAIL (with details), or BLOCKED (precondition not met)
 
 **A checklist item is not PASS unless you have evidence from the DOM, console, AND network that it works.** "It looked right" is not evidence.
 
-### 4d. Explore Beyond the Checklist
+**4d. Explore Beyond the Checklist**
 
 After completing listed items, you are NOT done with the page. Go back and find what the checklist missed:
 - Identify every interactive element on the page that was NOT covered by a checklist item
@@ -219,15 +287,13 @@ After completing listed items, you are NOT done with the page. Go back and find 
 - Look for accessibility issues: missing labels, keyboard navigation, focus indicators
 - Note any functionality not covered by the checklist — these become proposed additions to the verification docs
 
-### 4e. Record Results
-
-Track per item:
+**Record per item:**
 - Status: PASS | FAIL | FIXED | SYSTEMIC | BLOCKED
 - For FAIL: What actually happened vs. what was expected
-- Console errors encountered during this item (list each one — "none observed" is a valid entry, "not checked" is NOT)
-- Network errors encountered during this item (list each one — "none observed" is a valid entry, "not checked" is NOT)
+- Console errors encountered during this item (list each one — "none observed" is valid, "not checked" is NOT)
+- Network errors encountered during this item (list each one — "none observed" is valid, "not checked" is NOT)
 - Server log errors if local environment (list each one)
-- Screenshots if useful (use `mcp__playwright__browser_take_screenshot`)
+- Screenshots if useful (`mcp__playwright__browser_take_screenshot`)
 - Elements tested beyond the checklist item (from 4d exploration)
 
 ## Step 5: Fix or Log Issues
@@ -289,6 +355,7 @@ Write to `docs/verification/logs/YYYY-MM-DD-verification-run.md`:
 # Verification Run - YYYY-MM-DD
 
 ## Summary
+- Depth: [smoke | standard | deep]
 - Scope: [full | feature + tangential]
 - Environment: [local | staging | production]
 - Sections run: X
@@ -342,12 +409,14 @@ Proposed doc additions: X new items across Y files (see log for details)
 | Asking user to start services locally | Auto-start Supabase and dev server in background; only ask if startup fails |
 | Using `page.goto()` for Supabase auth verify URLs | Use `page.evaluate(() => { window.location.href = url })` instead — Playwright throws on 303 redirects |
 | All pages returning 500 after `.next` corruption | Kill dev server, run `npm run dev` again — the routes-manifest rebuilds on restart |
-| Skipping console/network checks | Check BOTH after every interaction, not just every checklist item |
-| Loading a page and moving on | Every page gets a full deep audit (4b) — loading is not verifying |
-| Checking console once per page | Check console after EVERY interaction — errors are often triggered by specific actions |
-| Skipping server logs | Read dev server output after page loads and significant interactions |
-| Only testing the happy path | Test empty, invalid, edge case, and boundary inputs for every form |
-| Marking PASS without evidence | You need DOM, console, AND network evidence — "looked fine" is not PASS |
+| Skipping console/network checks | At ALL depths: check console and network. Even smoke checks these. |
+| Defaulting to smoke when user said "verify" | "Verify" means standard. Smoke is only for explicit "quick check" / "does it load" requests. |
+| Running deep when user wanted a quick check | Respect the user's time. Smoke means smoke — don't click every button. |
+| Loading a page and moving on (standard/deep) | At standard: walk the checklist. At deep: full audit of every element. |
+| Checking console once per page (standard/deep) | At standard: check after each checklist action. At deep: check after EVERY interaction. |
+| Skipping server logs (deep) | Deep requires server log checks after page loads and significant interactions. |
+| Only testing the happy path (deep) | Deep means edge cases: empty, invalid, boundary, special characters for every form. |
+| Marking PASS without evidence (standard/deep) | You need DOM, console, AND network evidence — "looked fine" is not PASS. |
 | Fixing on staging/production | ALWAYS check environment before fixing |
 | Fixing shared code without asking | Trace imports — if file is used outside the current feature, ask |
 | Not re-verifying after fix | Re-run the failed item after every fix |
