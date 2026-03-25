@@ -11,6 +11,8 @@ Automated manual QA using browser tools against verification checklists in `docs
 
 **Core principle:** Verify in the browser, not in your head. Evidence from the DOM, console, and network — not assumptions.
 
+**Thoroughness mandate:** Loading a page is NOT verification. Every page you visit gets a full audit: every interactive element clicked, every form tested, every console message read, every network request inspected, every server log checked. You are a QA completionist — if something is on the page, you test it. No skipping, no shortcuts, no "looks fine." If you cannot prove it works with evidence, it is not verified.
+
 ## When to Use
 
 - Pre-deploy QA for staging or production
@@ -158,32 +160,75 @@ digraph startup {
 
 **Staging/Production:** Tell the user which role/email to log in as. Wait for confirmation before proceeding.
 
-### 4b. Walk the Checklist
+### 4b. Per-Page Deep Audit (MANDATORY for every page visited)
+
+**This audit runs on EVERY page you navigate to, whether it's part of a checklist item or not.** Loading a page without completing this audit is a skill violation.
+
+**Visual inspection:**
+1. Read the full page content — every heading, label, paragraph, tooltip, badge, and status indicator
+2. Identify every interactive element: buttons, links, dropdowns, toggles, tabs, form fields, modals, accordions, pagination, sort controls
+3. Check for visual defects: broken layouts, overlapping elements, truncated text, missing images, incorrect spacing, inconsistent styling
+4. Verify empty states, loading states, and error states render correctly where applicable
+
+**Functional inspection — interact with EVERYTHING:**
+5. Click every button and verify its behavior (does it do what the label says?)
+6. Click every link and verify it navigates correctly (then come back)
+7. Open every dropdown/select and verify options are populated and selectable
+8. Toggle every toggle/checkbox and verify state changes
+9. Expand every accordion/collapsible section
+10. Switch every tab and verify content loads
+11. If there's a form: submit it empty, submit it with valid data, submit it with edge cases (special characters, very long input, boundary values)
+12. If there's a table/list: verify sorting, filtering, pagination all work
+13. If there's CRUD: create an item, read it, update it, delete it — verify each operation round-trips correctly
+
+**Console audit (REQUIRED — not optional):**
+14. Read ALL console messages after every interaction (`mcp__claude-in-chrome__read_console_messages` or `mcp__playwright__browser_console_messages`)
+15. Log every warning and error — do NOT dismiss console warnings as unimportant
+16. If a console error appears, note which interaction triggered it
+
+**Network audit (REQUIRED — not optional):**
+17. Read ALL network requests after every interaction (`mcp__claude-in-chrome__read_network_requests` or `mcp__playwright__browser_network_requests`)
+18. Flag any failed requests (4xx, 5xx status codes)
+19. Flag any unusually slow requests (> 2 seconds)
+20. Verify API calls return expected data shapes (spot-check response bodies)
+
+**Server log audit (REQUIRED for local environments):**
+21. Check the dev server terminal output for errors, warnings, or unhandled exceptions after each page load and after significant interactions
+22. Check Supabase logs if database operations are involved
+23. Correlate any server-side errors with the client-side behavior you observed
+
+### 4c. Walk the Checklist
 
 For each checklist item:
 1. Perform the action described
 2. Check if the expected result matches what's in the browser
-3. Check console for errors (`mcp__claude-in-chrome__read_console_messages` or `mcp__playwright__browser_console_messages`)
-4. Check network for failed requests (`mcp__claude-in-chrome__read_network_requests` or `mcp__playwright__browser_network_requests`)
-5. Record result: PASS, FAIL (with details), or BLOCKED (precondition not met)
+3. Run the console audit (step 14-16 above) — this is not a suggestion, it is required
+4. Run the network audit (step 17-20 above) — this is not a suggestion, it is required
+5. Run the server log audit (step 21-23 above) if local
+6. Record result: PASS, FAIL (with details), or BLOCKED (precondition not met)
 
-### 4c. Explore Beyond the Checklist
+**A checklist item is not PASS unless you have evidence from the DOM, console, AND network that it works.** "It looked right" is not evidence.
 
-After completing listed items, explore the page for untested functionality:
-- Click every button and link on the page
-- Try edge cases: empty forms, special characters, very long input
+### 4d. Explore Beyond the Checklist
+
+After completing listed items, you are NOT done with the page. Go back and find what the checklist missed:
+- Identify every interactive element on the page that was NOT covered by a checklist item
+- Test each one using the functional inspection steps from 4b
+- Try edge cases the checklist didn't mention: empty forms, special characters, very long input, rapid clicks, back-button navigation
 - Check responsive behavior if relevant
-- Look for UI inconsistencies, broken layouts, missing states
-- Note any functionality not covered by the checklist (for proposed additions)
+- Look for accessibility issues: missing labels, keyboard navigation, focus indicators
+- Note any functionality not covered by the checklist — these become proposed additions to the verification docs
 
-### 4d. Record Results
+### 4e. Record Results
 
 Track per item:
 - Status: PASS | FAIL | FIXED | SYSTEMIC | BLOCKED
 - For FAIL: What actually happened vs. what was expected
-- Console errors encountered during this item
-- Network errors encountered during this item
+- Console errors encountered during this item (list each one — "none observed" is a valid entry, "not checked" is NOT)
+- Network errors encountered during this item (list each one — "none observed" is a valid entry, "not checked" is NOT)
+- Server log errors if local environment (list each one)
 - Screenshots if useful (use `mcp__playwright__browser_take_screenshot`)
+- Elements tested beyond the checklist item (from 4d exploration)
 
 ## Step 5: Fix or Log Issues
 
@@ -297,7 +342,12 @@ Proposed doc additions: X new items across Y files (see log for details)
 | Asking user to start services locally | Auto-start Supabase and dev server in background; only ask if startup fails |
 | Using `page.goto()` for Supabase auth verify URLs | Use `page.evaluate(() => { window.location.href = url })` instead — Playwright throws on 303 redirects |
 | All pages returning 500 after `.next` corruption | Kill dev server, run `npm run dev` again — the routes-manifest rebuilds on restart |
-| Skipping console/network checks | Check BOTH after every checklist item |
+| Skipping console/network checks | Check BOTH after every interaction, not just every checklist item |
+| Loading a page and moving on | Every page gets a full deep audit (4b) — loading is not verifying |
+| Checking console once per page | Check console after EVERY interaction — errors are often triggered by specific actions |
+| Skipping server logs | Read dev server output after page loads and significant interactions |
+| Only testing the happy path | Test empty, invalid, edge case, and boundary inputs for every form |
+| Marking PASS without evidence | You need DOM, console, AND network evidence — "looked fine" is not PASS |
 | Fixing on staging/production | ALWAYS check environment before fixing |
 | Fixing shared code without asking | Trace imports — if file is used outside the current feature, ask |
 | Not re-verifying after fix | Re-run the failed item after every fix |

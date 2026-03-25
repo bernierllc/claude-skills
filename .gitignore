@@ -1,4 +1,9 @@
 .DS_Store
-__pycache__/
-*.pyc
-*.pyo
+
+AGENTINFO.md
+CLAUDE.md
+GEMINI.md
+QWEN.md
+AGENTS.md
+.cursor/rules
+/plans/
