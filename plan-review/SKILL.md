@@ -84,3 +84,46 @@ Present findings as a table before proceeding:
 | Plan Name | Source Location | Claimed Status | Associated Branch |
 |-----------|----------------|----------------|-------------------|
 | `<filename>` | `<path relative to repo root>` | `<extracted status or "unknown">` | `<branch if detectable from plan content or naming, else "—">` |
+
+## Branch Correlation
+
+### Matching Strategy
+
+Match plans to branches using four methods, applied in order:
+
+1. **Explicit references** — Scan plan content for branch names (e.g., `branch: feat/cleanup-hung-processes-script`). Direct match.
+2. **Naming convention** — Match branch names against plan identifiers: REQ IDs, feature names, plan file slugs. Example: plan `gdocs-table-manipulation.plan.md` matches branch `feat/gdocs-table-manipulation`.
+3. **Commit message scanning** (opt-in) — For branches still unmatched after naming convention, scan up to 5 recent commits per branch for references to plan names or IDs. Only perform this step when unmatched branches remain.
+4. **Main branch** — For plans describing already-merged work, check if plan artifacts exist on `main`.
+
+### Git Commands
+
+```bash
+# List all local and remote branches
+git branch -a
+
+# Last commit date on a branch
+git log -1 --format=%ci <branch>
+
+# Recent commits for message scanning (max 5)
+git log -5 --oneline <branch>
+```
+
+### Correlation Categories
+
+| Category | Meaning |
+|----------|---------|
+| **Matched** | Plan has a corresponding branch (or artifacts confirmed on main) |
+| **Orphan plan** | Plan exists but no branch found — work never started, branch deleted, or already merged |
+| **Orphan branch** | Branch exists but no plan references it — untracked or ad-hoc work |
+| **Stale match** | Plan + branch both exist but branch has no commits in 30+ days |
+
+### Checkpoint — Adaptive Behavior
+
+After building the correlation table, adapt based on total item count (plans + branches combined):
+
+| Discovery Size | Behavior |
+|----------------|----------|
+| 1-5 items | No checkpoint. Proceed directly to deep inspection. |
+| 6-11 items | Display the correlation table. Ask: "Proceed with full inspection?" Wait for confirmation. |
+| 12+ items | Display the correlation table. Prepare a task list for parallel inspection. Suggest the user invoke `superpowers:dispatching-parallel-agents` with the prepared task list. Do not proceed with serial inspection unless explicitly requested. |
