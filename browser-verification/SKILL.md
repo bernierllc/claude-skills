@@ -1,6 +1,8 @@
 ---
 name: browser-verification
 description: Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes
+version: 1.0.0
+author: Bernier LLC
 ---
 
 # Browser Verification

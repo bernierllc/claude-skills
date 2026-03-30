@@ -1,3 +1,10 @@
+---
+name: gslides
+description: "Google Slides skill for creating, editing, and enhancing Google Slides presentations programmatically."
+version: 1.0.0
+author: Bernier LLC
+---
+
 # Google Slides Skill
 
 ## Overview

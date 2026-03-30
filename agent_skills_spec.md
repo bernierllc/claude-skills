@@ -20,17 +20,22 @@ The skill's "entrypoint" is the `SKILL.md` file. It is the only file required to
 
 ## YAML Frontmatter
 
-The YAML frontmatter has 2 required properties:
+The YAML frontmatter has 3 required properties:
 
 - `name`
     - The name of the skill in hyphen-case
     - Restricted to lowercase Unicode alphanumeric + hyphen
     - Must match the name of the directory containing the SKILL.md
-- `description` 
+- `description`
     - Description of what the skill does and when Claude should use it
+- `version`
+    - Semantic version string (MAJOR.MINOR.PATCH)
+    - PATCH for fixes, MINOR for new capabilities, MAJOR for breaking changes
 
-There are 3 optional properties:
+There are 4 optional properties:
 
+- `author`
+    - The person or organization that created the skill
 - `license`
     - The license applied to the skill
     - We recommend keeping it short (either the name of a license or the name of a bundled license file)
@@ -53,3 +58,4 @@ For a minimal example, see the `template-skill` example.
 # Version History
 
 - 1.0 (2025-10-16) Public Launch
+- 1.1 (2026-03-30) Added required version field and optional author field

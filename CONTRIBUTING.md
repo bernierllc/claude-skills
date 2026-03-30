@@ -52,6 +52,8 @@ Every skill must have a `SKILL.md` file with proper YAML frontmatter:
 ---
 name: your-skill-name
 description: "Clear, complete description of what this skill does and when to use it"
+version: 1.0.0
+author: Your Name or Organization
 ---
 
 # Your Skill Name
@@ -70,6 +72,14 @@ description: "Clear, complete description of what this skill does and when to us
 
 [Concrete examples of usage]
 ```
+
+### Versioning
+
+Every skill carries a semantic version (`MAJOR.MINOR.PATCH`) in its SKILL.md frontmatter. Any PR that modifies a skill must bump its version:
+
+- **PATCH** (e.g., 1.0.0 → 1.0.1): Bug fixes, typo corrections, minor clarifications
+- **MINOR** (e.g., 1.0.0 → 1.1.0): New capabilities, additional examples, expanded instructions
+- **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes to the skill's interface or behavior
 
 ### 5. Test Your Skill
 

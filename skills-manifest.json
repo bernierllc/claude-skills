@@ -1,0 +1,116 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-03-30T20:29:05.682312+00:00",
+  "skills": {
+    "algorithmic-art": {
+      "version": "1.0.0",
+      "description": "Creating algorithmic art using p5.js with seeded randomness and interactive parameter exploration. Use this when users request creating art using code, generative art, algorithmic art, flow fields, or particle systems. Create original algorithmic art rather than copying existing artists' work to avoid copyright violations.",
+      "author": "Anthropic"
+    },
+    "artifacts-builder": {
+      "version": "1.0.0",
+      "description": "Suite of tools for creating elaborate, multi-component claude.ai HTML artifacts using modern frontend web technologies (React, Tailwind CSS, shadcn/ui). Use for complex artifacts requiring state management, routing, or shadcn/ui components - not for simple single-file HTML/JSX artifacts.",
+      "author": "Anthropic"
+    },
+    "brand-guidelines": {
+      "version": "1.0.0",
+      "description": "Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand colors or style guidelines, visual formatting, or company design standards apply.",
+      "author": "Anthropic"
+    },
+    "browser-verification": {
+      "version": "1.0.0",
+      "description": "Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes",
+      "author": "Bernier LLC"
+    },
+    "canvas-design": {
+      "version": "1.0.0",
+      "description": "Create beautiful visual art in .png and .pdf documents using design philosophy. You should use this skill when the user asks to create a poster, piece of art, design, or other static piece. Create original visual designs, never copying existing artists' work to avoid copyright violations.",
+      "author": "Anthropic"
+    },
+    "docx": {
+      "version": "1.0.0",
+      "description": "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. When Claude needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks",
+      "author": "Anthropic"
+    },
+    "gdocs": {
+      "version": "1.0.0",
+      "description": "Intelligent document assistant for Google Docs - analyzes documents, synthesizes meeting notes into executive summaries, and merges content with proper formatting and attribution. For: (1) Merging meeting notes with intelligent synthesis, (2) Document-aware content integration, (3) Professional, presentation-ready output",
+      "author": "Bernier LLC"
+    },
+    "gslides": {
+      "version": "1.0.0",
+      "description": "Google Slides skill for creating, editing, and enhancing Google Slides presentations programmatically.",
+      "author": "Bernier LLC"
+    },
+    "pdf": {
+      "version": "1.0.0",
+      "description": "Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms. When Claude needs to fill in a PDF form or programmatically process, generate, or analyze PDF documents at scale.",
+      "author": "Anthropic"
+    },
+    "pptx": {
+      "version": "1.0.0",
+      "description": "Presentation creation, editing, and analysis. When Claude needs to work with presentations (.pptx files) for: (1) Creating new presentations, (2) Modifying or editing content, (3) Working with layouts, (4) Adding comments or speaker notes, or any other presentation tasks",
+      "author": "Anthropic"
+    },
+    "xlsx": {
+      "version": "1.0.0",
+      "description": "Comprehensive spreadsheet creation, editing, and analysis with support for formulas, formatting, data analysis, and visualization. When Claude needs to work with spreadsheets (.xlsx, .xlsm, .csv, .tsv, etc) for: (1) Creating new spreadsheets with formulas and formatting, (2) Reading or analyzing data, (3) Modify existing spreadsheets while preserving formulas, (4) Data analysis and visualization in spreadsheets, or (5) Recalculating formulas",
+      "author": "Anthropic"
+    },
+    "internal-comms": {
+      "version": "1.0.0",
+      "description": "A set of resources to help me write all kinds of internal communications, using the formats that my company likes to use. Claude should use this skill whenever asked to write some sort of internal communications (status reports, leadership updates, 3P updates, company newsletters, FAQs, incident reports, project updates, etc.).",
+      "author": "Anthropic"
+    },
+    "mcp-builder": {
+      "version": "1.0.0",
+      "description": "Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. Use when building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).",
+      "author": "Anthropic"
+    },
+    "plan-review": {
+      "version": "1.0.0",
+      "description": "Use when reviewing, auditing, or cleaning up plan files. Discovers plans across the repo and Claude's project directory, correlates them with git branches, performs deep code inspection to determine actual completion state vs. claimed status, and produces a gap analysis report. Also triggered by \"review my plans\", \"what's the state of my plans\", \"clean up plans\", or \"status of plan X\".",
+      "author": "Bernier LLC"
+    },
+    "skill-creator": {
+      "version": "1.0.0",
+      "description": "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Claude's capabilities with specialized knowledge, workflows, or tool integrations.",
+      "author": "Anthropic"
+    },
+    "slack-gif-creator": {
+      "version": "1.0.0",
+      "description": "Toolkit for creating animated GIFs optimized for Slack, with validators for size constraints and composable animation primitives. This skill applies when users request animated GIFs or emoji animations for Slack from descriptions like \"make me a GIF for Slack of X doing Y\".",
+      "author": "Anthropic"
+    },
+    "template-skill": {
+      "version": "1.0.0",
+      "description": "Replace with description of the skill and when Claude should use it.",
+      "author": "Anthropic"
+    },
+    "theme-factory": {
+      "version": "1.0.0",
+      "description": "Toolkit for styling artifacts with a theme. These artifacts can be slides, docs, reportings, HTML landing pages, etc. There are 10 pre-set themes with colors/fonts that you can apply to any artifact that has been creating, or can generate a new theme on-the-fly.",
+      "author": "Anthropic"
+    },
+    "ui-audit": {
+      "version": "1.0.0",
+      "description": "Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests. Supports multiple user types, auth detection, and ticket-driven workflow with Vibe-Kanban integration.",
+      "author": "Bernier LLC"
+    },
+    "ux-audit": {
+      "version": "1.0.0",
+      "description": "Systematically identify user experience problems in web applications through browser inspection and code analysis. Covers navigation flow, task completion friction, error states, feedback/system status, consistency, forms/input UX, content clarity, accessibility (WCAG 2.1 AA), responsive behavior, trust/support risk, onboarding/discoverability, visual hierarchy, recovery/reversibility, performance/perceived speed, data/table UX, search UX, dark mode/theming, and i18n/l10n. Audits through multiple user personas. Use when asked to audit UX, find confusing UI, review user experience, identify support risks, improve usability, or check accessibility. Produces a prioritized findings list with impact/effort scoring, then fixes small issues directly and proposes mockups/plans for larger ones.",
+      "author": "Bernier LLC"
+    },
+    "verification-writer": {
+      "version": "1.0.0",
+      "description": "Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.",
+      "author": "Bernier LLC"
+    },
+    "webapp-testing": {
+      "version": "1.0.0",
+      "description": "Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.",
+      "author": "Anthropic"
+    }
+  }
+}

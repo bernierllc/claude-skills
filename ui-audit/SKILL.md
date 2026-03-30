@@ -1,6 +1,8 @@
 ---
 name: ui-audit
 description: Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests. Supports multiple user types, auth detection, and ticket-driven workflow with Vibe-Kanban integration.
+version: 1.0.0
+author: Bernier LLC
 license: MIT
 ---
 
