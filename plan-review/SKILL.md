@@ -46,3 +46,41 @@ Complete these in order:
 | "review this plan" / "status of plan X" | Single-plan mode: skip discovery, inspect the named plan only |
 | "clean up plans" | Discovery + report, then jump straight to cleanup |
 | "what's the state of my plans" | Discovery + report only, then ask what's next |
+
+## Plan Discovery
+
+### Source Resolution
+
+Resolve plan file locations in priority order. Stop expanding sources once a sufficient set is found, but always check at least the first two levels:
+
+1. **AEC config** — Read `AGENTINFO.md` for a plans directory setting (e.g., `plans_dir: docs/plans`). If present, use that path as the primary source.
+2. **Convention scan** — Scan the repo root for these directories:
+   - `plans/`
+   - `docs/plans/`
+   - `docs/superpowers/specs/`
+   - `docs/superpowers/plans/`
+3. **Claude's project directory** — Scan `~/.claude/projects/<project-hash>/` for plan-like `.md` files with plan structure (phase tracking, task lists, implementation steps).
+4. **Ask the user** — If nothing found, or if the user might have additional locations, ask before proceeding.
+
+### What Qualifies as a Plan File
+
+Detect plan files using concrete signals. At least 2 must match for a file to qualify:
+
+- **Checkboxes** — presence of `- [ ]` or `- [x]` markdown checkboxes
+- **Phase/step headings** — headings matching patterns like `## Phase N`, `## Step N`, `### Task`, `## Implementation`
+- **Status markers** — text like `[DONE]`, `[IN PROGRESS]`, `[NOT STARTED]`, `[COMPLETE]`, `Status: `
+- **File naming** — `.plan.md` suffix, or file located inside a `plans/` directory
+- **Implementation references** — mentions of specific file paths, function names, or `create`/`implement`/`build` verbs in headings
+
+**Exclude** these regardless of signal count:
+- Pure design specs with no implementation phases (no checkboxes, no phase headings)
+- Memory files (`MEMORY.md`, files in `memory/`)
+- READMEs and changelogs
+
+### Discovery Output
+
+Present findings as a table before proceeding:
+
+| Plan Name | Source Location | Claimed Status | Associated Branch |
+|-----------|----------------|----------------|-------------------|
+| `<filename>` | `<path relative to repo root>` | `<extracted status or "unknown">` | `<branch if detectable from plan content or naming, else "—">` |
