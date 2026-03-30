@@ -198,3 +198,84 @@ Assign each phase or task one of these statuses based on artifact inspection:
 - Check whether the plan's referenced artifacts exist on `main` (already merged).
 - If artifacts found on main, mark as "likely merged — plan not cleaned up."
 - If not on main either, mark as "unstarted."
+
+## Report
+
+### Generating the Report
+
+Read `references/report-template.md` for the report skeleton. Fill all `{{placeholder}}` variables with actual data collected during discovery, correlation, and deep inspection. Every section of the template must be populated — leave no placeholders in the final output.
+
+### Report Destination
+
+Ask the user each time before generating:
+
+- **Terminal only** — print the report to the conversation
+- **Written file** — write to the plans directory (or a user-specified path)
+- **Both** — print and write
+
+Default file location: the plans directory identified during discovery, or a user-specified path. Do not assume a location without asking.
+
+## Next Steps
+
+After presenting the report, ask: **"What would you like to do next?"**
+
+Options:
+- **Clean up plans** — archive completed, update statuses, remove dead plans
+- **Run discovered tests** — execute test files found during inspection
+- **Hand off to an agent** — prepare a structured handoff artifact
+- **Generate a roadmap artifact** — structured summary of remaining work across all plans
+- **Nothing** — just needed the report
+
+The user can pick one, multiple, or none.
+
+## Cleanup Actions
+
+When the user chooses cleanup, present a proposed action list. Each action requires individual user approval.
+
+| Action | When Proposed | What It Does |
+|--------|---------------|--------------|
+| **Archive plan** | All phases complete, artifacts verified on main | Move to `plans/archive/` (or configured archive dir) |
+| **Update plan status** | Actual status differs from claimed status | Rewrite status markers in the plan file to match reality |
+| **Flag for deletion** | No branch, no artifacts on main, no commits referencing it | Suggest deletion, require explicit confirmation |
+| **Create branch reminder** | Orphan plan with no work started | Note in report, suggest user create a branch |
+| **Flag orphan branch** | Branch with no plan | Suggest: write a plan, merge it, or delete it |
+
+### Presentation Format
+
+Present each proposed action with a `[y/n]` confirmation:
+
+```
+Proposed cleanup actions:
+
+1. [ARCHIVE] some-plan.md — all phases verified complete
+   → Move to plans/archive/  [y/n]
+
+2. [UPDATE STATUS] other-plan.md — Phase 1-2 complete, plan says "not started"
+   → Update phase statuses in file  [y/n]
+
+3. [FLAG DEAD] old-plan.md — no branch, no artifacts on main
+   → Delete file  [y/n]
+
+4. [ORPHAN BRANCH] feat/some-branch — no matching plan
+   → Suggest: merge, plan, or delete  [y/n to see details]
+```
+
+Execute each action only after explicit user approval. Never batch-execute without per-item confirmation.
+
+## Agent Handoff
+
+When the user chooses agent handoff:
+
+- Prepare a structured handoff artifact containing the full report plus a remaining-work summary (incomplete phases, orphan items, next priorities).
+- List available PM-type agents the user could invoke (e.g., project management skills, dispatching agents).
+- Do NOT invoke any agent automatically — present the options and let the user choose.
+
+## Memory Integration
+
+After completing a review, optionally save a project memory summarizing the state:
+
+```
+Plan review YYYY-MM-DD: X plans (N complete, M partial, K not started), Y orphan branches, Z stale. Report at <path-if-written>.
+```
+
+Save as type: `project`.
