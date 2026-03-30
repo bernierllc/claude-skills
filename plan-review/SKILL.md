@@ -127,3 +127,74 @@ After building the correlation table, adapt based on total item count (plans + b
 | 1-5 items | No checkpoint. Proceed directly to deep inspection. |
 | 6-11 items | Display the correlation table. Ask: "Proceed with full inspection?" Wait for confirmation. |
 | 12+ items | Display the correlation table. Prepare a task list for parallel inspection. Suggest the user invoke `superpowers:dispatching-parallel-agents` with the prepared task list. Do not proceed with serial inspection unless explicitly requested. |
+
+## Deep Inspection
+
+### From the Plan Side
+
+For each plan file:
+
+- Extract all phases, tasks, and steps with their claimed status (checkbox state, status markers, heading labels).
+- Extract all referenced artifacts — files, modules, functions, routes, configs, tests. Look for file paths, function/class names, route definitions, and config keys.
+- Extract dependencies between phases — identify what blocks what based on ordering, explicit dependency markers, or references from one phase to another's outputs.
+
+### From the Code Side
+
+> **CRITICAL — Technical Constraints for Cross-Branch Inspection:**
+>
+> Normal file reads and grep only work on the currently checked-out branch. For all other branches, use these git commands:
+>
+> ```bash
+> # Read a file on another branch
+> git show <branch>:<path>
+>
+> # Read a file on a remote-only branch
+> git show origin/<branch>:<path>
+>
+> # List files in a directory on another branch
+> git ls-tree -r --name-only <branch> -- <directory>
+>
+> # Search for a pattern in a file on another branch
+> git show <branch>:<path> | grep <pattern>
+>
+> # Check last commit date (staleness)
+> git log -1 --format=%ci <branch>
+> ```
+>
+> Do not attempt to checkout other branches during inspection. All cross-branch reads go through `git show` or `git ls-tree`.
+
+For each matched branch:
+
+- Check existence of every referenced artifact via `git ls-tree -r --name-only <branch>` or `git show <branch>:<path>`.
+- For files that exist, pipe `git show <branch>:<path>` through grep for referenced functions, classes, methods, and routes.
+- Check for test files related to the plan's deliverables (existence = evidence of progress).
+- If tests found, note them and flag as available-to-run. Do not run tests automatically.
+- Check last commit date via `git log -1 --format=%ci <branch>` to assess staleness.
+
+### Multi-Branch Plans
+
+Some plans span multiple branches (e.g., Phase 1 on `feat/phase-1`, Phase 2 on `feat/phase-2`). When a plan matches multiple branches, inspect each matched branch separately and merge findings into one report section per plan. The correlation table shows all matched branches for such plans.
+
+### Gap Analysis Per Phase/Task
+
+Assign each phase or task one of these statuses based on artifact inspection:
+
+| Status | Criteria |
+|--------|----------|
+| **Complete** | All referenced artifacts exist, expected functions/methods present |
+| **Partial** | Some artifacts exist, others missing |
+| **Not started** | No referenced artifacts found on the branch |
+| **Overclaimed** | Plan says "done" but artifacts missing or incomplete |
+| **Underclaimed** | Plan says "not started" but artifacts exist |
+| **Diverged** | File exists but expected symbols not found — e.g., plan references `createTable()` but grep finds no match in the file, or plan references `table_manager.py` but only `table_ops.py` exists. Detection: file exists + expected function/class/export names absent. This is a mechanical check, not a semantic comparison. |
+
+### Orphan Handling
+
+**Orphan branches** (branch with no matching plan):
+- Summarize changed files, commit messages, and scope of work on the branch.
+- Flag whether the branch looks like completed work that could be merged, or abandoned work that could be deleted.
+
+**Orphan plans** (plan with no matching branch):
+- Check whether the plan's referenced artifacts exist on `main` (already merged).
+- If artifacts found on main, mark as "likely merged — plan not cleaned up."
+- If not on main either, mark as "unstarted."
