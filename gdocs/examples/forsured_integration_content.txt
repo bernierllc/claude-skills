@@ -1,0 +1,59 @@
+
+2.9 Recent Feedback & Updates
+
+This section consolidates recent user feedback and meeting notes from:
+• Brokerflow Review (user feedback on prototype)
+• GC/Subcontractor Flow Review Meeting (11/18/2025)
+
+Review these items and move them to appropriate sections in the document as you address them.
+
+
+Brokerflow_review
+─────────────────
+
+Action Items
+  → For the broker, would be good to manage documents by clients, project, and GC’s versus the header of total documents, verified, pending review and expiring.
+
+Decisions & Feedback
+  ✓ Agreed - top of dashboard
+  ✓ For additional requirements, those should be coverage line item specific.  For instance, additional insured status for General Liability via ISO 2010 and CG 2037 or approved equivalent; additional insured status for Auto Liability via CA 2048 or approved equivalent.  Same for the waiver and primary non-contributory as some contracts do not call for the latter for auto and you can’t require it for workers compensation
+  ✓ Under tasks, trying to understand how this applies to a GC.  Also, if this was a sub I see status of “submitted”, “rejected”, and “approved” so need to know what those mean when reviewing here
+
+Metrics & Observations
+  📊 On the dashboard, it shows 2 of 4 clients compliant which correlates with the 2 that are 90% or greater with the other 2 at the 70-89% risk score reflecting work to be done, which is great.  The question I have is that if I have 2 of 4 with these scores, how do I have 21 urgent tasks?  That does not seem to correlate with the compliance score of my clients.
+  📊 When I assign it to someone including my client, does it leave my inbox and go to their inbox?  For instance, for the increase umbrella limit to 5M, I went into the edit task, put in the description the additional premium and then assigned it to Stephanie my client to approve that.  Not sure that was the intent, but either way, when I assign it to someone else, it stays in my inbox.
+  📊 Under the requirements tab, we need to explain the GL portion to reflect the various limits within the GL as it is not a single limit.  Typical is $1,000,000 Per Occurrence, $2,000,000 General Aggregate, $1,000,000 Personal and Advertising Injury, $2,000,000 Products-Completed Operations Aggregate.  I am not sure how detailed we want to get here as obviously they are key requirements for each coverage (i.e., GL deductible or retention can’t exceed 10K, per project aggregate, occurrence coverage form, Auto Symbol 1 or 7,8,9, etc.)
+  📊 What Eric is describing is that generally you don't red flag or often have a red flag with an overall coverage limit. You can. You can say, "Hey, I have a problem with this policy's overall liability limit which is $2 million needs to be free." Right? That can be flagged as there are policy flags. But then more often is what happens in the endorsements.
+  📊 OK your policy covers $2 million except for in the case of negligence. It covers nothing in the case of negligence. So you need to have a $1 million provision for negligence. You do something dumb on the job that's on you. Your insurance needs to cover it. So that's a better type of explanation of what he's describing that we can all relate to. It's like you can get a house policy or a car insurance policy which doesn't have force majeure or act of God type things where they say, "Hey, you have to get flood insurance is a separate policy for your house or map fire insurance is a thing right here in an area that's high risk for forest fires. That is not going to come under a general policy. It's going to come off either a secondary policy or a provision added to your policy that you're going to pay extra for.
+  📊 Workflow: Insurance sub well a GC comes to sub needs insurance because they're deficient. For a project sub shoots off a note in the platform to the broker. The broker comes back and says, "Yep I can get you this insurance. Here's all the documentation. Here's the cost and I can add it to your for sure profile. Do you want to permit? Do you want to proceed?"
+
+Team Assignments
+  👤 Yes, it will assign to them and notify that a new task is assigned to them
+  👤 It should alternatively show their assigned subcontractors that are “active” and their compliance status so the broker can see.  It would then be here that I could see the interaction of, for instance, another broker making a note on a requirement or seeking an exception to then review with my GC.
+  👤 Under participants tab, is this where I would see the subcontractors assigned to this project for my GC?  Or just those pending an invitation?
+
+
+
+GC/Sub Flow review - 2025/11/18 09:58 EST - Notes by Gemini
+───────────────────────────────────────────────────────────
+
+Action Items
+  → Final Feedback Request on Documents and Scheduling Marc asked Stephanie Massei to review the document section and requested any further feedback on the flows to be submitted quickly, as the team aims to finalize the build plan by mid to late week (00:54:24). Stephanie Massei identified the need to search and bulk download documents in the document section. Clay Unicorn left the call temporarily but intended to rejoin (00:55:22).
+  → Automated File Organization and Compliance Checks Stephanie Massei suggested that the file storage system should automatically create folders within the job folder structure, including sub-folders for the subcontractor name and an "insurance folder" (00:58:52). Marc indicated this capability "should be easy" (00:59:52). Stephanie Massei also sought a way to easily view which subcontractors present compliance problems, desiring a system that highlights "criticals and warnings" related to compliance deadlines, such as needing a person compliant by a specific date to be on-site (01:01:41).
+
+Decisions & Feedback
+  ✓ The team, including Marc, Matt Bernier, and Steve M., discussed project progress with Stephanie Massei, incorporating prototype feedback from Eric and focusing on building the application environment while prioritizing core Minimum Viable Product (MVP) features, as Clay Unicorn advised against complex features like free-form questions now. Stephanie Massei provided detailed input on General Contractor (GC) needs, including the ability to focus on compliance review, required subcontractor fields like billing contact and EMR rating, and necessary features for the GC dashboard, such as a review queue, automated compliance reports, and the ability to search and bulk download documents for projects, especially for litigation support. Marc agreed to implement many of the required features, while Matt Bernier confirmed the feasibility of a single-user Procore integration and the plan to include a comprehensive audit log and automated claims report generation.
+  ✓ Required Subcontractor Contact Information Stephanie Massei emphasized the importance of capturing a billing or accounting contact for subcontractors, as that person often handles insurance matters (00:14:14). Marc agreed to add "billing contact" to the subcontractor onboarding flow within the company information section as a requirement (00:15:13).
+  ✓ EMR Rating Requirement Stephanie Massei introduced the requirement to disclose the Experience Modification Rate (EMR) as an indicator of a subcontractor's loss history and risk level, which would be helpful since loss runs are not typically available. Marc agreed to make the disclosure of EMR rating mandatory (00:32:59).
+  ✓ Multiple License Entry and CSI Codes Stephanie Massei noted the importance of ensuring a subcontractor has the correct license for the trade they are performing, especially if they are bidding on multiple scopes of work (e.g., a landscaper bidding on concrete) (00:34:49). Clay Unicorn proposed implementing a grouped field with a plus button to allow subcontractors to enter and upload multiple licenses (00:37:09). Marc agreed to add a CSI codes mapping dropdown in the trade capabilities and experience section (00:38:05).
+  ✓ Dashboard Modification and Task Focus Stephanie Massei suggested that the dashboard should be modifiable, as the current view is heavily focused on tasks, which may not be as relevant for a General Contractor (GC) perspective. Marc agreed to make the dashboard "more relatable" and focus more on existing issues and how to rectify them, rather than strictly tasks (01:00:40) (01:03:41). Stephanie Massei clarified that tasks are better suited for brokers and subcontractors, while GCs need snapshots and status updates to monitor compliance (01:04:45).
+  ✓ Linking Compliance to Consequences Matt Bernier stressed the importance of linking tasks to the consequences of non-compliance, such as withholding payment or preventing site access, to make the requirements "real" for subcontractors (01:05:28). Stephanie Massei agreed, noting that consequences apply to both ongoing work (not getting paid) and bidding processes (incomplete bids) (01:07:17). Matt Bernier suggested programmatic methods to make these consequences clear in the system (01:06:17).
+
+Metrics & Observations
+  📊 Project Status and Prototype Feedback Marc reported that the team is progressing well, having established the infrastructure for the application and the environment setup. They had received feedback from Eric and had discussed the nuances of those comments, relying on the AI notetaker to capture the conversation. Marc noted that the current prototype is not 100% up to date because the focus has shifted to building the actual application environment, inviting feedback on any missing details or critical inclusions (00:02:27).
+  📊 Document Packaging for Claims and External Storage Stephanie Massei emphasized the immense value of a feature that, during litigation, could easily pull and package all relevant documents for involved parties (such as attorneys or insurance companies) (01:13:16). Matt Bernier detailed how this process could be automated, bundling the audit log and documents into a zip file, storing it in the user’s Dropbox, and emailing a forshured public link to relevant people, with the system tracking every download of that link (01:14:22). Stephanie Massei highlighted the substantial time savings this automated process would provide, especially during long-term litigation (01:15:24).
+  📊 Automated Document Saving and Business Opportunities Stephanie Massei stressed the need for an automated document saving process that integrates with project management software like Procore, to automatically save copies of signed contracts and change orders into external storage, cutting down on significant manual work (01:16:19). Stephanie Massei suggested this feature, potentially called "autofile," could be offered as a buy-up option or a separate venture due to its broad industry applicability and substantial time-saving benefits, estimating a solid 25% time reduction for a person's work (01:19:06) (01:22:53). Matt Bernier and Marc acknowledged the market opportunity, with Matt Bernier confirming its relevance based on other client needs (01:18:00) (01:25:42).
+
+Team Assignments
+  👤 Task Clarity and User Experience Stephanie Massei found the "Task" section in the GC view confusing, as the tasks seemed to be for the sub and their broker. Matt Bernier assured them that they would clarify who the tasks are assigned to and add tooltips for clarity (00:46:57). Stephanie Massei also requested that hovering over the compliance status (e.g., "Warning") should provide a brief synopsis of the issue (00:48:54).
+  👤 Matt Bernier will make it clear who the tasks are assigned to and put little tool tips in when the tasks are there.

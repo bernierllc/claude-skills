@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-03-30T20:29:05.682312+00:00",
+  "generatedAt": "2026-03-30T22:01:10.689730+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -27,6 +27,11 @@
       "description": "Create beautiful visual art in .png and .pdf documents using design philosophy. You should use this skill when the user asks to create a poster, piece of art, design, or other static piece. Create original visual designs, never copying existing artists' work to avoid copyright violations.",
       "author": "Anthropic"
     },
+    "commit": {
+      "version": "1.0.0",
+      "description": "Use when the user wants to commit and optionally push their changes. Standardizes the commit workflow with commitlint validation, gitignore checks, and safe push procedures.",
+      "author": "Bernier LLC"
+    },
     "docx": {
       "version": "1.0.0",
       "description": "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. When Claude needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks",
@@ -34,7 +39,7 @@
     },
     "gdocs": {
       "version": "1.0.0",
-      "description": "Intelligent document assistant for Google Docs - analyzes documents, synthesizes meeting notes into executive summaries, and merges content with proper formatting and attribution. For: (1) Merging meeting notes with intelligent synthesis, (2) Document-aware content integration, (3) Professional, presentation-ready output",
+      "description": "Writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents, structure-aware insertion (tables, lists, paragraphs), and automatic style matching.",
       "author": "Bernier LLC"
     },
     "gslides": {

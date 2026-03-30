@@ -1,0 +1,6 @@
+# OAuth credentials - NEVER commit these!
+credentials.json
+tokens.json
+
+# Keep only the example file
+!credentials.json.example
