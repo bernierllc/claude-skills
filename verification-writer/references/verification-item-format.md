@@ -18,6 +18,7 @@ The canonical format for verification checklist items. Browser-verification cons
 | `---` | Yes | Separator between action and expected result |
 | Expected result | Yes | What should happen. Observable, not vague. |
 | `*Expected: type*` | Yes | Italic. Categorizes the expected outcome. |
+| `*API-only*` | Conditional | Italic. Required when the item can only be verified via API (no UI exists). Must be accompanied by an `<!-- API-VERIFICATION-FLAG -->` comment. |
 | `*Requires: precondition*` | Optional | Italic. Preconditions that must be true before this item. |
 
 ### Examples
@@ -34,6 +35,36 @@ The canonical format for verification checklist items. Browser-verification cons
 - [ ] [deep] **Access /admin/users as student role** --- Redirect to student dashboard. No flash of admin content. *Expected: auth boundary enforcement*
 - [ ] [deep] **Access /admin/users with expired session** --- Redirect to login page. Session-expired message shown. Return URL preserved. *Expected: auth boundary enforcement*
 - [ ] [deep] **Submit "Add User" while offline** --- Error message indicating network issue. Form input preserved. Retry available. *Expected: graceful server error*. *Requires: simulate offline by throttling network in devtools*
+```
+
+## API-Only Flag
+
+When a verification item can only be tested via API (no browser UI exists for the functionality), it must be tagged with `*API-only*` and include an HTML comment with metadata:
+
+```markdown
+- [ ] [standard] **Send POST to /api/webhooks/stripe with valid signature** --- Returns 200, event processed, database updated. *Expected: success* *API-only*
+<!-- API-VERIFICATION-FLAG: reason=[webhook endpoint], durability=[permanent], note=[Stripe webhooks have no UI — always API-only] -->
+
+- [ ] [standard] **Send POST to /api/events with valid event data** --- Returns 201, event created. *Expected: success* *API-only*
+<!-- API-VERIFICATION-FLAG: reason=[no UI available], durability=[temporary], note=[Create Event form is planned for sprint 12 — rewrite as browser item when UI ships] -->
+
+- [ ] [deep] **Call GET /api/admin/reports/export with admin token** --- Returns CSV file download. *Expected: success* *API-only*
+<!-- API-VERIFICATION-FLAG: reason=[no UI available], durability=[needs-review], note=[Unclear if export should have a UI button — flag for human review] -->
+```
+
+**Durability values:**
+- `permanent` — No UI by design (webhooks, cron handlers, internal APIs). Stop checking.
+- `temporary` — UI is planned. Re-check on next verification-writer run and convert to browser item when UI exists.
+- `needs-review` — Unclear if UI should exist. Keep flagging until human resolves.
+
+**Browser-first rule:** If a UI form, button, or page exercises the same API endpoint, the item MUST be written as a browser interaction. The API call is verified via the network tab during browser-verification, not called directly. Example:
+
+```markdown
+# WRONG — UI exists for this
+- [ ] [standard] **POST to /api/events with valid data** --- Returns 201. *Expected: success* *API-only*
+
+# RIGHT — test through the UI
+- [ ] [standard] **Fill and submit the Create Event form with name="Test Event", date="2026-04-01"** --- Event created, appears in event list, success toast shown. Network tab shows POST /api/events returning 201. *Expected: success with side effects*
 ```
 
 ## Depth Tags
