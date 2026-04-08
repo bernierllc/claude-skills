@@ -10,15 +10,26 @@ import { hashItem, hashGeneratedTest } from './lib/hash.js';
 import { readManifestFileSync, writeManifestFileSync, acquireLockSync, appendPendingQueue } from './lib/manifest.js';
 import { fileURLToPath } from 'node:url';
 
-const ITEM_PATTERN = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+// Format A: - [ ] [depth] **ITEM-ID** action text --- expected. *Expected: type*
+const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+// Format B: - [ ] [depth] **Action text** --- expected. _Expected: type_  (no separate ID)
+const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected: (.+?)[_*]/gm;
 
-/** Parse verification items from markdown content. */
-export function parseVerificationItems(markdown) {
+/** Parse verification items from markdown content. Supports both ID-based and action-based formats.
+ * @param {string} markdown - The verification doc content
+ * @param {string} [pageTag=''] - Page tag used to scope auto-generated IDs (prevents cross-doc collisions)
+ */
+export function parseVerificationItems(markdown, pageTag = '') {
   const items = [];
-  const pattern = new RegExp(ITEM_PATTERN.source, 'gm');
+  const seen = new Set();
+
+  // Try Format A first (has explicit item IDs)
+  const patternA = new RegExp(ITEM_PATTERN_A.source, 'gm');
   let match;
-  while ((match = pattern.exec(markdown)) !== null) {
+  while ((match = patternA.exec(markdown)) !== null) {
     const [fullMatch, depth, id, action, expected, expectedType] = match;
+    if (seen.has(id)) continue;
+    seen.add(id);
     const afterMatch = markdown.substring(match.index + fullMatch.length);
     const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
     const annotation = annotationMatch ? annotationMatch[1] : '';
@@ -29,7 +40,41 @@ export function parseVerificationItems(markdown) {
       fullText
     });
   }
+
+  // Try Format B for items not caught by Format A (action-as-bold, no ID)
+  const patternB = new RegExp(ITEM_PATTERN_B.source, 'gm');
+  while ((match = patternB.exec(markdown)) !== null) {
+    const [fullMatch, depth, actionBold, expected, expectedType] = match;
+    // Generate a stable ID from the action text (slugify)
+    const id = slugifyAction(actionBold, pageTag);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const afterMatch = markdown.substring(match.index + fullMatch.length);
+    const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
+    const annotation = annotationMatch ? annotationMatch[1] : '';
+    const fullText = fullMatch + (annotation ? '\n' + annotation : '');
+    items.push({
+      id, depth, action: actionBold, expected, expectedType,
+      contentHash: hashItem(id, fullText),
+      fullText
+    });
+  }
+
   return items;
+}
+
+/** Generate a stable ID from action text, scoped to the doc page tag to prevent collisions. */
+function slugifyAction(text, pageTag) {
+  const slug = text
+    .replace(/`[^`]*`/g, '') // Remove inline code
+    .replace(/[^a-zA-Z0-9\s-]/g, '') // Remove special chars
+    .trim()
+    .replace(/\s+/g, '-') // Spaces to dashes
+    .toLowerCase()
+    .substring(0, 40) // Cap length
+    .replace(/-+$/, ''); // Trim trailing dashes
+  // Prefix with page tag to prevent collisions across docs
+  return `${pageTag}--${slug}`;
 }
 
 /** Detect changes between doc items and manifest items. */
@@ -106,8 +151,18 @@ export async function syncTests(docPath, manifestDir) {
   }
 
   const docContent = readFileSync(docPath, 'utf8');
-  const docItems = parseVerificationItems(docContent);
-  const changes = detectChanges(docItems, items.items);
+  const pageTag = basename(docPath, '.md');
+  const docItems = parseVerificationItems(docContent, pageTag);
+
+  // Scope: only compare against manifest items belonging to THIS doc
+  const docFilename = basename(docPath);
+  const scopedManifestItems = {};
+  for (const [id, item] of Object.entries(items.items)) {
+    if (item.source_doc && basename(item.source_doc) === docFilename) {
+      scopedManifestItems[id] = item;
+    }
+  }
+  const changes = detectChanges(docItems, scopedManifestItems);
 
   // Process removals
   for (const removed of changes.removed) {
@@ -118,6 +173,7 @@ export async function syncTests(docPath, manifestDir) {
   const pendingIds = [];
   for (const added of changes.added) {
     items.items[added.id] = {
+      source_doc: docPath,
       content_hash: added.contentHash,
       depth: added.depth,
       status: 'pending',
