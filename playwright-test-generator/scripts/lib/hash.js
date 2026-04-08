@@ -7,64 +7,72 @@ import { createHash } from 'node:crypto';
 
 /**
  * Normalize and hash a verification item's text content.
- * @param {string} itemText - The raw verification item text including annotations
+ * @param {string} itemId - The item ID (e.g., EVT-FRM-01)
+ * @param {string} text - The raw item text including annotations
  * @returns {string} Hex-encoded SHA-256 hash
  */
-export function hashItem(itemText) {
-  const normalized = normalizeItemText(itemText);
-  return createHash('sha256').update(normalized, 'utf8').digest('hex');
+export function hashItem(itemId, text) {
+  const { body, annotations } = parseAnnotations(text);
+  let normalized = normalizeText(body);
+  // Lowercase the item ID for consistency
+  const lowerId = itemId.toLowerCase();
+  // Re-join with sorted, stripped annotations
+  const sortedAnnotations = annotations.map(a => sortAnnotationFields(stripCommentMarkers(a))).join('\n');
+  const fullText = `${lowerId}\n${normalized}\n${sortedAnnotations}`;
+  return createHash('sha256').update(fullText.trim(), 'utf8').digest('hex');
 }
 
 /**
- * Normalize item text for consistent hashing.
+ * Normalize text: strip whitespace per line, collapse spaces.
+ * @param {string} text
+ * @returns {string}
  */
-export function normalizeItemText(text) {
+export function normalizeText(text) {
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   let result = lines.join('\n');
-
-  // Collapse multiple spaces
   result = result.replace(/ {2,}/g, ' ');
-
-  // Lowercase item IDs (pattern: **ITEM-ID**)
-  result = result.replace(/\*\*([A-Z0-9][-A-Z0-9]*)\*\*/g, (_, id) => `**${id.toLowerCase()}**`);
-
-  // Remove HTML comment markers
-  result = result.replace(/<!--/g, '').replace(/-->/g, '');
-
-  // Sort annotation fields alphabetically within blocks
-  result = sortAnnotationFields(result);
-
   return result;
 }
 
-function sortAnnotationFields(text) {
-  const annotationPattern = /^\s*\w[\w_]*:/;
+/**
+ * Remove HTML comment markers from text.
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripCommentMarkers(text) {
+  return text.replace(/<!--/g, '').replace(/-->/g, '');
+}
+
+/**
+ * Sort annotation fields (key: value lines) alphabetically.
+ * The first line (header like STATE-DEPENDENCY:) is kept in place.
+ * @param {string} text
+ * @returns {string}
+ */
+export function sortAnnotationFields(text) {
   const lines = text.split('\n');
-  const result = [];
-  let annotationBuffer = [];
-  let inAnnotation = false;
+  if (lines.length <= 1) return text;
 
-  for (const line of lines) {
-    if (annotationPattern.test(line.trim())) {
-      inAnnotation = true;
-      annotationBuffer.push(line);
-    } else {
-      if (inAnnotation && annotationBuffer.length > 0) {
-        annotationBuffer.sort((a, b) => a.trim().localeCompare(b.trim()));
-        result.push(...annotationBuffer);
-        annotationBuffer = [];
-        inAnnotation = false;
-      }
-      result.push(line);
-    }
-  }
+  // First line is the annotation header
+  const header = lines[0];
+  const fields = lines.slice(1).filter(l => l.trim());
+  fields.sort((a, b) => a.trim().localeCompare(b.trim()));
+  return [header, ...fields].join('\n');
+}
 
-  if (annotationBuffer.length > 0) {
-    annotationBuffer.sort((a, b) => a.trim().localeCompare(b.trim()));
-    result.push(...annotationBuffer);
-  }
-
-  return result.join('\n');
+/**
+ * Parse annotation blocks from item text.
+ * Extracts <!-- ... --> blocks as annotations, returns body without them.
+ * @param {string} text
+ * @returns {{ body: string, annotations: string[] }}
+ */
+export function parseAnnotations(text) {
+  const annotations = [];
+  const body = text.replace(/<!--[\s\S]*?-->/g, (match) => {
+    annotations.push(match);
+    return '';
+  });
+  return { body: body.trim(), annotations };
 }
 
 /**

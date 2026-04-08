@@ -1,191 +1,194 @@
 #!/usr/bin/env node
 /**
  * sync-tests.js - Deterministic manifest sync for verification-to-Playwright pipeline.
- * Called by the postToolUse hook when verification docs are edited.
- * No LLM involvement - handles mechanical operations only.
- *
- * Usage: node sync-tests.js <changed-verification-doc-path>
- *        node sync-tests.js --help
+ * Exports testable functions. CLI entry point at bottom.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve, basename } from 'node:path';
+import { resolve, basename, join } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
-import { readManifestFile, writeManifestFile, acquireLock, appendPendingQueue } from './lib/manifest.js';
+import { readManifestFileSync, writeManifestFileSync, acquireLockSync, appendPendingQueue } from './lib/manifest.js';
+import { fileURLToPath } from 'node:url';
 
 const ITEM_PATTERN = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
 
-if (process.argv.includes('--help') || process.argv.length < 3) {
-  console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
-
-Usage: node sync-tests.js <verification-doc-path>
-       node sync-tests.js --help
-
-Reads the verification doc, computes content hashes, and updates the manifest.
-New or substantially changed items are queued in pending-generation.json
-for the LLM-powered skill to process.`);
-  process.exit(0);
-}
-
-const docPath = resolve(process.argv[2]);
-const projectDir = process.cwd();
-
-if (!existsSync(docPath)) {
-  console.error(`File not found: ${docPath}`);
-  process.exit(1);
-}
-
-// Acquire lock
-const release = acquireLock(projectDir);
-
-try {
-  const items = readManifestFile(projectDir, 'items.json') || { version: '1.0', generated_at: new Date().toISOString(), items: {} };
-  const docContent = readFileSync(docPath, 'utf8');
-  const pageTag = basename(docPath, '.md');
-
-  // Parse items from the doc
-  const docItems = new Map();
+/** Parse verification items from markdown content. */
+export function parseVerificationItems(markdown) {
+  const items = [];
+  const pattern = new RegExp(ITEM_PATTERN.source, 'gm');
   let match;
-  while ((match = ITEM_PATTERN.exec(docContent)) !== null) {
+  while ((match = pattern.exec(markdown)) !== null) {
     const [fullMatch, depth, id, action, expected, expectedType] = match;
-    // Capture annotation block if present (lines after the item until next item or section)
-    const afterMatch = docContent.substring(match.index + fullMatch.length);
+    const afterMatch = markdown.substring(match.index + fullMatch.length);
     const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
     const annotation = annotationMatch ? annotationMatch[1] : '';
     const fullText = fullMatch + (annotation ? '\n' + annotation : '');
-
-    docItems.set(id, { depth, action, expected, expectedType, hash: hashItem(fullText), fullText });
+    items.push({
+      id, depth, action, expected, expectedType,
+      contentHash: hashItem(id, fullText),
+      fullText
+    });
   }
+  return items;
+}
 
-  // Find items in manifest belonging to this doc
-  const manifestItemsForDoc = new Map();
-  for (const [id, item] of Object.entries(items.items)) {
-    if (item.source_doc && item.source_doc.endsWith(basename(docPath))) {
-      manifestItemsForDoc.set(id, item);
+/** Detect changes between doc items and manifest items. */
+export function detectChanges(docItems, manifestItems) {
+  const added = [];
+  const removed = [];
+  const modified = [];
+  const unchanged = [];
+
+  const docMap = new Map(docItems.map(i => [i.id, i]));
+  const manifestIds = new Set(Object.keys(manifestItems));
+
+  // Removed: in manifest but not in doc
+  for (const id of manifestIds) {
+    if (!docMap.has(id)) {
+      removed.push({ id, ...manifestItems[id] });
     }
   }
 
-  let added = 0, removed = 0, modified = 0, unchanged = 0, queued = 0;
-  const pendingIds = [];
-
-  // Process removals (in manifest but not in doc)
-  for (const [id, item] of manifestItemsForDoc) {
-    if (!docItems.has(id)) {
-      // Remove from manifest
-      delete items.items[id];
-      // Remove from spec file if it exists
-      if (item.spec_file && existsSync(item.spec_file)) {
-        removeTestBlock(item.spec_file, id);
-      }
-      removed++;
-    }
-  }
-
-  // Process additions and modifications
-  for (const [id, docItem] of docItems) {
-    const existing = items.items[id];
-
+  // Added or modified
+  for (const item of docItems) {
+    const existing = manifestItems[item.id];
     if (!existing) {
-      // New item — queue for LLM generation
-      items.items[id] = {
-        source_doc: docPath,
-        spec_file: `tests/verification-playwright/pages/${pageTag}.spec.ts`,
-        content_hash: docItem.hash,
-        generated_hash: null,
-        depth: docItem.depth,
-        status: 'pending',
-        pinned: false,
-        testids_required: [],
-        testids_missing: [],
-      };
-      pendingIds.push(id);
-      added++;
-      queued++;
-    } else if (existing.content_hash !== docItem.hash) {
-      // Changed — determine if minor or substantial
-      const isMinor = existing.depth === docItem.depth && isStructureSame(existing, docItem);
-
-      if (isMinor) {
-        // Minor text change — update hash, update comment in test
-        items.items[id].content_hash = docItem.hash;
-        modified++;
-      } else {
-        // Substantial change — queue for LLM regeneration
-        items.items[id].content_hash = docItem.hash;
-        items.items[id].depth = docItem.depth;
-        if (!existing.pinned) {
-          pendingIds.push(id);
-          queued++;
-        }
-        modified++;
-      }
+      added.push(item);
+    } else if (existing.content_hash !== item.contentHash) {
+      modified.push(item);
     } else {
-      unchanged++;
+      unchanged.push(item);
     }
   }
 
-  // Check for pinning (manual edits to generated tests)
-  for (const [id, item] of Object.entries(items.items)) {
-    if (item.generated_hash && item.spec_file && existsSync(item.spec_file) && !item.pinned) {
-      const currentTestHash = getTestBlockHash(item.spec_file, id);
-      if (currentTestHash && currentTestHash !== item.generated_hash) {
-        items.items[id].pinned = true;
-      }
+  return { added, removed, modified, unchanged };
+}
+
+/** Classify a modification as minor or substantial. */
+export function classifyModification(item, manifestEntry) {
+  if (item.depth !== manifestEntry.depth) return 'substantial';
+  if (item.expectedType !== manifestEntry.expected_type) return 'substantial';
+  return 'minor';
+}
+
+/** Remove a test block between @begin:ID / @end:ID markers from spec content. */
+export function removeTestBlock(specContent, itemId) {
+  const beginMarker = `// @begin:${itemId}`;
+  const endMarker = `// @end:${itemId}`;
+  const beginIdx = specContent.indexOf(beginMarker);
+  const endIdx = specContent.indexOf(endMarker);
+  if (beginIdx === -1 || endIdx === -1) return specContent;
+  const before = specContent.substring(0, beginIdx);
+  const after = specContent.substring(endIdx + endMarker.length);
+  return before + after.replace(/^\n/, '');
+}
+
+/** Detect if a test has been manually edited (pinning). */
+export function detectPinning(specContent, itemId, generatedHash) {
+  const beginMarker = `// @begin:${itemId}`;
+  const endMarker = `// @end:${itemId}`;
+  const beginIdx = specContent.indexOf(beginMarker);
+  const endIdx = specContent.indexOf(endMarker);
+  if (beginIdx === -1 || endIdx === -1) return false;
+  const block = specContent.substring(beginIdx + beginMarker.length, endIdx);
+  const currentHash = hashGeneratedTest(block);
+  return currentHash !== generatedHash;
+}
+
+/** Run the full sync operation. */
+export async function syncTests(docPath, manifestDir) {
+  const itemsPath = join(manifestDir, 'items.json');
+  let items;
+  try {
+    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
+  } catch {
+    items = { version: '1.0', items: {} };
+  }
+
+  const docContent = readFileSync(docPath, 'utf8');
+  const docItems = parseVerificationItems(docContent);
+  const changes = detectChanges(docItems, items.items);
+
+  // Process removals
+  for (const removed of changes.removed) {
+    delete items.items[removed.id];
+  }
+
+  // Process additions
+  const pendingIds = [];
+  for (const added of changes.added) {
+    items.items[added.id] = {
+      content_hash: added.contentHash,
+      depth: added.depth,
+      status: 'pending',
+      pinned: false,
+    };
+    pendingIds.push(added.id);
+  }
+
+  // Process modifications
+  for (const mod of changes.modified) {
+    const existing = items.items[mod.id];
+    const classification = classifyModification(mod, existing);
+    items.items[mod.id].content_hash = mod.contentHash;
+    if (classification === 'substantial' && !existing.pinned) {
+      pendingIds.push(mod.id);
     }
   }
 
-  // Queue pending items
+  // Write pending queue
   if (pendingIds.length > 0) {
-    appendPendingQueue(projectDir, pendingIds);
+    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
+    let existing = [];
+    try { existing = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch {}
+    const merged = [...new Set([...existing, ...pendingIds])];
+    writeFileSync(pendingPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
   }
 
-  // Update manifest
+  // Write updated manifest
   items.generated_at = new Date().toISOString();
-  writeManifestFile(projectDir, 'items.json', items);
+  writeFileSync(itemsPath, JSON.stringify(items, null, 2) + '\n', 'utf8');
 
-  // Summary
-  const parts = [];
-  if (added) parts.push(`${added} added`);
-  if (modified) parts.push(`${modified} modified`);
-  if (removed) parts.push(`${removed} removed`);
-  if (unchanged) parts.push(`${unchanged} unchanged`);
-  if (queued) parts.push(`${queued} queued for generation`);
-  console.log(`sync-tests: ${pageTag} — ${parts.join(', ') || 'no changes'}`);
-} finally {
-  release();
+  return {
+    added: changes.added.length,
+    removed: changes.removed.length,
+    modified: changes.modified.length,
+    unchanged: changes.unchanged.length,
+    pendingGeneration: pendingIds.length,
+  };
 }
 
-function isStructureSame(existing, docItem) {
-  // Same depth and same general structure = minor change
-  return existing.depth === docItem.depth;
-}
+// --- CLI entry point ---
+const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  if (process.argv.includes('--help') || process.argv.length < 3) {
+    console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
 
-function removeTestBlock(specFile, itemId) {
+Usage: node sync-tests.js <verification-doc-path>
+       node sync-tests.js --help`);
+    process.exit(0);
+  }
+
+  const docPath = resolve(process.argv[2]);
+  const projectDir = process.cwd();
+
+  if (!existsSync(docPath)) {
+    console.error(`File not found: ${docPath}`);
+    process.exit(1);
+  }
+
+  const release = acquireLockSync(projectDir);
   try {
-    const content = readFileSync(specFile, 'utf8');
-    const beginMarker = `// @begin:${itemId}`;
-    const endMarker = `// @end:${itemId}`;
-    const beginIdx = content.indexOf(beginMarker);
-    const endIdx = content.indexOf(endMarker);
-    if (beginIdx !== -1 && endIdx !== -1) {
-      const before = content.substring(0, beginIdx);
-      const after = content.substring(endIdx + endMarker.length);
-      writeFileSync(specFile, before + after.replace(/^\n/, ''), 'utf8');
-    }
-  } catch { /* spec file issues are non-fatal */ }
-}
-
-function getTestBlockHash(specFile, itemId) {
-  try {
-    const content = readFileSync(specFile, 'utf8');
-    const beginMarker = `// @begin:${itemId}`;
-    const endMarker = `// @end:${itemId}`;
-    const beginIdx = content.indexOf(beginMarker);
-    const endIdx = content.indexOf(endMarker);
-    if (beginIdx !== -1 && endIdx !== -1) {
-      const block = content.substring(beginIdx + beginMarker.length, endIdx);
-      return hashGeneratedTest(block);
-    }
-  } catch { /* non-fatal */ }
-  return null;
+    const manifestDir = join(projectDir, 'tests', 'verification-playwright', 'manifest');
+    const result = await syncTests(docPath, manifestDir);
+    const parts = [];
+    if (result.added) parts.push(`${result.added} added`);
+    if (result.modified) parts.push(`${result.modified} modified`);
+    if (result.removed) parts.push(`${result.removed} removed`);
+    if (result.unchanged) parts.push(`${result.unchanged} unchanged`);
+    if (result.pendingGeneration) parts.push(`${result.pendingGeneration} queued`);
+    console.log(`sync-tests: ${basename(docPath, '.md')} — ${parts.join(', ') || 'no changes'}`);
+  } finally {
+    release();
+  }
 }
