@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 2.1.0
+version: 2.2.0
 author: Bernier LLC
 ---
 
@@ -451,6 +451,27 @@ Components that display computed, derived, or time-sensitive values are high-ris
 
 This data is embedded in verification items as `<!-- BUSINESS-CONTEXT -->` annotations (see item format in Phase 2).
 
+#### Layer 3e: State Dependency Analysis
+
+Forms with interdependent fields are a top source of bugs that pass functional testing but fail in real usage. Layer 3e traces cross-field state dependencies and generates verification items covering state transition edge cases. Read `references/state-dependency-format.md` for the annotation format consumed by playwright-test-generator.
+
+**Step 1: Trace conditional rendering chains.** Scan for conditionals (`if`, ternaries, `&&` guards) where one field's value controls the visibility of other form sections. For each chain, record the trigger field, the condition, and all affected sections.
+
+**Step 2: Read useEffect/watch dependency arrays.** React Hook Form `watch('field')` calls and `useEffect` hooks with field values in their dependency arrays are explicit dependency declarations. Read the dependency array and the effect body to understand what cascades when the watched field changes.
+
+**Step 3: Identify cascading clears.** When field A changes and field B's current value becomes invalid — e.g., removing a promoter who was selected as flyer uploader — a cascading clear should fire. Trace which fields reference other fields' values (via form state, context, or derived selectors) and determine whether the code handles invalidation.
+
+**Step 4: Audit submission payload for stale references.** Read the submit handler and trace how the payload is constructed. Check whether hidden or cleared fields still contribute values to the submission. A field that was conditionally hidden but whose value remains in form state is a stale reference — it may cause FK constraint violations, orphaned data, or silent corruption.
+
+**Recording:** For each state dependency found, produce:
+1. The trigger (which field change initiates the cascade)
+2. The affected fields (which fields depend on the trigger)
+3. The expected cascade (what should happen — clear, hide, revalidate, disable)
+4. A code reference (file and hook/effect that implements the dependency)
+5. The failure mode (what goes wrong if the cascade doesn't fire — FK violation, stale data, UI inconsistency)
+
+This data is embedded in verification items as `<!-- STATE-DEPENDENCY -->` annotations (see Phase 2 generation rules and `references/state-dependency-format.md`).
+
 ### Layer 4: Error Path Analysis
 
 For every interaction point from Layer 3, determine error handling status:
@@ -586,6 +607,30 @@ For each component where Layer 3d extracted business rules for dynamic values:
 - `[deep]` — For values derived from multiple data sources: verify the aggregation is correct. E.g., "Verify '3 of 5 artists confirmed' badge matches the count of confirmed artists in the list below --- Count in badge equals number of artists with 'Confirmed' status. *Expected: success*"
 
 **Why this matters:** A component can render without errors, pass all functional tests, and still display a value that is wrong according to the business rules. The verification-writer has the code context to know what values *should* be — the browser-verification skill only sees what *is*. The `BUSINESS-CONTEXT` annotations bridge that gap.
+
+**State dependency generation rules (using Layer 3e data):**
+
+For each state dependency found in Layer 3e, generate verification items with `<!-- STATE-DEPENDENCY -->` annotations:
+
+- `[deep]` — For each conditional rendering chain: change the trigger field value to activate the condition, then change it back. Verify dependent sections hide AND their state is cleared from the submission payload. Attach a `<!-- STATE-DEPENDENCY -->` annotation with the trigger, affected fields, expected cascade, code reference, and failure mode.
+- `[deep]` — For each cascading clear: set up the dependent state (e.g., select a promoter as flyer uploader), then invalidate it (e.g., remove that promoter). Verify the dependent field is cleared or the form prevents submission with a stale reference.
+- `[standard]` — **Severity elevation:** When the failure mode is FK constraint violation, data corruption, or orphaned records, elevate to `[standard]`. These are not edge cases — they are data integrity failures that affect production.
+- `[deep]` — For each submission payload concern: set up a state where a hidden or cleared field might still have a stale value, then submit. Verify the payload does not include the stale reference (inspect the network request body).
+
+```markdown
+- [ ] [deep] **EVT-FRM-SD-01** Add promoter, set as flyer uploader,
+  then change event type to Private --- Promoter-dependent flyer config
+  is cleared or form prevents submission. *Expected: success*
+<!-- STATE-DEPENDENCY:
+  trigger: eventType field change to non-music type
+  affected_fields: [flyer_uploader_id, responsibility_person_id]
+  expected_cascade: [clear flyer_uploader_id, clear responsibility selections, hide artist/promoter sections]
+  code_ref: EventForm.tsx:useEffect watching eventType
+  failure_mode: FK constraint violation if stale ID submitted
+-->
+```
+
+**Why this matters:** State dependencies are invisible in isolated field testing. A field can pass all its own validation, accept valid input, and display correctly — but submit a stale reference because a cascading clear never fired. These bugs only surface when fields are tested *in combination*, which is exactly what Layer 3e verification items enforce.
 
 **Browser-First Verification:**
 
@@ -774,6 +819,10 @@ HTML visualization: [flow-views | sitemap | both | none]
 | Including shared components as nodes in flow diagrams | Shared components (nav, toasts, modals) are infrastructure — exclude from diagrams unless the component IS the interaction |
 | Generating HTML artifact without checking preference | Always check memory for HTML visualization preference; ask on first run or when field is missing; respect "skip" choice |
 | Inconsistent user type colors across visualizations | Use the deterministic alphabetical palette from flow-visualization.md — never assign colors ad hoc |
+| Testing fields in isolation without state dependency coverage | If Layer 3e finds cross-field dependencies, generate items that test the fields in combination — isolated field tests miss cascading clear failures |
+| Not tracing submit handlers for stale references | Read the submit handler payload construction — a hidden field's stale value in state can cause FK violations even when the UI looks correct |
+| Marking all state dependency items as [deep] | FK constraint violations and data corruption failure modes get elevated to [standard] — these are not edge cases |
+| Missing STATE-DEPENDENCY annotations | Every state dependency item needs a `<!-- STATE-DEPENDENCY -->` annotation with all five fields (trigger, affected_fields, expected_cascade, code_ref, failure_mode) |
 
 ## Red Flags — STOP
 
