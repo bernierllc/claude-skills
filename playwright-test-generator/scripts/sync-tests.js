@@ -11,7 +11,8 @@ import { readManifestFileSync, writeManifestFileSync, acquireLockSync, appendPen
 import { fileURLToPath } from 'node:url';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- expected. *Expected: type*
-const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+// ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30)
+const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
 // Format B: - [ ] [depth] **Action text** --- expected. _Expected: type_  (no separate ID)
 const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected: (.+?)[_*]/gm;
 
