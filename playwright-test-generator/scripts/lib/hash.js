@@ -1,71 +1,77 @@
+/**
+ * Content hash normalization for verification items.
+ * SHA-256 of normalized markdown to prevent churn from whitespace reformatting.
+ */
+
 import { createHash } from 'node:crypto';
 
 /**
- * Normalize text for hashing:
- * 1. Strip leading/trailing whitespace per line
- * 2. Collapse multiple consecutive spaces to a single space
+ * Normalize and hash a verification item's text content.
+ * @param {string} itemText - The raw verification item text including annotations
+ * @returns {string} Hex-encoded SHA-256 hash
  */
-export function normalizeText(text) {
-  return text
-    .split('\n')
-    .map(line => line.trim())
-    .join('\n')
-    .replace(/ {2,}/g, ' ')
-    .trim();
+export function hashItem(itemText) {
+  const normalized = normalizeItemText(itemText);
+  return createHash('sha256').update(normalized, 'utf8').digest('hex');
 }
 
 /**
- * Remove HTML comment markers from annotation text.
+ * Normalize item text for consistent hashing.
  */
-export function stripCommentMarkers(text) {
-  return text.replace(/<!--/g, '').replace(/-->/g, '');
+export function normalizeItemText(text) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  let result = lines.join('\n');
+
+  // Collapse multiple spaces
+  result = result.replace(/ {2,}/g, ' ');
+
+  // Lowercase item IDs (pattern: **ITEM-ID**)
+  result = result.replace(/\*\*([A-Z0-9][-A-Z0-9]*)\*\*/g, (_, id) => `**${id.toLowerCase()}**`);
+
+  // Remove HTML comment markers
+  result = result.replace(/<!--/g, '').replace(/-->/g, '');
+
+  // Sort annotation fields alphabetically within blocks
+  result = sortAnnotationFields(result);
+
+  return result;
 }
 
-/**
- * Sort annotation fields alphabetically within an annotation block.
- * Fields are key: value lines after the header line.
- */
-export function sortAnnotationFields(annotationBlock) {
-  const lines = annotationBlock.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length <= 1) return lines.join('\n');
-  const header = lines[0];
-  const fields = lines.slice(1);
-  fields.sort((a, b) => a.localeCompare(b));
-  return [header, ...fields].join('\n');
-}
+function sortAnnotationFields(text) {
+  const annotationPattern = /^\s*\w[\w_]*:/;
+  const lines = text.split('\n');
+  const result = [];
+  let annotationBuffer = [];
+  let inAnnotation = false;
 
-/**
- * Parse annotation blocks (<!-- ... -->) from item text.
- */
-export function parseAnnotations(text) {
-  const annotations = [];
-  let body = text;
-  const annotationRegex = /<!--\s*([\s\S]*?)\s*-->/g;
-  let match;
-  while ((match = annotationRegex.exec(text)) !== null) {
-    annotations.push(match[1]);
-    body = body.replace(match[0], '');
+  for (const line of lines) {
+    if (annotationPattern.test(line.trim())) {
+      inAnnotation = true;
+      annotationBuffer.push(line);
+    } else {
+      if (inAnnotation && annotationBuffer.length > 0) {
+        annotationBuffer.sort((a, b) => a.trim().localeCompare(b.trim()));
+        result.push(...annotationBuffer);
+        annotationBuffer = [];
+        inAnnotation = false;
+      }
+      result.push(line);
+    }
   }
-  return { body: body.trim(), annotations };
+
+  if (annotationBuffer.length > 0) {
+    annotationBuffer.sort((a, b) => a.trim().localeCompare(b.trim()));
+    result.push(...annotationBuffer);
+  }
+
+  return result.join('\n');
 }
 
 /**
- * Hash a verification item producing a consistent SHA-256 hex string.
- * @param {string} itemId - The item ID (e.g., "EVT-FRM-TKT-03")
- * @param {string} itemText - The full item text including annotations
- * @returns {string} Hex SHA-256 hash
+ * Hash the content of a generated test (between @begin/@end markers).
+ * @param {string} testContent - The test code between markers
+ * @returns {string} Hex-encoded SHA-256 hash
  */
-export function hashItem(itemId, itemText) {
-  const normalizedId = itemId.toLowerCase();
-  const { body, annotations } = parseAnnotations(itemText);
-  const normalizedBody = normalizeText(body);
-
-  const sortedAnnotations = annotations
-    .map(a => stripCommentMarkers(a))
-    .map(a => sortAnnotationFields(a))
-    .sort()
-    .join('\n');
-
-  const content = `${normalizedId}\n${normalizedBody}\n${sortedAnnotations}`;
-  return createHash('sha256').update(content).digest('hex');
+export function hashGeneratedTest(testContent) {
+  return createHash('sha256').update(testContent.trim(), 'utf8').digest('hex');
 }

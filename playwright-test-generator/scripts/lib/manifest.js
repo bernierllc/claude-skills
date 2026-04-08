@@ -1,85 +1,81 @@
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-
 /**
- * Read and parse a manifest JSON file.
- * Returns null if file doesn't exist (no throw).
+ * Manifest file operations with lockfile-based concurrency safety.
  */
-export async function readManifestFile(filePath) {
-  try {
-    const content = await readFile(filePath, 'utf-8');
-    return JSON.parse(content);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return null;
-    }
-    throw err;
-  }
-}
 
-/**
- * Write a manifest JSON file atomically (write to .tmp, then rename).
- * Creates the parent directory if it doesn't exist.
- */
-export async function writeManifestFile(filePath, data) {
-  const dir = dirname(filePath);
-  await mkdir(dir, { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-  await rename(tmpPath, filePath);
-}
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 
 const LOCK_STALE_MS = 10_000;
 
-/**
- * Acquire a lockfile for manifest operations.
- * Uses PID-based staleness detection — locks older than 10s are overridden.
- */
-export async function acquireLock(manifestDir, options = {}) {
-  const { retryMs = 200, maxWaitMs = 15_000 } = options;
-  const lockPath = join(manifestDir, '.lock');
-  const startTime = Date.now();
-
-  while (true) {
-    try {
-      await writeFile(lockPath, JSON.stringify({ pid: process.pid, time: Date.now() }), {
-        flag: 'wx'
-      });
-      return; // Lock acquired
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-
-      // Lock exists — check staleness
-      try {
-        const lockContent = await readFile(lockPath, 'utf-8');
-        const lockData = JSON.parse(lockContent);
-        const age = Date.now() - lockData.time;
-
-        if (age > LOCK_STALE_MS) {
-          await unlink(lockPath);
-          continue;
-        }
-      } catch {
-        // Lock file disappeared or is corrupt — retry
-        continue;
-      }
-
-      if (Date.now() - startTime > maxWaitMs) {
-        throw new Error(`Failed to acquire lock after ${maxWaitMs}ms`);
-      }
-      await new Promise(resolve => setTimeout(resolve, retryMs));
-    }
+export function readManifestFile(dir, filename) {
+  const filePath = join(dir, 'tests', 'verification-playwright', 'manifest', filename);
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
   }
 }
 
-/**
- * Release the lockfile.
- */
-export async function releaseLock(manifestDir) {
+export function writeManifestFile(dir, filename, data) {
+  const manifestDir = join(dir, 'tests', 'verification-playwright', 'manifest');
+  mkdirSync(manifestDir, { recursive: true });
+  const filePath = join(manifestDir, filename);
+  const tmpPath = `${filePath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  renameSync(tmpPath, filePath);
+}
+
+export function acquireLock(dir) {
+  const manifestDir = join(dir, 'tests', 'verification-playwright', 'manifest');
+  mkdirSync(manifestDir, { recursive: true });
   const lockPath = join(manifestDir, '.lock');
-  try {
-    await unlink(lockPath);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+
+  if (existsSync(lockPath)) {
+    try {
+      const lockData = JSON.parse(readFileSync(lockPath, 'utf8'));
+      const age = Date.now() - lockData.timestamp;
+      if (age < LOCK_STALE_MS && isPidAlive(lockData.pid)) {
+        const start = Date.now();
+        while (Date.now() - start < LOCK_STALE_MS) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+          if (!existsSync(lockPath)) break;
+          try {
+            const cur = JSON.parse(readFileSync(lockPath, 'utf8'));
+            if (!isPidAlive(cur.pid) || Date.now() - cur.timestamp >= LOCK_STALE_MS) break;
+          } catch { break; }
+        }
+      }
+    } catch { /* corrupted lock, override */ }
   }
+
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, timestamp: Date.now() }), 'utf8');
+  return () => releaseLock(dir);
+}
+
+export function releaseLock(dir) {
+  const lockPath = join(dir, 'tests', 'verification-playwright', 'manifest', '.lock');
+  try { unlinkSync(lockPath); } catch { /* already removed */ }
+}
+
+function isPidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export function readPendingQueue(dir) {
+  const queuePath = join(dir, 'tests', 'verification-playwright', 'pending-generation.json');
+  try { return [...new Set(JSON.parse(readFileSync(queuePath, 'utf8')))]; } catch { return []; }
+}
+
+export function appendPendingQueue(dir, itemIds) {
+  const queuePath = join(dir, 'tests', 'verification-playwright', 'pending-generation.json');
+  let existing = [];
+  try { existing = JSON.parse(readFileSync(queuePath, 'utf8')); } catch { /* new file */ }
+  const merged = [...new Set([...existing, ...itemIds])];
+  mkdirSync(join(dir, 'tests', 'verification-playwright'), { recursive: true });
+  writeFileSync(queuePath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+}
+
+export function clearPendingQueue(dir) {
+  const queuePath = join(dir, 'tests', 'verification-playwright', 'pending-generation.json');
+  try { unlinkSync(queuePath); } catch { /* already gone */ }
 }

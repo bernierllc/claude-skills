@@ -1,211 +1,191 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { hashItem } from './lib/hash.js';
-import { readManifestFile, writeManifestFile, acquireLock, releaseLock } from './lib/manifest.js';
-
 /**
- * Parse verification items from a markdown doc.
- * Pattern: - [ ] [depth] **ID** action --- expected. *Expected: type*
+ * sync-tests.js - Deterministic manifest sync for verification-to-Playwright pipeline.
+ * Called by the postToolUse hook when verification docs are edited.
+ * No LLM involvement - handles mechanical operations only.
+ *
+ * Usage: node sync-tests.js <changed-verification-doc-path>
+ *        node sync-tests.js --help
  */
-export function parseVerificationItems(markdown) {
-  const items = [];
-  const lines = markdown.split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const lineMatch = line.match(/^- \[ \] \[(\w+)\] \*\*([A-Z0-9-]+)\*\*\s+(.+)/);
-    if (lineMatch) {
-      const depth = lineMatch[1];
-      const id = lineMatch[2];
-      const text = lineMatch[3];
 
-      // Collect continuation lines and annotation blocks
-      let fullText = line;
-      let j = i + 1;
-      while (j < lines.length && !lines[j].match(/^- \[ \]/) && !lines[j].match(/^#/)) {
-        fullText += '\n' + lines[j];
-        j++;
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { resolve, basename } from 'node:path';
+import { hashItem, hashGeneratedTest } from './lib/hash.js';
+import { readManifestFile, writeManifestFile, acquireLock, appendPendingQueue } from './lib/manifest.js';
+
+const ITEM_PATTERN = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+
+if (process.argv.includes('--help') || process.argv.length < 3) {
+  console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
+
+Usage: node sync-tests.js <verification-doc-path>
+       node sync-tests.js --help
+
+Reads the verification doc, computes content hashes, and updates the manifest.
+New or substantially changed items are queued in pending-generation.json
+for the LLM-powered skill to process.`);
+  process.exit(0);
+}
+
+const docPath = resolve(process.argv[2]);
+const projectDir = process.cwd();
+
+if (!existsSync(docPath)) {
+  console.error(`File not found: ${docPath}`);
+  process.exit(1);
+}
+
+// Acquire lock
+const release = acquireLock(projectDir);
+
+try {
+  const items = readManifestFile(projectDir, 'items.json') || { version: '1.0', generated_at: new Date().toISOString(), items: {} };
+  const docContent = readFileSync(docPath, 'utf8');
+  const pageTag = basename(docPath, '.md');
+
+  // Parse items from the doc
+  const docItems = new Map();
+  let match;
+  while ((match = ITEM_PATTERN.exec(docContent)) !== null) {
+    const [fullMatch, depth, id, action, expected, expectedType] = match;
+    // Capture annotation block if present (lines after the item until next item or section)
+    const afterMatch = docContent.substring(match.index + fullMatch.length);
+    const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
+    const annotation = annotationMatch ? annotationMatch[1] : '';
+    const fullText = fullMatch + (annotation ? '\n' + annotation : '');
+
+    docItems.set(id, { depth, action, expected, expectedType, hash: hashItem(fullText), fullText });
+  }
+
+  // Find items in manifest belonging to this doc
+  const manifestItemsForDoc = new Map();
+  for (const [id, item] of Object.entries(items.items)) {
+    if (item.source_doc && item.source_doc.endsWith(basename(docPath))) {
+      manifestItemsForDoc.set(id, item);
+    }
+  }
+
+  let added = 0, removed = 0, modified = 0, unchanged = 0, queued = 0;
+  const pendingIds = [];
+
+  // Process removals (in manifest but not in doc)
+  for (const [id, item] of manifestItemsForDoc) {
+    if (!docItems.has(id)) {
+      // Remove from manifest
+      delete items.items[id];
+      // Remove from spec file if it exists
+      if (item.spec_file && existsSync(item.spec_file)) {
+        removeTestBlock(item.spec_file, id);
       }
-
-      // Parse expected type from text
-      const expectedMatch = text.match(/\*Expected:\s*(.+?)\*/);
-      const expectedType = expectedMatch ? expectedMatch[1].trim() : null;
-
-      // Extract action and expected from --- separator
-      const parts = text.split('---');
-      const action = parts[0].trim();
-      const expected = parts.length > 1 ? parts[1].trim() : '';
-
-      items.push({
-        id,
-        depth,
-        action,
-        expected,
-        expectedType,
-        fullText,
-        contentHash: hashItem(id, fullText)
-      });
-      i = j;
-    } else {
-      i++;
-    }
-  }
-  return items;
-}
-
-/**
- * Detect changes between parsed doc items and the manifest.
- */
-export function detectChanges(docItems, manifestItems) {
-  const docMap = new Map(docItems.map(item => [item.id, item]));
-  const manifestMap = new Map(Object.entries(manifestItems || {}));
-
-  const added = [];
-  const removed = [];
-  const modified = [];
-  const unchanged = [];
-
-  for (const [id, item] of docMap) {
-    if (!manifestMap.has(id)) {
-      added.push(item);
-    } else {
-      const mItem = manifestMap.get(id);
-      if (mItem.content_hash !== item.contentHash) {
-        modified.push({ item, manifestEntry: mItem });
-      } else {
-        unchanged.push(item);
-      }
+      removed++;
     }
   }
 
-  for (const [id, mItem] of manifestMap) {
-    if (!docMap.has(id)) {
-      removed.push({ id, ...mItem });
-    }
-  }
+  // Process additions and modifications
+  for (const [id, docItem] of docItems) {
+    const existing = items.items[id];
 
-  return { added, removed, modified, unchanged };
-}
-
-/**
- * Classify a modification as minor or substantial.
- * Minor: same depth + same expected type, only description text changed.
- * Substantial: depth or expected type changed.
- */
-export function classifyModification(item, manifestEntry) {
-  const depthChanged = item.depth !== manifestEntry.depth;
-  const typeChanged = item.expectedType !== manifestEntry.expected_type;
-
-  if (depthChanged || typeChanged) {
-    return 'substantial';
-  }
-  return 'minor';
-}
-
-/**
- * Remove test code between @begin:ID / @end:ID markers.
- */
-export function removeTestBlock(specContent, itemId) {
-  const beginMarker = `// @begin:${itemId}`;
-  const endMarker = `// @end:${itemId}`;
-  const beginIdx = specContent.indexOf(beginMarker);
-  const endIdx = specContent.indexOf(endMarker);
-
-  if (beginIdx === -1 || endIdx === -1) return specContent;
-
-  const endOfEndMarker = endIdx + endMarker.length;
-  const after = specContent.slice(endOfEndMarker);
-  const trimmedAfter = after.startsWith('\n') ? after.slice(1) : after;
-
-  return specContent.slice(0, beginIdx) + trimmedAfter;
-}
-
-/**
- * Detect if a test has been manually edited (pinned).
- * Compares the actual test code hash against generated_hash in manifest.
- */
-export function detectPinning(specContent, itemId, generatedHash) {
-  const beginMarker = `// @begin:${itemId}`;
-  const endMarker = `// @end:${itemId}`;
-  const beginIdx = specContent.indexOf(beginMarker);
-  const endIdx = specContent.indexOf(endMarker);
-
-  if (beginIdx === -1 || endIdx === -1) return false;
-
-  const testCode = specContent.slice(beginIdx, endIdx + endMarker.length);
-  const actualHash = hashItem(itemId, testCode);
-  return actualHash !== generatedHash;
-}
-
-/**
- * Main sync entry point.
- */
-export async function syncTests(verificationDocPath, manifestDir) {
-  const docContent = await readFile(verificationDocPath, 'utf-8');
-  const items = parseVerificationItems(docContent);
-
-  await acquireLock(manifestDir);
-  try {
-    const itemsManifest = await readManifestFile(join(manifestDir, 'items.json'));
-    const manifestItems = itemsManifest?.items || {};
-
-    const changes = detectChanges(items, manifestItems);
-    const pendingGeneration = [];
-
-    for (const removed of changes.removed) {
-      delete manifestItems[removed.id];
-    }
-
-    for (const { item, manifestEntry } of changes.modified) {
-      const classification = classifyModification(item, manifestEntry);
-      if (classification === 'substantial') {
-        pendingGeneration.push(item.id);
-      }
-      manifestItems[item.id] = {
-        ...manifestEntry,
-        content_hash: item.contentHash,
-        depth: item.depth,
-        expected_type: item.expectedType
-      };
-    }
-
-    for (const item of changes.added) {
-      pendingGeneration.push(item.id);
-      manifestItems[item.id] = {
-        content_hash: item.contentHash,
-        depth: item.depth,
-        expected_type: item.expectedType,
+    if (!existing) {
+      // New item — queue for LLM generation
+      items.items[id] = {
+        source_doc: docPath,
+        spec_file: `tests/verification-playwright/pages/${pageTag}.spec.ts`,
+        content_hash: docItem.hash,
+        generated_hash: null,
+        depth: docItem.depth,
         status: 'pending',
-        pinned: false
+        pinned: false,
+        testids_required: [],
+        testids_missing: [],
       };
+      pendingIds.push(id);
+      added++;
+      queued++;
+    } else if (existing.content_hash !== docItem.hash) {
+      // Changed — determine if minor or substantial
+      const isMinor = existing.depth === docItem.depth && isStructureSame(existing, docItem);
+
+      if (isMinor) {
+        // Minor text change — update hash, update comment in test
+        items.items[id].content_hash = docItem.hash;
+        modified++;
+      } else {
+        // Substantial change — queue for LLM regeneration
+        items.items[id].content_hash = docItem.hash;
+        items.items[id].depth = docItem.depth;
+        if (!existing.pinned) {
+          pendingIds.push(id);
+          queued++;
+        }
+        modified++;
+      }
+    } else {
+      unchanged++;
     }
-
-    await writeManifestFile(join(manifestDir, 'items.json'), {
-      version: '1.0',
-      items: manifestItems
-    });
-
-    if (pendingGeneration.length > 0) {
-      const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-      let existing = [];
-      try {
-        const raw = await readFile(pendingPath, 'utf-8');
-        existing = JSON.parse(raw);
-      } catch { /* file may not exist */ }
-
-      const merged = [...new Set([...existing, ...pendingGeneration])];
-      await writeFile(pendingPath, JSON.stringify(merged, null, 2) + '\n');
-    }
-
-    return {
-      added: changes.added.length,
-      removed: changes.removed.length,
-      modified: changes.modified.length,
-      unchanged: changes.unchanged.length,
-      pendingGeneration: pendingGeneration.length
-    };
-  } finally {
-    await releaseLock(manifestDir);
   }
+
+  // Check for pinning (manual edits to generated tests)
+  for (const [id, item] of Object.entries(items.items)) {
+    if (item.generated_hash && item.spec_file && existsSync(item.spec_file) && !item.pinned) {
+      const currentTestHash = getTestBlockHash(item.spec_file, id);
+      if (currentTestHash && currentTestHash !== item.generated_hash) {
+        items.items[id].pinned = true;
+      }
+    }
+  }
+
+  // Queue pending items
+  if (pendingIds.length > 0) {
+    appendPendingQueue(projectDir, pendingIds);
+  }
+
+  // Update manifest
+  items.generated_at = new Date().toISOString();
+  writeManifestFile(projectDir, 'items.json', items);
+
+  // Summary
+  const parts = [];
+  if (added) parts.push(`${added} added`);
+  if (modified) parts.push(`${modified} modified`);
+  if (removed) parts.push(`${removed} removed`);
+  if (unchanged) parts.push(`${unchanged} unchanged`);
+  if (queued) parts.push(`${queued} queued for generation`);
+  console.log(`sync-tests: ${pageTag} — ${parts.join(', ') || 'no changes'}`);
+} finally {
+  release();
+}
+
+function isStructureSame(existing, docItem) {
+  // Same depth and same general structure = minor change
+  return existing.depth === docItem.depth;
+}
+
+function removeTestBlock(specFile, itemId) {
+  try {
+    const content = readFileSync(specFile, 'utf8');
+    const beginMarker = `// @begin:${itemId}`;
+    const endMarker = `// @end:${itemId}`;
+    const beginIdx = content.indexOf(beginMarker);
+    const endIdx = content.indexOf(endMarker);
+    if (beginIdx !== -1 && endIdx !== -1) {
+      const before = content.substring(0, beginIdx);
+      const after = content.substring(endIdx + endMarker.length);
+      writeFileSync(specFile, before + after.replace(/^\n/, ''), 'utf8');
+    }
+  } catch { /* spec file issues are non-fatal */ }
+}
+
+function getTestBlockHash(specFile, itemId) {
+  try {
+    const content = readFileSync(specFile, 'utf8');
+    const beginMarker = `// @begin:${itemId}`;
+    const endMarker = `// @end:${itemId}`;
+    const beginIdx = content.indexOf(beginMarker);
+    const endIdx = content.indexOf(endMarker);
+    if (beginIdx !== -1 && endIdx !== -1) {
+      const block = content.substring(beginIdx + beginMarker.length, endIdx);
+      return hashGeneratedTest(block);
+    }
+  } catch { /* non-fatal */ }
+  return null;
 }

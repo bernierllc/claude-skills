@@ -1,63 +1,75 @@
 #!/usr/bin/env node
+/**
+ * select-tier.js - Select test execution tier based on target branch.
+ * Reads manifest/config.json and matches branch to tier configuration.
+ *
+ * Usage: node select-tier.js <branch-name>
+ *        node select-tier.js --help
+ */
+
 import { readManifestFile } from './lib/manifest.js';
-import { join } from 'node:path';
 
-/**
- * Match a branch name against a pattern (glob-like).
- * Supports '*' as wildcard for all branches.
- */
-export function matchBranch(branch, patterns) {
-  if (!Array.isArray(patterns)) {
-    patterns = [patterns];
-  }
-  for (const pattern of patterns) {
-    if (pattern === '*') return true;
-    if (pattern === branch) return true;
-    // Simple glob: convert * to regex
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-    if (regex.test(branch)) return true;
-  }
-  return false;
+if (process.argv.includes('--help')) {
+  console.log(`select-tier.js - Select test execution tier based on target branch
+
+Usage: node select-tier.js <branch-name>
+       node select-tier.js --help
+
+Reads manifest/config.json and matches the branch against tier configurations.
+Tiers are checked in order: full -> thorough -> gate.
+Output: tier name to stdout, or empty string if no match.`);
+  process.exit(0);
 }
 
-/**
- * Validate that catch-all tier (*) is last in the tier order.
- * Tiers are checked in the order: full, thorough, gate.
- */
-export function validateTierOrder(tiers) {
-  const tierNames = Object.keys(tiers);
-  for (let i = 0; i < tierNames.length - 1; i++) {
-    const tier = tiers[tierNames[i]];
-    const branches = Array.isArray(tier.branches) ? tier.branches : [tier.branches];
-    if (branches.includes('*')) {
-      throw new Error(
-        `Catch-all tier '${tierNames[i]}' must be last, but it appears before '${tierNames[i + 1]}'`
-      );
-    }
+const branch = process.argv[2];
+if (!branch) {
+  process.exit(0);
+}
+
+const projectDir = process.cwd();
+const config = readManifestFile(projectDir, 'config.json');
+
+if (!config || !config.tiers) {
+  process.exit(0);
+}
+
+// Validate: catch-all tier must be last
+const tierNames = Object.keys(config.tiers);
+const tierOrder = ['full', 'thorough', 'gate'];
+
+// Check for catch-all not in last position
+for (let i = 0; i < tierNames.length - 1; i++) {
+  const tier = config.tiers[tierNames[i]];
+  if (tier.branches === '*') {
+    process.stderr.write(`Error: Tier "${tierNames[i]}" has branches: "*" (catch-all) but is not the last tier. Catch-all must be checked last.\n`);
+    process.exit(1);
   }
 }
 
-/**
- * Select the tier for a given branch.
- * Checks tiers in order: full -> thorough -> gate (most restrictive first).
- * Returns tier name or empty string if no match.
- */
-export async function selectTier(branch, projectRoot) {
-  const configPath = join(projectRoot, 'tests', 'verification-playwright', 'manifest', 'config.json');
-  const config = await readManifestFile(configPath);
+// Check tiers in order: most restrictive first
+for (const tierName of tierOrder) {
+  const tier = config.tiers[tierName];
+  if (!tier) continue;
 
-  if (!config || !config.tiers) {
-    return '';
+  if (matchesBranch(branch, tier.branches)) {
+    process.stdout.write(tierName);
+    process.exit(0);
   }
+}
 
-  validateTierOrder(config.tiers);
+// No match
+process.exit(0);
 
-  // Check tiers in defined order
-  for (const [tierName, tierConfig] of Object.entries(config.tiers)) {
-    if (matchBranch(branch, tierConfig.branches)) {
-      return tierName;
+function matchesBranch(branch, pattern) {
+  if (pattern === '*') return true;
+
+  const patterns = Array.isArray(pattern) ? pattern : [pattern];
+  return patterns.some(p => {
+    // Simple glob matching: * matches any string
+    if (p.includes('*')) {
+      const regex = new RegExp('^' + p.replace(/\*/g, '.*') + '$');
+      return regex.test(branch);
     }
-  }
-
-  return '';
+    return p === branch;
+  });
 }
