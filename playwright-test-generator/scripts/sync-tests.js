@@ -1,211 +1,194 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { hashItem } from './lib/hash.js';
-import { readManifestFile, writeManifestFile, acquireLock, releaseLock } from './lib/manifest.js';
-
 /**
- * Parse verification items from a markdown doc.
- * Pattern: - [ ] [depth] **ID** action --- expected. *Expected: type*
+ * sync-tests.js - Deterministic manifest sync for verification-to-Playwright pipeline.
+ * Exports testable functions. CLI entry point at bottom.
  */
+
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { resolve, basename, join } from 'node:path';
+import { hashItem, hashGeneratedTest } from './lib/hash.js';
+import { readManifestFileSync, writeManifestFileSync, acquireLockSync, appendPendingQueue } from './lib/manifest.js';
+import { fileURLToPath } from 'node:url';
+
+const ITEM_PATTERN = /^- \[ \] \[(\w+)\] \*\*([A-Z0-9][-A-Z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+
+/** Parse verification items from markdown content. */
 export function parseVerificationItems(markdown) {
   const items = [];
-  const lines = markdown.split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const lineMatch = line.match(/^- \[ \] \[(\w+)\] \*\*([A-Z0-9-]+)\*\*\s+(.+)/);
-    if (lineMatch) {
-      const depth = lineMatch[1];
-      const id = lineMatch[2];
-      const text = lineMatch[3];
-
-      // Collect continuation lines and annotation blocks
-      let fullText = line;
-      let j = i + 1;
-      while (j < lines.length && !lines[j].match(/^- \[ \]/) && !lines[j].match(/^#/)) {
-        fullText += '\n' + lines[j];
-        j++;
-      }
-
-      // Parse expected type from text
-      const expectedMatch = text.match(/\*Expected:\s*(.+?)\*/);
-      const expectedType = expectedMatch ? expectedMatch[1].trim() : null;
-
-      // Extract action and expected from --- separator
-      const parts = text.split('---');
-      const action = parts[0].trim();
-      const expected = parts.length > 1 ? parts[1].trim() : '';
-
-      items.push({
-        id,
-        depth,
-        action,
-        expected,
-        expectedType,
-        fullText,
-        contentHash: hashItem(id, fullText)
-      });
-      i = j;
-    } else {
-      i++;
-    }
+  const pattern = new RegExp(ITEM_PATTERN.source, 'gm');
+  let match;
+  while ((match = pattern.exec(markdown)) !== null) {
+    const [fullMatch, depth, id, action, expected, expectedType] = match;
+    const afterMatch = markdown.substring(match.index + fullMatch.length);
+    const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
+    const annotation = annotationMatch ? annotationMatch[1] : '';
+    const fullText = fullMatch + (annotation ? '\n' + annotation : '');
+    items.push({
+      id, depth, action, expected, expectedType,
+      contentHash: hashItem(id, fullText),
+      fullText
+    });
   }
   return items;
 }
 
-/**
- * Detect changes between parsed doc items and the manifest.
- */
+/** Detect changes between doc items and manifest items. */
 export function detectChanges(docItems, manifestItems) {
-  const docMap = new Map(docItems.map(item => [item.id, item]));
-  const manifestMap = new Map(Object.entries(manifestItems || {}));
-
   const added = [];
   const removed = [];
   const modified = [];
   const unchanged = [];
 
-  for (const [id, item] of docMap) {
-    if (!manifestMap.has(id)) {
-      added.push(item);
-    } else {
-      const mItem = manifestMap.get(id);
-      if (mItem.content_hash !== item.contentHash) {
-        modified.push({ item, manifestEntry: mItem });
-      } else {
-        unchanged.push(item);
-      }
+  const docMap = new Map(docItems.map(i => [i.id, i]));
+  const manifestIds = new Set(Object.keys(manifestItems));
+
+  // Removed: in manifest but not in doc
+  for (const id of manifestIds) {
+    if (!docMap.has(id)) {
+      removed.push({ id, ...manifestItems[id] });
     }
   }
 
-  for (const [id, mItem] of manifestMap) {
-    if (!docMap.has(id)) {
-      removed.push({ id, ...mItem });
+  // Added or modified
+  for (const item of docItems) {
+    const existing = manifestItems[item.id];
+    if (!existing) {
+      added.push(item);
+    } else if (existing.content_hash !== item.contentHash) {
+      modified.push(item);
+    } else {
+      unchanged.push(item);
     }
   }
 
   return { added, removed, modified, unchanged };
 }
 
-/**
- * Classify a modification as minor or substantial.
- * Minor: same depth + same expected type, only description text changed.
- * Substantial: depth or expected type changed.
- */
+/** Classify a modification as minor or substantial. */
 export function classifyModification(item, manifestEntry) {
-  const depthChanged = item.depth !== manifestEntry.depth;
-  const typeChanged = item.expectedType !== manifestEntry.expected_type;
-
-  if (depthChanged || typeChanged) {
-    return 'substantial';
-  }
+  if (item.depth !== manifestEntry.depth) return 'substantial';
+  if (item.expectedType !== manifestEntry.expected_type) return 'substantial';
   return 'minor';
 }
 
-/**
- * Remove test code between @begin:ID / @end:ID markers.
- */
+/** Remove a test block between @begin:ID / @end:ID markers from spec content. */
 export function removeTestBlock(specContent, itemId) {
   const beginMarker = `// @begin:${itemId}`;
   const endMarker = `// @end:${itemId}`;
   const beginIdx = specContent.indexOf(beginMarker);
   const endIdx = specContent.indexOf(endMarker);
-
   if (beginIdx === -1 || endIdx === -1) return specContent;
-
-  const endOfEndMarker = endIdx + endMarker.length;
-  const after = specContent.slice(endOfEndMarker);
-  const trimmedAfter = after.startsWith('\n') ? after.slice(1) : after;
-
-  return specContent.slice(0, beginIdx) + trimmedAfter;
+  const before = specContent.substring(0, beginIdx);
+  const after = specContent.substring(endIdx + endMarker.length);
+  return before + after.replace(/^\n/, '');
 }
 
-/**
- * Detect if a test has been manually edited (pinned).
- * Compares the actual test code hash against generated_hash in manifest.
- */
+/** Detect if a test has been manually edited (pinning). */
 export function detectPinning(specContent, itemId, generatedHash) {
   const beginMarker = `// @begin:${itemId}`;
   const endMarker = `// @end:${itemId}`;
   const beginIdx = specContent.indexOf(beginMarker);
   const endIdx = specContent.indexOf(endMarker);
-
   if (beginIdx === -1 || endIdx === -1) return false;
-
-  const testCode = specContent.slice(beginIdx, endIdx + endMarker.length);
-  const actualHash = hashItem(itemId, testCode);
-  return actualHash !== generatedHash;
+  const block = specContent.substring(beginIdx + beginMarker.length, endIdx);
+  const currentHash = hashGeneratedTest(block);
+  return currentHash !== generatedHash;
 }
 
-/**
- * Main sync entry point.
- */
-export async function syncTests(verificationDocPath, manifestDir) {
-  const docContent = await readFile(verificationDocPath, 'utf-8');
-  const items = parseVerificationItems(docContent);
-
-  await acquireLock(manifestDir);
+/** Run the full sync operation. */
+export async function syncTests(docPath, manifestDir) {
+  const itemsPath = join(manifestDir, 'items.json');
+  let items;
   try {
-    const itemsManifest = await readManifestFile(join(manifestDir, 'items.json'));
-    const manifestItems = itemsManifest?.items || {};
+    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
+  } catch {
+    items = { version: '1.0', items: {} };
+  }
 
-    const changes = detectChanges(items, manifestItems);
-    const pendingGeneration = [];
+  const docContent = readFileSync(docPath, 'utf8');
+  const docItems = parseVerificationItems(docContent);
+  const changes = detectChanges(docItems, items.items);
 
-    for (const removed of changes.removed) {
-      delete manifestItems[removed.id];
-    }
+  // Process removals
+  for (const removed of changes.removed) {
+    delete items.items[removed.id];
+  }
 
-    for (const { item, manifestEntry } of changes.modified) {
-      const classification = classifyModification(item, manifestEntry);
-      if (classification === 'substantial') {
-        pendingGeneration.push(item.id);
-      }
-      manifestItems[item.id] = {
-        ...manifestEntry,
-        content_hash: item.contentHash,
-        depth: item.depth,
-        expected_type: item.expectedType
-      };
-    }
-
-    for (const item of changes.added) {
-      pendingGeneration.push(item.id);
-      manifestItems[item.id] = {
-        content_hash: item.contentHash,
-        depth: item.depth,
-        expected_type: item.expectedType,
-        status: 'pending',
-        pinned: false
-      };
-    }
-
-    await writeManifestFile(join(manifestDir, 'items.json'), {
-      version: '1.0',
-      items: manifestItems
-    });
-
-    if (pendingGeneration.length > 0) {
-      const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-      let existing = [];
-      try {
-        const raw = await readFile(pendingPath, 'utf-8');
-        existing = JSON.parse(raw);
-      } catch { /* file may not exist */ }
-
-      const merged = [...new Set([...existing, ...pendingGeneration])];
-      await writeFile(pendingPath, JSON.stringify(merged, null, 2) + '\n');
-    }
-
-    return {
-      added: changes.added.length,
-      removed: changes.removed.length,
-      modified: changes.modified.length,
-      unchanged: changes.unchanged.length,
-      pendingGeneration: pendingGeneration.length
+  // Process additions
+  const pendingIds = [];
+  for (const added of changes.added) {
+    items.items[added.id] = {
+      content_hash: added.contentHash,
+      depth: added.depth,
+      status: 'pending',
+      pinned: false,
     };
+    pendingIds.push(added.id);
+  }
+
+  // Process modifications
+  for (const mod of changes.modified) {
+    const existing = items.items[mod.id];
+    const classification = classifyModification(mod, existing);
+    items.items[mod.id].content_hash = mod.contentHash;
+    if (classification === 'substantial' && !existing.pinned) {
+      pendingIds.push(mod.id);
+    }
+  }
+
+  // Write pending queue
+  if (pendingIds.length > 0) {
+    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
+    let existing = [];
+    try { existing = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch {}
+    const merged = [...new Set([...existing, ...pendingIds])];
+    writeFileSync(pendingPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  }
+
+  // Write updated manifest
+  items.generated_at = new Date().toISOString();
+  writeFileSync(itemsPath, JSON.stringify(items, null, 2) + '\n', 'utf8');
+
+  return {
+    added: changes.added.length,
+    removed: changes.removed.length,
+    modified: changes.modified.length,
+    unchanged: changes.unchanged.length,
+    pendingGeneration: pendingIds.length,
+  };
+}
+
+// --- CLI entry point ---
+const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  if (process.argv.includes('--help') || process.argv.length < 3) {
+    console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
+
+Usage: node sync-tests.js <verification-doc-path>
+       node sync-tests.js --help`);
+    process.exit(0);
+  }
+
+  const docPath = resolve(process.argv[2]);
+  const projectDir = process.cwd();
+
+  if (!existsSync(docPath)) {
+    console.error(`File not found: ${docPath}`);
+    process.exit(1);
+  }
+
+  const release = acquireLockSync(projectDir);
+  try {
+    const manifestDir = join(projectDir, 'tests', 'verification-playwright', 'manifest');
+    const result = await syncTests(docPath, manifestDir);
+    const parts = [];
+    if (result.added) parts.push(`${result.added} added`);
+    if (result.modified) parts.push(`${result.modified} modified`);
+    if (result.removed) parts.push(`${result.removed} removed`);
+    if (result.unchanged) parts.push(`${result.unchanged} unchanged`);
+    if (result.pendingGeneration) parts.push(`${result.pendingGeneration} queued`);
+    console.log(`sync-tests: ${basename(docPath, '.md')} — ${parts.join(', ') || 'no changes'}`);
   } finally {
-    await releaseLock(manifestDir);
+    release();
   }
 }

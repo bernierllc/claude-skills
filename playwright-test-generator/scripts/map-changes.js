@@ -1,79 +1,82 @@
 #!/usr/bin/env node
-import { join, basename, extname } from 'node:path';
-import { execSync } from 'node:child_process';
-import { readManifestFile } from './lib/manifest.js';
-import { fileExists } from './lib/fs.js';
-
 /**
- * Map changed files to affected page tags using the import index.
- * @param {string[]} files - Changed file paths
- * @param {object} importIndex - The import-index.json data
- * @param {string} projectRoot - Project root directory
- * @returns {Promise<{ tags: string[], warnings: string[] }>}
+ * map-changes.js - Map changed files to affected verification test tags.
+ * Exports testable functions. CLI entry point at bottom.
  */
-export async function mapFilesToTags(files, importIndex, projectRoot) {
+
+import { existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { basename, join, resolve } from 'node:path';
+import { readManifestFileSync } from './lib/manifest.js';
+import { fileURLToPath } from 'node:url';
+
+/** Map file list to affected page tags using an import index. */
+export async function mapFilesToTags(files, importIndex, projectDir) {
   const tags = new Set();
   const warnings = [];
 
-  if (!importIndex || !importIndex.entries) {
-    return { tags: [], warnings: [] };
-  }
+  if (!importIndex) return { tags: [], warnings: [] };
 
   for (const file of files) {
-    // Verification docs map directly via filename
     if (file.startsWith('docs/verification/')) {
-      const tag = basename(file, extname(file));
-      tags.add(`@${tag}`);
+      tags.add(`@${basename(file, '.md')}`);
       continue;
     }
 
-    // Source files: look up in import index
-    if (importIndex.entries[file]) {
-      // Validate the file still exists
-      const fullPath = join(projectRoot, file);
-      const exists = await fileExists(fullPath);
-      if (!exists) {
-        warnings.push(`Index entry '${file}' is stale (file no longer exists)`);
+    const entries = importIndex.entries || {};
+    const pageTags = entries[file];
+
+    if (pageTags) {
+      const fullPath = join(projectDir, file);
+      if (!existsSync(fullPath)) {
+        warnings.push(`Index entry "${file}" is stale (file no longer exists)`);
         continue;
       }
-
-      for (const pageTag of importIndex.entries[file]) {
-        tags.add(`@${pageTag}`);
+      for (const tag of pageTags) {
+        tags.add(`@${tag}`);
       }
-    } else {
-      warnings.push(`File '${file}' not in import index — run playwright-test-generator to refresh`);
+    } else if (!file.startsWith('tests/verification-playwright/') && !file.startsWith('.')) {
+      warnings.push(`File "${file}" not in import index — run playwright-test-generator to refresh`);
     }
   }
 
   return { tags: [...tags], warnings };
 }
 
-/**
- * Get changed files since branching from main.
- */
-export function getChangedFilesSinceMain() {
-  const mergeBase = execSync('git merge-base HEAD main', { encoding: 'utf-8' }).trim();
-  const output = execSync(`git diff --name-only ${mergeBase}..HEAD`, { encoding: 'utf-8' });
-  return output.trim().split('\n').filter(Boolean);
-}
-
-/**
- * Main entry point for map-changes.
- */
-export async function main(args, projectRoot) {
-  const manifestDir = join(projectRoot, 'tests', 'verification-playwright', 'manifest');
-  const importIndex = await readManifestFile(join(manifestDir, 'import-index.json'));
-
-  if (!importIndex) {
-    return { tags: [], warnings: [] };
-  }
+/** Main entry for CLI and testing. */
+export async function main(args, projectDir) {
+  const importIndex = readManifestFileSync(projectDir, 'import-index.json');
+  if (!importIndex) return { tags: [], warnings: [] };
 
   let files;
   if (args.includes('--since-main')) {
-    files = getChangedFilesSinceMain();
+    try {
+      const mergeBase = execSync('git merge-base HEAD main', { encoding: 'utf8', cwd: projectDir }).trim();
+      const diff = execSync(`git diff --name-only ${mergeBase}..HEAD`, { encoding: 'utf8', cwd: projectDir });
+      files = diff.trim().split('\n').filter(Boolean);
+    } catch {
+      return { tags: [], warnings: [] };
+    }
   } else {
-    files = args.filter(a => !a.startsWith('--'));
+    files = args.filter(f => f !== '--since-main' && f !== '--help');
   }
 
-  return mapFilesToTags(files, importIndex, projectRoot);
+  return mapFilesToTags(files, importIndex, projectDir);
+}
+
+// --- CLI entry point ---
+const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  if (process.argv.includes('--help')) {
+    console.log(`map-changes.js - Map changed files to affected test tags
+
+Usage: node map-changes.js [file1.tsx file2.py ...]
+       node map-changes.js --since-main
+       node map-changes.js --help`);
+    process.exit(0);
+  }
+
+  const result = await main(process.argv.slice(2), process.cwd());
+  for (const w of result.warnings) process.stderr.write(`Warning: ${w}\n`);
+  if (result.tags.length > 0) process.stdout.write(result.tags.join(' '));
 }

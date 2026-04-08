@@ -1,198 +1,195 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { readManifestFile } from './lib/manifest.js';
-import { fileExists } from './lib/fs.js';
-
 /**
- * Safely read a manifest file, returning null on any error.
+ * verify-pipeline.js - Pipeline health diagnostic.
+ * Exports testable functions. CLI entry point at bottom.
  */
-async function safeReadManifest(filePath) {
-  try {
-    return await readManifestFile(filePath);
-  } catch {
-    return null;
-  }
-}
 
-/**
- * Check that all manifest files are valid JSON.
- */
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** Check manifest file integrity (all 3 files parse as valid JSON). */
 export async function checkManifestIntegrity(manifestDir) {
   const files = ['items.json', 'import-index.json', 'config.json'];
   const results = [];
-
   for (const file of files) {
     const filePath = join(manifestDir, file);
+    if (!existsSync(filePath)) {
+      results.push({ file, status: 'warn', message: `Missing manifest file: ${file}` });
+      continue;
+    }
     try {
-      const content = await readFile(filePath, 'utf-8');
-      JSON.parse(content);
-      results.push({ file, status: 'pass' });
+      JSON.parse(readFileSync(filePath, 'utf8'));
+      results.push({ file, status: 'pass', message: 'Valid JSON' });
     } catch (err) {
-      if (err.code === 'ENOENT') {
-        results.push({ file, status: 'warn', message: 'File not found' });
-      } else {
-        results.push({ file, status: 'fail', message: `Invalid JSON: ${err.message}` });
-      }
+      results.push({ file, status: 'fail', message: `Invalid JSON: ${err.message}` });
     }
   }
-
   return results;
 }
 
-/**
- * Check that all source files in import-index.json exist on disk.
- */
-export async function checkSourceFiles(manifestDir, projectRoot) {
-  const index = await safeReadManifest(join(manifestDir, 'import-index.json'));
-  if (!index || !index.entries) return [];
-
+/** Check that all source files in the import index exist on disk. */
+export async function checkSourceFiles(manifestDir, projectDir) {
+  const indexPath = join(manifestDir, 'import-index.json');
+  if (!existsSync(indexPath)) return [];
+  const index = JSON.parse(readFileSync(indexPath, 'utf8'));
   const results = [];
-  for (const filePath of Object.keys(index.entries)) {
-    const fullPath = join(projectRoot, filePath);
-    const exists = await fileExists(fullPath);
-    results.push({
-      file: filePath,
-      status: exists ? 'pass' : 'fail',
-      message: exists ? undefined : 'Source file not found'
-    });
-  }
-  return results;
-}
-
-/**
- * Check that all spec files referenced by items exist.
- */
-export async function checkSpecFiles(manifestDir, projectRoot) {
-  const items = await safeReadManifest(join(manifestDir, 'items.json'));
-  if (!items || !items.items) return [];
-
-  const results = [];
-  const specFiles = new Set();
-
-  for (const [itemId, data] of Object.entries(items.items)) {
-    if (data.spec_file) {
-      specFiles.add(data.spec_file);
-    }
-  }
-
-  for (const specFile of specFiles) {
-    const fullPath = join(projectRoot, specFile);
-    const exists = await fileExists(fullPath);
-    results.push({
-      file: specFile,
-      status: exists ? 'pass' : 'fail',
-      message: exists ? undefined : 'Spec file not found'
-    });
-  }
-  return results;
-}
-
-/**
- * Check that every item has a corresponding @begin/@end block in its spec file.
- */
-export async function checkItemConsistency(manifestDir, projectRoot) {
-  const items = await safeReadManifest(join(manifestDir, 'items.json'));
-  if (!items || !items.items) return [];
-
-  const results = [];
-  const specCache = new Map();
-
-  for (const [itemId, data] of Object.entries(items.items)) {
-    if (!data.spec_file) continue;
-
-    const fullPath = join(projectRoot, data.spec_file);
-    let specContent;
-    if (specCache.has(fullPath)) {
-      specContent = specCache.get(fullPath);
+  for (const file of Object.keys(index.entries || {})) {
+    const fullPath = join(projectDir, file);
+    if (existsSync(fullPath)) {
+      results.push({ file, status: 'pass' });
     } else {
-      try {
-        specContent = await readFile(fullPath, 'utf-8');
-        specCache.set(fullPath, specContent);
-      } catch {
-        results.push({ itemId, status: 'fail', message: 'Spec file unreadable' });
-        continue;
-      }
-    }
-
-    const hasBegin = specContent.includes(`// @begin:${itemId}`);
-    const hasEnd = specContent.includes(`// @end:${itemId}`);
-
-    if (hasBegin && hasEnd) {
-      results.push({ itemId, status: 'pass' });
-    } else {
-      results.push({ itemId, status: 'fail', message: 'Orphaned item (no @begin/@end block)' });
+      results.push({ file, status: 'fail', message: `Source file not found: ${file}` });
     }
   }
   return results;
 }
 
-/**
- * Report pinned tests.
- */
-export async function checkPinnedTests(manifestDir) {
-  const items = await safeReadManifest(join(manifestDir, 'items.json'));
-  if (!items || !items.items) return [];
-
-  const results = [];
-  for (const [itemId, data] of Object.entries(items.items)) {
-    if (data.pinned) {
-      results.push({ itemId, status: 'warn', message: 'Test is pinned (manually edited)' });
-    }
-  }
-  return results;
-}
-
-/**
- * Report pending generation items.
- */
-export async function checkPendingGeneration(projectRoot) {
-  const pendingPath = join(projectRoot, 'tests', 'verification-playwright', 'pending-generation.json');
+/** Check that all spec files referenced in items exist on disk. */
+export async function checkSpecFiles(manifestDir, projectDir) {
+  const itemsPath = join(manifestDir, 'items.json');
+  if (!existsSync(itemsPath)) return [];
+  let items;
   try {
-    const content = await readFile(pendingPath, 'utf-8');
-    const items = JSON.parse(content);
-    if (items.length > 0) {
-      return items.map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
-    }
-    return [];
+    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
   } catch {
-    return []; // No pending items
+    return [{ file: 'items.json', status: 'fail', message: 'Cannot parse items.json' }];
+  }
+  const specFiles = [...new Set(Object.values(items.items || {}).map(i => i.spec_file).filter(Boolean))];
+  const results = [];
+  for (const file of specFiles) {
+    const fullPath = join(projectDir, file);
+    if (existsSync(fullPath)) {
+      results.push({ file, status: 'pass' });
+    } else {
+      results.push({ file, status: 'fail', message: `Spec file not found: ${file}` });
+    }
+  }
+  return results;
+}
+
+/** Check that every item ID has @begin/@end markers in its spec file. */
+export async function checkItemConsistency(manifestDir, projectDir) {
+  const itemsPath = join(manifestDir, 'items.json');
+  if (!existsSync(itemsPath)) return [];
+  let items;
+  try {
+    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
+  } catch {
+    return [{ itemId: 'N/A', status: 'fail', message: 'Cannot parse items.json' }];
+  }
+  const results = [];
+  for (const [id, item] of Object.entries(items.items || {})) {
+    if (!item.spec_file) {
+      // Items without spec_file are pending generation or have minimal config — skip, don't fail
+      continue;
+    }
+    const fullPath = join(projectDir, item.spec_file);
+    if (!existsSync(fullPath)) {
+      results.push({ itemId: id, status: 'fail', message: `Orphaned: spec file missing` });
+      continue;
+    }
+    const content = readFileSync(fullPath, 'utf8');
+    if (content.includes(`// @begin:${id}`) && content.includes(`// @end:${id}`)) {
+      results.push({ itemId: id, status: 'pass' });
+    } else if (item.status === 'pending') {
+      results.push({ itemId: id, status: 'pass' }); // Pending items don't have markers yet
+    } else {
+      results.push({ itemId: id, status: 'fail', message: `Orphaned: no @begin/@end markers for ${id}` });
+    }
+  }
+  return results;
+}
+
+/** Report pinned tests. */
+export async function checkPinnedTests(manifestDir) {
+  const itemsPath = join(manifestDir, 'items.json');
+  if (!existsSync(itemsPath)) return [];
+  let items;
+  try {
+    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  const results = [];
+  for (const [id, item] of Object.entries(items.items || {})) {
+    if (item.pinned) {
+      results.push({ itemId: id, status: 'warn', message: `Pinned (manually edited)` });
+    }
+  }
+  return results;
+}
+
+/** Report pending generation items. */
+export async function checkPendingGeneration(projectDir) {
+  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
+  if (!existsSync(queuePath)) return [];
+  try {
+    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
+    return queue.map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
+  } catch {
+    return [{ status: 'fail', message: 'Queue file corrupted' }];
   }
 }
 
-/**
- * Run all pipeline health checks.
- * Returns { checks: [...], exitCode: 0|1 }
- */
-export async function verifyPipeline(projectRoot) {
-  const manifestDir = join(projectRoot, 'tests', 'verification-playwright', 'manifest');
+/** Run full pipeline verification. */
+export async function verifyPipeline(projectDir) {
+  const manifestDir = join(projectDir, 'tests', 'verification-playwright', 'manifest');
   const checks = [];
-  let hasFailures = false;
+  let hasFailure = false;
 
-  const manifestResults = await checkManifestIntegrity(manifestDir);
-  checks.push({ name: 'Manifest files valid', results: manifestResults });
-  if (manifestResults.some(r => r.status === 'fail')) hasFailures = true;
+  const integrity = await checkManifestIntegrity(manifestDir);
+  checks.push(...integrity);
+  if (integrity.some(r => r.status === 'fail')) hasFailure = true;
 
-  const sourceResults = await checkSourceFiles(manifestDir, projectRoot);
-  checks.push({ name: 'Source files exist', results: sourceResults });
-  if (sourceResults.some(r => r.status === 'fail')) hasFailures = true;
+  const sources = await checkSourceFiles(manifestDir, projectDir);
+  checks.push(...sources);
+  if (sources.some(r => r.status === 'fail')) hasFailure = true;
 
-  const specResults = await checkSpecFiles(manifestDir, projectRoot);
-  checks.push({ name: 'Spec files exist', results: specResults });
-  if (specResults.some(r => r.status === 'fail')) hasFailures = true;
+  const specs = await checkSpecFiles(manifestDir, projectDir);
+  checks.push(...specs);
+  if (specs.some(r => r.status === 'fail')) hasFailure = true;
 
-  const consistencyResults = await checkItemConsistency(manifestDir, projectRoot);
-  checks.push({ name: 'Item-to-test consistency', results: consistencyResults });
-  if (consistencyResults.some(r => r.status === 'fail')) hasFailures = true;
+  const consistency = await checkItemConsistency(manifestDir, projectDir);
+  checks.push(...consistency);
+  if (consistency.some(r => r.status === 'fail')) hasFailure = true;
 
-  const pinnedResults = await checkPinnedTests(manifestDir);
-  checks.push({ name: 'Pinned tests', results: pinnedResults });
+  const pinned = await checkPinnedTests(manifestDir);
+  checks.push(...pinned);
 
-  const pendingResults = await checkPendingGeneration(projectRoot);
-  checks.push({ name: 'Pending generation', results: pendingResults });
+  const pending = await checkPendingGeneration(projectDir);
+  checks.push(...pending);
 
-  return {
-    checks,
-    exitCode: hasFailures ? 1 : 0
-  };
+  return { exitCode: hasFailure ? 1 : 0, checks };
+}
+
+// --- CLI entry point ---
+const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  if (process.argv.includes('--help')) {
+    console.log(`verify-pipeline.js - Pipeline health diagnostic
+
+Usage: node verify-pipeline.js
+       node verify-pipeline.js --help`);
+    process.exit(0);
+  }
+
+  const result = await verifyPipeline(process.cwd());
+
+  console.log('Pipeline Health Check');
+  const byStatus = { pass: 0, warn: 0, fail: 0 };
+  for (const check of result.checks) {
+    byStatus[check.status] = (byStatus[check.status] || 0) + 1;
+  }
+
+  const failChecks = result.checks.filter(c => c.status === 'fail');
+  const warnChecks = result.checks.filter(c => c.status === 'warn');
+
+  if (failChecks.length === 0 && warnChecks.length === 0) {
+    console.log('  \u2713 All checks passed');
+  }
+  for (const c of failChecks) console.log(`  \u2717 ${c.message || c.file || c.itemId}`);
+  for (const c of warnChecks) console.log(`  \u26a0 ${c.message || c.file || c.itemId}`);
+
+  process.exit(result.exitCode);
 }
