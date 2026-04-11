@@ -1,42 +1,82 @@
 {
-  "name": "anthropic-agent-skills",
+  "name": "bernier-skills",
   "owner": {
-    "name": "Keith Lazuka",
-    "email": "klazuka@anthropic.com"
+    "name": "Bernier LLC",
+    "email": "matt@bernier.dev"
   },
   "metadata": {
-    "description": "Anthropic example skills",
-    "version": "1.0.0"
+    "description": "Skills collection for Bernier LLC development environment",
+    "version": "2.0.0"
   },
   "plugins": [
     {
       "name": "document-skills",
-      "description": "Collection of document processing suite including Excel, Word, PowerPoint, and PDF capabilities",
+      "description": "Document processing suite including Excel, Word, PowerPoint, PDF, Google Docs, and Google Slides",
       "source": "./",
       "strict": false,
+      "category": "documents",
       "skills": [
-        "./document-skills/xlsx",
         "./document-skills/docx",
+        "./document-skills/gdocs",
+        "./document-skills/gslides",
+        "./document-skills/pdf",
         "./document-skills/pptx",
-        "./document-skills/pdf"
+        "./document-skills/xlsx"
       ]
     },
     {
-      "name": "example-skills",
-      "description": "Collection of example skills demonstrating various capabilities including skill creation, MCP building, visual design, algorithmic art, internal communications, web testing, artifact building, Slack GIFs, and theme styling",
+      "name": "development-skills",
+      "description": "Development workflow skills including commit management, MCP building, skill creation, and testing",
       "source": "./",
       "strict": false,
+      "category": "development",
       "skills": [
-        "./skill-creator",
+        "./commit",
         "./mcp-builder",
-        "./canvas-design",
+        "./playwright-test-generator",
+        "./skill-creator",
+        "./template-skill",
+        "./webapp-testing"
+      ]
+    },
+    {
+      "name": "qa-skills",
+      "description": "Quality assurance and verification skills for browser testing, UI audits, and verification workflows",
+      "source": "./",
+      "strict": false,
+      "category": "qa",
+      "skills": [
+        "./browser-verification",
+        "./plan-review",
+        "./ui-audit",
+        "./ux-audit",
+        "./verification-writer"
+      ]
+    },
+    {
+      "name": "creative-skills",
+      "description": "Creative and design skills including algorithmic art, canvas design, brand guidelines, and visual artifacts",
+      "source": "./",
+      "strict": false,
+      "category": "creative",
+      "skills": [
         "./algorithmic-art",
-        "./internal-comms",
-        "./webapp-testing",
         "./artifacts-builder",
+        "./brand-guidelines",
+        "./canvas-design",
         "./slack-gif-creator",
-        "./theme-factory",
-        "./brand-guidelines"
+        "./theme-factory"
+      ]
+    },
+    {
+      "name": "communication-skills",
+      "description": "Internal communications, Google Docs integration, and content workflow skills",
+      "source": "./",
+      "strict": false,
+      "category": "communication",
+      "skills": [
+        "./gdocs",
+        "./internal-comms"
       ]
     }
   ]
