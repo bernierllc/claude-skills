@@ -202,7 +202,7 @@ describe('syncTests (integration)', () => {
     await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
       version: '1.0',
       items: {
-        'OLD-01': { content_hash: 'abc', depth: 'standard', status: 'active' }
+        'OLD-01': { source_doc: docPath, content_hash: 'abc', depth: 'standard', status: 'active' }
       }
     }));
 
