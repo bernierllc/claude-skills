@@ -294,6 +294,34 @@ The `auth.strategy` field in metadata docs is decided once per project, not per 
 
 The chosen strategy should be documented in `helpers/auth.ts` and referenced in all metadata docs. When a new project is initialized, ask the user which strategy fits their auth system.
 
+## Testid Strategy
+
+### When testids belong in the codebase
+
+Testids are a **development artifact, not a testing artifact**. They should be added when a component is built, not retroactively when tests fail. The standard: every interactive element, dynamic state container, and structural landmark gets a `data-testid` as part of component development — the same way accessible `aria-label` attributes are required on icon buttons.
+
+**Elements that always need a testid:**
+- Every interactive element (buttons, inputs, selects, file inputs, links that trigger behavior)
+- Every element that displays dynamic state (error messages, success banners, empty states, loading indicators, count badges, status fields)
+- Structural landmarks (sidebar, header, main content area, modal container, form containers)
+
+**Elements that do not need a testid:**
+- Static decorative elements (icons, dividers, static copy)
+- Elements reliably targetable by stable accessible role + name (e.g., a labeled `<button>Submit</button>` is targetable via `getByRole('button', { name: 'Submit' })`)
+
+### The anti-pattern this skill must not reinforce
+
+Generating stubs and treating "testid will be added later" as an acceptable holding state. Stubs accumulate. The correct path when a testid is missing: exhaust stable alternative selectors first (see Test Completeness Standards), generate a `.skip()` stub only if all alternatives fail, document which alternatives were tried, and record the gap in `testid-gaps.md`.
+
+### Upstream ownership
+
+Testid enforcement belongs upstream in the workflow:
+- **Frontend development rules** (CLAUDE.md, cursor rules) — require testids as part of "done" for any component
+- **Frontend agent definitions** — agents that write components must add testids to all interactive and state-displaying elements before declaring a component complete
+- **verification-writer skill** — may note expected testids alongside verification items
+
+**This skill's position:** for new feature development, testids should already exist when this skill runs. `testid-gaps.md` is not deprecated — it remains active as the retrofit backlog for existing code that predates the testid standard, and as the fallback until upstream enforcement is fully in place. Gaps on *new features* are an upstream process failure. Gaps on *existing code* are expected and tracked here.
+
 ## Generating Tests
 
 ### Item-to-test mapping
