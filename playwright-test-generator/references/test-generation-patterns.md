@@ -60,6 +60,22 @@ Examples:
 - Fill event form → submit → validation error on same page: `form-input`
 - Fill event form → submit → navigate to event detail → assert record appears: `multi-step-workflow`
 
+## Testid Requirement by Type
+
+Not all interaction types require `data-testid` attributes. Before generating a stub citing "missing testid", confirm whether the type actually needs a DOM selector.
+
+| Type | Testid needed? | Notes |
+|---|---|---|
+| `ui-navigation` | Sometimes | Needed if asserting element visible; not needed if asserting URL only |
+| `form-input` | Usually yes | All fields, submit button, error/success elements; try `getByLabel` for labeled inputs first |
+| `file-upload` | Yes (file input) | Also needs result state element; `getByLabel` often works for file inputs |
+| `api-response` | **No** | `page.request` — no DOM interaction at all |
+| `state-cascade` | Yes (affected fields) | Try `getByRole`/`getByLabel` for form fields before claiming missing |
+| `multi-step-workflow` | Varies per step | Evaluate each step independently |
+| `auth-boundary` | **Rarely** | URL assertion or `getByText` on static "Access denied" copy is usually sufficient |
+
+If an item's type does not need a testid and a `.skip()` stub was generated citing "missing testid", this is a misclassification. Classify the item correctly, then implement the test.
+
 ## Tag Format
 
 Every generated test gets three tags in its test name:
@@ -143,17 +159,33 @@ Items tagged `*API-only*` with this annotation generate tests that:
 - Assert response status, shape, and key values
 - Check `durability` field: `permanent` = always API-only, `temporary` = check if UI now exists
 
+### Composition with `api-response` interaction type
+
+When an item carries an `API-VERIFICATION-FLAG` annotation, use this table to determine how classification and the annotation compose:
+
+| Annotation state | Classification | What to generate |
+|---|---|---|
+| `*API-only*` tag + `durability: permanent` | `api-response` | `page.request` test against the endpoint |
+| `*API-only*` tag + `durability: temporary` | `api-response` for now | `page.request` test; record in `testid-gaps.md`: "UI may eventually exist — reclassify when UI is added" |
+| `API-VERIFICATION-FLAG` present, no `*API-only*` tag | Driven by item text | Generate test for resolved type; embed `endpoint` as code comment regardless: `// API ref: POST /events/create`. Ignore `durability` unless type resolves to `api-response`. |
+| No annotation, item text matches `api-response` triggers | `api-response` | `page.request` test; no durability consideration |
+
 ## Missing Testid Handling
 
 When a verification item references UI elements without `data-testid` attributes:
 
-1. Generate a `.skip()` test stub:
+1. Items with missing testids get a stub only after stable alternatives are exhausted. The stub MUST include: the skip reason number, which alternatives were tried and why each failed, and the TODO to add the testid:
 ```typescript
 // @begin:EVT-FRM-SD-01
 test.skip('@EVT-FRM-SD-01 @deep @admin-event-form state cascade on type change',
   async ({ page }) => {
-    // TODO: Missing data-testid for: event-type-select, flyer-uploader-field
-    // Add data-testid attributes to the components, then remove .skip()
+    // SKIP REASON: missing data-testid (skip reason 3)
+    // Alternatives tried:
+    //   getByRole: no accessible role distinguishes this element
+    //   getByLabel: element has no associated label
+    //   getByText: text is dynamic data value (status string), not static copy
+    //   getByPlaceholder: not an input with placeholder
+    // TODO: Add data-testid="event-type-select" to EventForm.tsx, then remove .skip()
   });
 // @end:EVT-FRM-SD-01
 ```
