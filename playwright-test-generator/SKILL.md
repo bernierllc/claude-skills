@@ -404,16 +404,14 @@ Each verification item becomes one Playwright test function. Read `references/te
 
 ### Missing data-testid handling
 
-#### Testid Gap Philosophy
+On initial runs against existing code, some testids may be missing. This is a tracked gap, not a blanket skip reason.
 
-Testids are a **development artifact**, not a testing artifact. They belong in the component at build time — same category as accessible labels and error handling. When this skill encounters missing testids, treat the gap as a developer deficiency, not a test generation limitation.
+Before generating a skip stub for a missing testid:
+1. Confirm the item's interaction type requires DOM selectors (`api-response` and `auth-boundary` often do not)
+2. Attempt stable alternative selectors in order: `getByRole` → `getByLabel` → `getByText` (static copy only) → `getByPlaceholder` (static copy only)
+3. Only if all applicable alternatives fail, generate a `.skip()` stub
+4. The stub comment MUST document which alternatives were tried and why each was rejected (see stub template in `references/test-generation-patterns.md`)
 
-**For new features:** A `testid-gaps.md` report is a signal that the developer shipped a component without meeting the testid standard. It is NOT normal output for new features — it is a retrofit backlog. When you report gaps, be explicit: "These testids are missing from components that should have them. Add them at the source."
-
-**For existing/legacy code:** `testid-gaps.md` is the expected retrofit backlog. Work through it incrementally. The `.skip()` stubs are placeholders — not permanent.
-
-**Behavior:**
-- Items with missing testids get a test stub with `.skip()` and a TODO comment pointing to the expected testid
 - All gaps are logged to `testid-gaps.md` (read `references/test-generation-patterns.md` for format)
 - The first run walks through each verification page doc section by section, reporting progress
 - On subsequent runs, check if previously-missing testids have been added and un-skip those tests
@@ -531,6 +529,12 @@ Browser-verification findings feed back to verification-writer, which updates do
 | Missing test file header comments | Every generated test MUST have `@source` and `@metadata` header comments with `path@version` — `check-versions.js` depends on these |
 | Not creating metadata docs | Every page needs a metadata doc in `metadata/` before tests can be generated — metadata captures auth and data readiness |
 | Generating tests when auth is not ready | Check `auth.ready` in metadata doc — if false, generate `.skip()` with clear reason, don't generate tests that will always fail on the login page |
+| Stubbing a `file-upload` item as "too complex" | `file-upload` is an interaction type, not a skip reason — locate the file input, use `setInputFiles`, trigger upload, wait for completion signal, assert result |
+| Skipping API response items as "backend-only" | Classify as `api-response` and use `page.request` — API response assertions are Playwright tests |
+| Stubbing `multi-step-workflow` items | `multi-step-workflow` is an interaction type, not a skip reason — execute each step in sequence, assert intermediate and final states |
+| Generating a testid-missing stub without trying stable alternatives | Try `getByRole`, `getByLabel`, `getByText` (static copy only), `getByPlaceholder` (static copy only) before generating a stub; document what was tried |
+| Claiming "missing testid" for `api-response` or `auth-boundary` items | These types use `page.request` or URL/navigation assertions — they do not need DOM selectors; this is a misclassification |
+| Declaring generation complete while stubs with invalid skip reasons exist | Checkpoint B (step 10a) must pass before reporting — every stub must have a valid skip reason from the four-item list |
 
 ## Red Flags — STOP
 
@@ -540,3 +544,5 @@ Browser-verification findings feed back to verification-writer, which updates do
 - Import index has no entries — the index rebuild failed or the project structure is not recognized
 - `check-versions.js` reports `frontmatter-missing` for any doc — verification-writer must add frontmatter before this skill can proceed
 - About to edit a file in `docs/verification/` — this skill does not own those files
+- More than 20% of generated tests are stubs with invalid skip reasons — the classification system is being bypassed
+- Declaring generation complete (step 11 Report) while any stub has an invalid skip reason — Checkpoint B must pass first
