@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.0.0
+version: 3.1.0
 description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
@@ -97,10 +97,12 @@ Complete these in order:
 4. **Create/update metadata docs** — for each page needing metadata, read verification doc frontmatter, evaluate auth requirements, create derivative metadata doc (see "Derivative Metadata Docs" below)
 5. **Evaluate auth readiness** — for each metadata doc, check if `helpers/auth.ts` (or equivalent) has a working auth flow for the required user types. Set `ready: true/false` accordingly
 6. **Generate tests** — for each ready page, generate Playwright test code with proper auth `beforeEach` blocks. For not-ready pages, generate `.skip()` stubs with clear skip reasons
-7. **Handle missing testids** — generate `.skip()` stubs, update `testid-gaps.md`. See "Testid Gap Philosophy" below
+   - **6a. Before writing each test:** classify the verification item by interaction type (see `references/test-generation-patterns.md`), confirm the planned test will contain all must-have elements for that type, then write the test (Checkpoint A — see Test Completeness Standards)
+7. **Handle missing testids** — exhaust stable alternative selectors first (`getByRole` → `getByLabel` → `getByText` for static copy → `getByPlaceholder` for static copy); generate `.skip()` stub only if all fail and only for types that require DOM selectors (not `api-response` or `auth-boundary`); document alternatives tried in stub comment (see stub template in `references/test-generation-patterns.md`); update `testid-gaps.md`
 8. **Update manifest** — write changes atomically with lockfile
 9. **Rebuild import index** — trace routes to source files, update `manifest/import-index.json`
 10. **Patch test headers** — for `header-missing` items, add `@source` and `@metadata` comments to existing test files
+   - **10a. Post-generation audit (Checkpoint B — gates step 11):** count complete tests vs. stubs; for every stub verify it carries one of the four valid skip reasons from Test Completeness Standards; reclassify and implement any stub with an invalid reason; do not proceed to step 11 until every stub has a valid reason
 11. **Report** — print summary of generated, updated, skipped, blocked, and pinned tests
 
 ## Generated Test Structure
