@@ -294,6 +294,57 @@ The `auth.strategy` field in metadata docs is decided once per project, not per 
 
 The chosen strategy should be documented in `helpers/auth.ts` and referenced in all metadata docs. When a new project is initialized, ask the user which strategy fits their auth system.
 
+## Test Completeness Standards
+
+### What "complete" means
+
+A complete test executes the full interaction described in the verification item, asserts the expected outcome, and runs without `.skip()`. A stub is only acceptable when a specific infrastructure blocker prevents execution.
+
+### Valid skip reasons (exhaustive — exactly four)
+
+Only these four reasons justify a `.skip()` stub:
+
+1. **`auth.ready = false`** in the metadata doc — the auth helper for the required user type is not implemented
+2. **`data_setup.ready = false`** in the metadata doc — the seed/fixture infrastructure to create required test data is not implemented. "Requires test data setup" is never a skip reason on its own — only the metadata flag is.
+3. **Testid genuinely missing AND no stable alternative selector exists** — see stable alternative priority order below. **Not applicable to `api-response` or `auth-boundary` types**, which use `page.request` or navigation assertions and require no DOM selector. Claiming missing testid as a skip reason for these types is a misclassification.
+4. **Item explicitly marked `manual-only`** in the verification doc
+
+### Invalid skip reasons — these are interaction types, not blockers
+
+| This is NOT a valid skip reason | What to do instead |
+|---|---|
+| "Multi-step interaction" | Classify as `multi-step-workflow`, implement each step |
+| "Involves file upload" | Classify as `file-upload`, use `setInputFiles` |
+| "Requires waiting for API response / network" | Use `waitForResponse` or `page.request` |
+| "API-level test / backend-only" | Classify as `api-response`, use `page.request` |
+| "Complex workflow" | Classify by type, implement the steps |
+| "Requires test data setup" | Check `data_setup.ready` in metadata — if true, implement setup in `beforeEach` |
+| "Too many steps" | Not a skip reason under any circumstance |
+| "Involves navigation between pages" | Classify as `multi-step-workflow` |
+
+### Stable alternative selector order (for skip reason 3)
+
+Before claiming a testid is missing and no alternative exists, attempt these in order:
+
+1. `getByRole` with an accessible name — e.g., `getByRole('button', { name: 'Upload' })`
+2. `getByLabel` — for form controls with an associated visible label
+3. `getByText` — **only for static UI copy** (button labels, column headers, field labels, section titles). **Not valid for dynamic data values** (status strings, counts, user-generated content, locale-sensitive strings). If the text changes based on data, this selector is not stable.
+4. `getByPlaceholder` — **only for static placeholder text**, not programmatically-set values
+
+Only if all applicable options are exhausted is the element untargetable without a testid. See `references/test-generation-patterns.md` for the required stub comment format.
+
+### Two completeness checkpoints
+
+**Checkpoint A — Per-item classification (before writing each test):**
+Classify the verification item by interaction type (see `references/test-generation-patterns.md`). Confirm the test you are about to write will contain all must-have elements for that type. Then write the test.
+
+**Checkpoint B — Post-generation audit (gates the Report step):**
+After all tests are written, before declaring generation complete:
+1. Count complete tests vs. stubs
+2. For every stub, verify it carries one of the four valid skip reasons above
+3. Any stub with an invalid reason must be reclassified and implemented
+4. Only after every stub has a valid reason may the Report step proceed
+
 ## Testid Strategy
 
 ### When testids belong in the codebase
