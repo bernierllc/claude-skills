@@ -1,7 +1,7 @@
 ---
 name: playwright-test-generator
-version: 2.1.0
-description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, and version-tracked derivative metadata. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
+version: 3.0.0
+description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
 # Playwright Test Generator
@@ -15,6 +15,12 @@ This skill replaces browser-verification as the regression testing gate. Browser
 **Companion skills:**
 - **verification-writer** — produces the docs this skill reads. Layer 3e generates state dependency items that become critical regression tests. Verification docs include YAML frontmatter with versioned page metadata (access control, page characteristics, data dependencies).
 - **browser-verification** — exploratory QA only after this skill is active. Feeds findings back to verification-writer, which updates docs, which triggers this skill.
+
+## Recommended Operator
+
+This skill is best operated by the **Playwright Test Writer** agent (`playwright-test-writer`) or another agent with deep Playwright expertise. Agents without Playwright-specific knowledge will produce complete tests for simple interactions but may default to stubs for complex ones.
+
+Place the agent definition in `.claude/agents/` (project-level) or `~/.claude/agents/` (user-level) following Claude standards.
 
 ## Document Ownership Model
 
