@@ -28,6 +28,38 @@ test('@EVT-FRM-TKT-03 @standard @admin-event-form min price > max price',
 // @end:EVT-FRM-TKT-03
 ```
 
+## Interaction Classification
+
+Before writing any test, classify the verification item into one of the seven interaction types below. Add the type as a comment immediately inside the test function: `// Classification: file-upload`.
+
+The classification locks in the completeness requirement — you cannot stub a test by re-labeling its type. If you classify an item as `file-upload`, the test must contain all `file-upload` must-have elements or carry a valid skip reason.
+
+### The seven types
+
+| Type | Trigger words in verification item | Test MUST contain |
+|---|---|---|
+| `ui-navigation` | navigate, click link, redirect, see page | `goto` call + assertion that target element is visible or URL is correct |
+| `form-input` | enter, fill, submit, validate, error, field, invalid | fill all relevant fields → trigger submit action → assert success element OR error element visible |
+| `file-upload` | upload, attach, select file, import, choose file | locate file input → `setInputFiles` with test file (check `.test-assets/` first) → trigger upload → wait for completion signal → assert result state |
+| `api-response` | response includes, API returns, endpoint returns, status code, JSON field, payload | `page.request` call to endpoint → assert status code → assert key body fields (not full shape) |
+| `state-cascade` | changes when, clears when, updates when, resets when, depends on, conditional on | trigger action on same page → assert each affected field/element in sequence |
+| `multi-step-workflow` | then, after, next step, workflow, process, cross-page, followed by; also: form submission that navigates to a different page | execute each step in order → assert intermediate state after each key step → assert final state |
+| `auth-boundary` | cannot access, redirected, 403, unauthorized, role required | attempt access without auth OR with insufficient role → assert redirect target or blocked/403 state |
+
+### Classification tiebreaker rules
+
+**State-cascade vs. multi-step-workflow:** If the trigger and all affected assertions occur within a single page view → `state-cascade`. If the trigger is on a different page, step, or navigation event from where the assertions are made → `multi-step-workflow`.
+
+Examples:
+- Same form, type dropdown changes → sections hide/show on same page: `state-cascade`
+- Step 1 sets a value → step 3 (different page) shows a derived field: `multi-step-workflow`
+
+**Form-input vs. multi-step-workflow:** If fill, submit, and assert all occur on a single page view → `form-input`. If form submission navigates to a different page and the assertion must be made there → `multi-step-workflow`.
+
+Examples:
+- Fill event form → submit → validation error on same page: `form-input`
+- Fill event form → submit → navigate to event detail → assert record appears: `multi-step-workflow`
+
 ## Tag Format
 
 Every generated test gets three tags in its test name:
