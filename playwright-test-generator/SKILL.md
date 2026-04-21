@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.1.0
+version: 3.2.0
 description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
@@ -60,6 +60,8 @@ A JS script at `scripts/verification-playwright/check-versions.js` handles all m
 | `metadata-outdated` | Metadata doc's own version < test file's `@metadata` version | Yes — investigate (shouldn't happen, may indicate manual edit) |
 | `frontmatter-missing` | Verification doc has no YAML frontmatter | Yes — flag to user, cannot proceed without frontmatter |
 | `header-missing` | Test file exists but has no `@source` / `@metadata` header comments | Yes — add header comments to existing test |
+| `skill-version-mismatch` | Verification doc's `generated_by` (live verification-writer version) is newer than the metadata doc's `source_generated_by` (the version this manifest was synced against) | Yes — user MUST run `--resync` before any other generation work; the skill STOPS otherwise |
+| `stamp-missing` | Verification doc has frontmatter but no `generated_by` stamp (pre-v3.1.0 verification-writer output) | Yes — tell user to run verification-writer to add the stamp; proceed cautiously if user overrides |
 
 **This script replaces the full-scan approach.** Instead of the agent parsing every verification doc and test file to figure out what changed, the script does the comparison in milliseconds and hands the agent a precise task list. The agent only processes items that need work.
 
@@ -86,24 +88,26 @@ The hook runs `sync-tests.js` first. If the script detects items needing LLM int
 | **`--force` flag** | Regenerate all tests from scratch, discarding manifest |
 | **`--force-index` flag** | Rebuild import-index.json only, preserve item hashes |
 | **`--force-items` flag** | Rebuild items.json only, preserve config and index |
+| **`--resync` flag** | Adopt a newer verification-writer skill version: apply that version's ID renames (from verification-writer's migration table) to the manifest and test `@tag` annotations, update every `source_generated_by` field in metadata docs, update every `@source-generated-by` line in test headers. Does NOT regenerate test bodies |
 
 ## Checklist
 
 Complete these in order:
 
 1. **Run version check script** — execute `check-versions.js`, read the task list output
-2. **Triage the task list** — separate into: frontmatter-missing (blocked), metadata-missing (create), source-updated (re-evaluate), test-missing (generate), header-missing (patch), up-to-date (skip)
-3. **Handle blocked items** — for `frontmatter-missing`, report to user that verification-writer needs to add frontmatter before tests can be generated
-4. **Create/update metadata docs** — for each page needing metadata, read verification doc frontmatter, evaluate auth requirements, create derivative metadata doc (see "Derivative Metadata Docs" below)
-5. **Evaluate auth readiness** — for each metadata doc, check if `helpers/auth.ts` (or equivalent) has a working auth flow for the required user types. Set `ready: true/false` accordingly
-6. **Generate tests** — for each ready page, generate Playwright test code with proper auth `beforeEach` blocks. For not-ready pages, generate `.skip()` stubs with clear skip reasons
-   - **6a. Before writing each test:** classify the verification item by interaction type (see `references/test-generation-patterns.md`), confirm the planned test will contain all must-have elements for that type, then write the test (Checkpoint A — see Test Completeness Standards)
-7. **Handle missing testids** — exhaust stable alternative selectors first (`getByRole` → `getByLabel` → `getByText` for static copy → `getByPlaceholder` for static copy); generate `.skip()` stub only if all fail and only for types that require DOM selectors (not `api-response` or `auth-boundary`); document alternatives tried in stub comment (see stub template in `references/test-generation-patterns.md`); update `testid-gaps.md`
-8. **Update manifest** — write changes atomically with lockfile
-9. **Rebuild import index** — trace routes to source files, update `manifest/import-index.json`
-10. **Patch test headers** — for `header-missing` items, add `@source` and `@metadata` comments to existing test files
-   - **10a. Post-generation audit (Checkpoint B — gates step 11):** count complete tests vs. stubs; for every stub verify it carries one of the four valid skip reasons from Test Completeness Standards; reclassify and implement any stub with an invalid reason; do not proceed to step 11 until every stub has a valid reason
-11. **Report** — print summary of generated, updated, skipped, blocked, and pinned tests
+2. **Check for `skill-version-mismatch` entries FIRST** — if any item has this status, STOP. Report the gap to the user and direct them to re-run with `--resync`. Do not proceed to step 3 until either every mismatch is resolved by a `--resync` pass OR the user explicitly overrides. Silent adoption of a newer verification-writer version corrupts downstream anchors (see "Skill Version Compatibility")
+3. **Triage the remaining task list** — separate into: frontmatter-missing (blocked), stamp-missing (blocked, direct user to verification-writer), metadata-missing (create), source-updated (re-evaluate), test-missing (generate), header-missing (patch), up-to-date (skip)
+4. **Handle blocked items** — for `frontmatter-missing` and `stamp-missing`, report to user that verification-writer needs to run before tests can be generated
+5. **Create/update metadata docs** — for each page needing metadata, read verification doc frontmatter, evaluate auth requirements, create derivative metadata doc (see "Derivative Metadata Docs" below). Record the source doc's `generated_by` value as `source_generated_by` in the metadata frontmatter
+6. **Evaluate auth readiness** — for each metadata doc, check if `helpers/auth.ts` (or equivalent) has a working auth flow for the required user types. Set `ready: true/false` accordingly
+7. **Generate tests** — for each ready page, generate Playwright test code with proper auth `beforeEach` blocks. For not-ready pages, generate `.skip()` stubs with clear skip reasons
+   - **7a. Before writing each test:** classify the verification item by interaction type (see `references/test-generation-patterns.md`), confirm the planned test will contain all must-have elements for that type, then write the test (Checkpoint A — see Test Completeness Standards)
+8. **Handle missing testids** — exhaust stable alternative selectors first (`getByRole` → `getByLabel` → `getByText` for static copy → `getByPlaceholder` for static copy); generate `.skip()` stub only if all fail and only for types that require DOM selectors (not `api-response` or `auth-boundary`); document alternatives tried in stub comment (see stub template in `references/test-generation-patterns.md`); update `testid-gaps.md`
+9. **Update manifest** — write changes atomically with lockfile
+10. **Rebuild import index** — trace routes to source files, update `manifest/import-index.json`
+11. **Patch test headers** — for `header-missing` items, add `@source`, `@source-generated-by`, `@metadata`, and `@generated-by` comments to existing test files
+    - **11a. Post-generation audit (Checkpoint B — gates step 12):** count complete tests vs. stubs; for every stub verify it carries one of the four valid skip reasons from Test Completeness Standards; reclassify and implement any stub with an invalid reason; do not proceed to step 12 until every stub has a valid reason
+12. **Report** — print summary of generated, updated, skipped, blocked, and pinned tests
 
 ## Generated Test Structure
 
@@ -144,6 +148,8 @@ For each verification page doc, this skill creates a metadata doc in `metadata/`
 ---
 version: "1.0.0"
 source: "docs/verification/pages/event-detail.md@1.0.0"
+source_generated_by: "verification-writer@3.1.0"   # verification-writer version this metadata was synced against
+generated_by: "playwright-test-generator@3.2.0"     # this skill's version when the metadata was last written
 
 # Auth — how THIS test infrastructure satisfies the page's access requirements
 auth:
@@ -214,15 +220,18 @@ Every generated test file includes header comments that reference both source do
 ```typescript
 /**
  * @source docs/verification/pages/event-detail.md@1.0.0
+ * @source-generated-by verification-writer@3.1.0
  * @metadata tests/verification-playwright/metadata/event-detail.md@1.0.0
- * @generated playwright-test-generator v2.0.0
+ * @generated-by playwright-test-generator@3.2.0
  */
 ```
 
+All four lines are required. `@source-generated-by` records the verification-writer version this test was last synced against — `check-versions.js` compares it to the live verification doc's `generated_by` to detect `skill-version-mismatch`. `@generated-by` records the playwright-test-generator version that produced the test.
+
 These headers enable `check-versions.js` to detect staleness without parsing test code. The script reads only:
-1. Verification doc frontmatter (`version` field)
-2. Metadata doc frontmatter (`version` and `source` fields)
-3. Test file header comments (`@source` and `@metadata` lines)
+1. Verification doc frontmatter (`version` and `generated_by` fields)
+2. Metadata doc frontmatter (`version`, `source`, `source_generated_by`, `generated_by` fields)
+3. Test file header comments (`@source`, `@source-generated-by`, `@metadata`, `@generated-by` lines)
 
 No test logic parsing, no item-by-item comparison, no LLM involvement.
 
@@ -486,6 +495,44 @@ The `version_delta` field tells the agent whether the change is `patch`, `minor`
 | `--check` flag | Script runs, output printed, no generation |
 | postToolUse hook | `sync-tests.js` runs first, then `check-versions.js` if sync detected changes |
 
+## Skill Version Compatibility
+
+This skill consumes documents produced by verification-writer. When verification-writer evolves (new item ID conventions, frontmatter changes, structural renames), the manifests and test markers in this skill's territory are pinned to the OLD naming. Silent adoption of a newer verification-writer version will corrupt the `@tag` annotations, break `@begin:ID`/`@end:ID` marker alignment, and produce misleading diffs.
+
+The solution: the verification doc carries a `generated_by: "verification-writer@<semver>"` stamp. This skill records it as `source_generated_by` in its own metadata docs and as `@source-generated-by` in test file headers. `check-versions.js` compares the live stamp to the stored value and reports `skill-version-mismatch` when they diverge.
+
+### Refusal behavior
+
+When `check-versions.js` reports any `skill-version-mismatch` entries, this skill STOPS before generating or updating anything:
+
+1. Print the mismatch list: each page, its `source_generated_by` (old), and the doc's current `generated_by` (new)
+2. Direct the user to re-run with `--resync` to adopt the new version across manifests, metadata docs, and test headers
+3. Do NOT silently update stamps — the version gap exists for a reason (ID renames, structural changes) that must be applied explicitly
+
+Silent adoption is the specific failure mode this system exists to prevent.
+
+### `--resync` behavior
+
+`--resync` adopts a newer verification-writer version across this skill's artifacts without regenerating test bodies:
+
+1. Read verification-writer's migration table (in its "Skill Version Tracking and Migration" section) for every version hop between the stored `source_generated_by` and the live `generated_by`
+2. Apply each hop's `ID renames` column to:
+   - `manifest/items.json` — rekey entries from OLD-ID to NEW-ID
+   - Test file `@tag` annotations — rewrite `@OLD-ID` to `@NEW-ID` in test titles
+   - Test file `@begin:OLD-ID` / `@end:OLD-ID` markers — rewrite to NEW-ID
+3. Apply each hop's `Structural changes` column — e.g., rekey frontmatter fields the metadata doc mirrors
+4. Update every `source_generated_by` field in metadata docs to the new verification-writer version
+5. Update every `@source-generated-by` line in test file headers to the new verification-writer version
+6. Bump each metadata doc's own `version` (patch) and update its `generated_by` to this skill's current version
+7. Report: for each page, which IDs were renamed and how many test files were touched
+8. Do NOT alter test bodies, `generated_hash`, or pin status — `--resync` is an identifier-rewrite pass, not a regeneration pass
+
+After `--resync`, run `check-versions.js` again. If no `skill-version-mismatch` entries remain, normal generation can proceed.
+
+### When structural changes exceed a rename pass
+
+If verification-writer's migration table lists a hop as "requires regeneration" (e.g., a frontmatter schema change that splits one item into many), `--resync` alone is insufficient. Report that to the user and recommend `--force` for affected pages after `--resync` has updated the headers.
+
 ## Tiered Test Execution
 
 Read `references/hook-templates.md` for the complete hook configuration. Summary:
@@ -534,7 +581,10 @@ Browser-verification findings feed back to verification-writer, which updates do
 | Stubbing `multi-step-workflow` items | `multi-step-workflow` is an interaction type, not a skip reason — execute each step in sequence, assert intermediate and final states |
 | Generating a testid-missing stub without trying stable alternatives | Try `getByRole`, `getByLabel`, `getByText` (static copy only), `getByPlaceholder` (static copy only) before generating a stub; document what was tried |
 | Claiming "missing testid" for `api-response` or `auth-boundary` items | These types use `page.request` or URL/navigation assertions — they do not need DOM selectors; this is a misclassification |
-| Declaring generation complete while stubs with invalid skip reasons exist | Checkpoint B (step 10a) must pass before reporting — every stub must have a valid skip reason from the four-item list |
+| Declaring generation complete while stubs with invalid skip reasons exist | Checkpoint B (step 11a) must pass before reporting — every stub must have a valid skip reason from the four-item list |
+| Silently regenerating tests when verification-writer has been upgraded | `check-versions.js` reports `skill-version-mismatch` for this exact case — STOP and require `--resync`; never auto-update the `source_generated_by` field |
+| Regenerating test bodies during a `--resync` pass | `--resync` rewrites IDs, stamps, and headers only; `generated_hash` and test content are preserved so pinned tests stay pinned |
+| Creating a metadata doc without recording `source_generated_by` | Every metadata doc MUST stamp the verification-writer version it was synced against — without it `check-versions.js` cannot detect skill-version drift |
 
 ## Red Flags — STOP
 
@@ -545,4 +595,7 @@ Browser-verification findings feed back to verification-writer, which updates do
 - `check-versions.js` reports `frontmatter-missing` for any doc — verification-writer must add frontmatter before this skill can proceed
 - About to edit a file in `docs/verification/` — this skill does not own those files
 - More than 20% of generated tests are stubs with invalid skip reasons — the classification system is being bypassed
-- Declaring generation complete (step 11 Report) while any stub has an invalid skip reason — Checkpoint B must pass first
+- Declaring generation complete (step 12 Report) while any stub has an invalid skip reason — Checkpoint B must pass first
+- `check-versions.js` reports `skill-version-mismatch` and `--resync` has not been run — STOP; silent adoption of a newer verification-writer version corrupts manifests and test markers
+- About to overwrite a `source_generated_by` or `@source-generated-by` value as part of normal generation — these only change during a `--resync` pass
+- `check-versions.js` reports `stamp-missing` on a verification doc — tell the user to re-run verification-writer so it stamps the doc; do not invent a `source_generated_by` value

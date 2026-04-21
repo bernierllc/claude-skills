@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.0.0
+version: 3.1.0
 author: Bernier LLC
 ---
 
@@ -35,13 +35,14 @@ You MUST complete these in order:
 
 1. **Determine scope and entry point**
 2. **Determine doc location and organization** (first run only)
-3. **Run Phase 1: Codebase Analysis**
-4. **Run Phase 2: Generate outputs**
-5. **Apply fixes within thresholds**
-6. **Run test suite to verify fixes**
-6.5. **Generate/update flow visualizations**
-7. **Produce findings report**
-8. **Suggest verification run**
+3. **Read skill-version stamps on in-scope docs** — for each existing doc, read the `generated_by` frontmatter field and apply the rules in "Skill Version Tracking and Migration" below. Preserve existing item IDs unless invoked with `--migrate-ids`
+4. **Run Phase 1: Codebase Analysis**
+5. **Run Phase 2: Generate outputs**
+6. **Apply fixes within thresholds**
+7. **Run test suite to verify fixes**
+7.5. **Generate/update flow visualizations**
+8. **Produce findings report**
+9. **Suggest verification run**
 
 ## Doc Location and Organization
 
@@ -106,6 +107,7 @@ Every page file MUST include YAML frontmatter describing the page's requirements
 ```yaml
 ---
 version: "1.0.0"         # semver — bump on content changes (see versioning rules below)
+generated_by: "verification-writer@3.1.0"   # skill version that last wrote this doc — NEVER edit by hand
 path: /events/{id}        # route pattern
 title: Event Detail Page
 
@@ -143,6 +145,7 @@ environment:
 **Frontmatter field rules:**
 
 - **`version`**: Semver string. Bump patch for item text changes, minor for new items or structural changes, major for reorganization or access model changes. Downstream consumers reference this version to detect staleness.
+- **`generated_by`**: The skill name and version that last wrote or updated this doc, in the form `<skill-name>@<semver>`. This stamp tells future runs of verification-writer which migration (if any) applies when the skill itself has been upgraded, and tells downstream consumers (playwright-test-generator, browser-verification) which skill version produced the current content. **Never modify by hand** — the skill writes this every time it touches the doc. See "Skill Version Tracking and Migration" for how the stamp drives behavior.
 - **`path`**: The route pattern, including dynamic segments. Use the framework's notation (e.g., `/events/{id}`, `/events/:id`, `/events/[id]`).
 - **`access`**: Describes the page's access requirements as they exist in the codebase. Derived from Layer 1 analysis. Include only the model-specific fields that apply (don't include `required_roles` for an `oauth-scope` model). Set `auth_model: none` and `public: true` for pages with no auth.
 - **`page`**: Characteristics observable from the code. These inform what kinds of tests are possible.
@@ -169,6 +172,7 @@ When a page has different access rules per user type section (e.g., admin sees e
 ```markdown
 ---
 version: "1.0.0"
+generated_by: "verification-writer@3.1.0"
 path: /events/{id}
 title: Event Detail Page
 access:
@@ -225,6 +229,8 @@ The `version` field in frontmatter uses semver and enables downstream consumers 
 
 **Item ID convention:** `{PAGE-ABBREV}-{SECTION}-{ROLE-ABBREV}-{NUMBER}`. The role abbreviation makes it easy to filter: `EVT-DTL-ADM-01` is an admin item on the event detail page, `EVT-DTL-PUB-01` is a public visitor item. Items in the "All User Types" section omit the role abbreviation: `EVT-DTL-01`.
 
+**This convention describes NEW IDs only.** On any run that touches an existing doc, preserve every existing item ID verbatim — do not renumber, do not reformat, do not retrofit older IDs to the current convention. Reminting IDs orphans downstream references (playwright test `@tag` annotations, manifest entries, findings reports, commit history). See "Skill Version Tracking and Migration" for the renaming protocol, which requires both an explicit `--migrate-ids` invocation and a matching row in the migration table.
+
 #### Flow files
 
 Flow files define ordered, cross-page verification sequences. They reference items from page files by ID and add flow-specific context (what state to set up, what to check between steps, what the end-to-end expectation is).
@@ -236,6 +242,7 @@ Flow files also include YAML frontmatter with versioning and metadata:
 ```yaml
 ---
 version: "1.0.0"
+generated_by: "verification-writer@3.1.0"
 title: Event Lifecycle
 user_types: [admin, promoter, artist]
 pages: [event-create, event-detail, magic-link-landing]
@@ -248,13 +255,14 @@ environment:
 ---
 ```
 
-Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs.
+Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs. The `generated_by` stamp behaves the same way as on page docs: see "Skill Version Tracking and Migration".
 
 ##### Flow content example
 
 ```markdown
 ---
 version: "1.0.0"
+generated_by: "verification-writer@3.1.0"
 title: Event Lifecycle
 user_types: [admin, promoter, artist]
 pages: [event-create, event-detail, magic-link-landing]
@@ -434,14 +442,73 @@ Check the existing structure and follow it. Don't reorganize without asking. If 
 **Frontmatter migration:** If existing docs lack YAML frontmatter (created before v3.0.0), add frontmatter as part of the update pass. This is not optional — downstream consumers (playwright-test-generator, browser-verification) depend on structured frontmatter. For each doc without frontmatter:
 
 1. Run the normal Layer 1 analysis to determine access requirements
-2. Add frontmatter with `version: "1.0.0"` (treat the migration as the first versioned release)
-3. Report to the user: "Added frontmatter to N verification docs. Downstream skills can now consume structured page metadata."
+2. Add frontmatter with `version: "1.0.0"` and `generated_by: "verification-writer@<current-semver>"` (treat the migration as the first versioned release)
+3. Preserve all existing item IDs verbatim — migration adds structure, it does not renumber content
+4. Report to the user: "Added frontmatter to N verification docs. Downstream skills can now consume structured page metadata."
 
 Do not block the update on frontmatter migration — add frontmatter to docs you're already touching, and note which docs still need it.
+
+**Stamp-missing migration (v3.0.0 → v3.1.0):** Docs written by v3.0.0 have full frontmatter but no `generated_by` stamp. On first v3.1.0 run, stamp them with the current skill version and preserve all existing IDs and structure. No renaming. This migration is automatic and does not require `--migrate-ids`.
 
 **When adding a new page:** Create a new file in `pages/` with frontmatter, update `index.md`, check if any existing flow files should reference it.
 
 **When a page is removed:** Delete the file, update `index.md`, update any flow files that referenced its items.
+
+## Skill Version Tracking and Migration
+
+Every verification doc carries a `generated_by: "verification-writer@<semver>"` stamp in its frontmatter. Combined with the doc's own `version` field, this stamp lets the skill handle its own evolution safely. Each field answers a different question:
+
+| Field | Answers |
+|---|---|
+| `version` (doc) | How many times have the contents of this specific doc changed? |
+| `generated_by` (skill version) | Which release of the skill last touched this doc? |
+
+Without the skill-version stamp, a newer release of verification-writer has no way to tell whether existing IDs, section structure, or annotations were produced under the current conventions or an older set. When that information is missing, rewrites cascade — IDs get reminted, downstream manifests (playwright-test-generator, manual verification logs) lose their anchor, and manually edited items get clobbered. The stamp prevents this.
+
+### On every run, before writing
+
+For each verification doc you are about to modify:
+
+1. **Read the current `generated_by` stamp.**
+   - Stamp equals the current skill version → proceed normally.
+   - Stamp is an older version → consult the migration table below. Apply only the migrations listed for the version gap. Stamp with the current version on write.
+   - Stamp is missing (pre-3.1.0 docs) → treat the doc as frozen at its current structure. Do not renumber items, do not restructure sections, do not rename IDs. Add the stamp on the next write.
+   - Stamp is a NEWER version than the current skill → **STOP**. Do not write. Tell the user their skill is older than the doc was last generated by, and that downgrading would lose structural information.
+
+2. **Preserve existing item IDs by default.** The naming convention `{PAGE-ABBREV}-{SECTION}-{ROLE-ABBREV}-{NUMBER}` describes what the skill mints *from scratch*. It is not prescriptive for rewrites. On any run that touches an existing doc:
+   - If an item already has an ID (in the verification doc OR referenced anywhere downstream — playwright manifests, test file `@tag` annotations, metadata docs, run logs) → **preserve it verbatim**.
+   - Only mint new IDs for genuinely new items.
+   - Do not "fix" an ID because it doesn't match the current convention. Stability is more valuable than convention consistency.
+
+3. **ID renaming requires an explicit flag.** The skill MUST NOT change an existing item's ID unless the user runs with `--migrate-ids`. Even then, only apply the renames listed in the migration table for the version gap being crossed. Manufacturing renames outside the table is a bug.
+
+### Migration table
+
+When the skill version bumps, add a row describing what changes (if any) need to be applied to docs written by the prior version. Empty migrations are fine — re-stamp the doc on next write and move on.
+
+| From | To | ID renames | Structural changes | Flag required? |
+|---|---|---|---|---|
+| (missing / unknown) | 3.1.0 | none — preserve all existing IDs | add `generated_by` stamp | no (automatic on first write) |
+| 3.0.0 | 3.1.0 | none — preserve all existing IDs | add `generated_by` stamp | no (automatic on first write) |
+
+When you add a new version row, be explicit: list exact ID-to-ID mappings for any renames. Do not describe renames as "update to match new convention" — that is not actionable by a future Claude. If you cannot list the mappings, the skill is not ready to rename IDs and the rename should be postponed to a later version where the mapping can be defined.
+
+### The `--migrate-ids` flag
+
+Invoked as: the user runs verification-writer with `--migrate-ids`.
+
+When this flag is passed:
+
+1. Read every in-scope verification doc's `generated_by` stamp.
+2. For each doc with a stamp older than the current skill version, look up the migration table row(s) for that version gap.
+3. Apply ONLY the ID renames listed in those rows. For each renamed item:
+   - Update the verification doc item
+   - Update every downstream reference: playwright-test-generator's `manifest/items.json`, test file `@tag` annotations, `@begin:ID` / `@end:ID` markers, findings reports, run logs
+4. Bump each touched doc's `version` (patch — structural re-sync, no content change).
+5. Re-stamp `generated_by` with the current skill version.
+6. Report every ID that changed with old → new mapping, and every downstream file touched.
+
+Without this flag, the skill NEVER silently remints IDs. If a version gap requires a rename and the flag is not passed, the skill writes to the doc with old IDs preserved and warns the user that a migration pass is pending.
 
 ## Phase 1: Codebase Analysis
 
@@ -968,8 +1035,12 @@ HTML visualization: [flow-views | sitemap | both | none]
 | Not tracing submit handlers for stale references | Read the submit handler payload construction — a hidden field's stale value in state can cause FK violations even when the UI looks correct |
 | Marking all state dependency items as [deep] | FK constraint violations and data corruption failure modes get elevated to [standard] — these are not edge cases |
 | Missing STATE-DEPENDENCY annotations | Every state dependency item needs a `<!-- STATE-DEPENDENCY -->` annotation with all five fields (trigger, affected_fields, expected_cascade, code_ref, failure_mode) |
-| Page doc missing frontmatter | Every page and flow doc MUST have YAML frontmatter with version, path, access, and page fields. Docs without frontmatter break downstream consumers |
+| Page doc missing frontmatter | Every page and flow doc MUST have YAML frontmatter with version, generated_by, path, access, and page fields. Docs without frontmatter break downstream consumers |
 | Not bumping version on doc changes | Every edit to a verification doc must bump the frontmatter version. Downstream consumers depend on version changes to detect staleness |
+| Not stamping `generated_by` on write | Every write must set `generated_by: "verification-writer@<current-semver>"` — future skill versions rely on this stamp to pick the correct migration, and downstream skills rely on it to detect when their manifest is out of sync |
+| Reminting existing item IDs | Preserve every existing ID verbatim on subsequent runs. The naming convention is for new IDs only. Renaming requires `--migrate-ids` AND a matching migration-table row |
+| Writing to a doc with a newer `generated_by` than the current skill | STOP. Do not write. Tell the user the skill is older than the doc — writing would lose structural information encoded by the newer version |
+| Running `--migrate-ids` without a migration table row | If the migration table has no row for the version gap being crossed, the skill does not know what to rename. Do not invent renames — postpone the migration until the table is populated |
 | Wrong auth_model in frontmatter | Read the actual auth code — don't guess. If the app uses RBAC middleware, set `auth_model: rbac`. If it uses OAuth scopes, set `oauth-scope`. Misclassification causes downstream consumers to wire up wrong auth strategies |
 | Including test strategy in frontmatter | Frontmatter describes WHAT the page requires, not HOW to test it. Auth strategies, test bypass endpoints, and actor types belong to the consuming skill's own metadata |
 
@@ -979,3 +1050,6 @@ HTML visualization: [flow-views | sitemap | both | none]
 - Fix touches shared code or exceeds thresholds
 - Analysis shows systemic absence of error handling (> 50% of interaction points missing) — this needs architecture discussion, not item-by-item fixes
 - User type discovery finds no roles — auth system may not be conventional, ask the user
+- About to write to a doc whose `generated_by` stamp is a newer version than this skill — the skill is older than the doc; writing risks destroying newer structure
+- About to renumber or reformat existing item IDs without `--migrate-ids` — ID stability is load-bearing for downstream manifests and references
+- `--migrate-ids` invoked but no migration-table row matches the version gap — the rename set is undefined; ask the user and add a table row before proceeding
