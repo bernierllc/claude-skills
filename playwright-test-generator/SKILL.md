@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.2.0
+version: 3.3.0
 description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
@@ -102,6 +102,7 @@ Complete these in order:
 6. **Evaluate auth readiness** — for each metadata doc, check if `helpers/auth.ts` (or equivalent) has a working auth flow for the required user types. Set `ready: true/false` accordingly
 7. **Generate tests** — for each ready page, generate Playwright test code with proper auth `beforeEach` blocks. For not-ready pages, generate `.skip()` stubs with clear skip reasons
    - **7a. Before writing each test:** classify the verification item by interaction type (see `references/test-generation-patterns.md`), confirm the planned test will contain all must-have elements for that type, then write the test (Checkpoint A — see Test Completeness Standards)
+   - **7b. Pre-flight ID validation (before writing each spec file):** After generating the full text of a spec file, before writing to disk, extract every `@begin:ID` from the generated text and cross-check against the ID set from `parseVerificationItems()`. If any `@begin:ID` is not in that set, refuse to write and report the specific invalid IDs. This is a hard stop — do not write the file.
 8. **Handle missing testids** — exhaust stable alternative selectors first (`getByRole` → `getByLabel` → `getByText` for static copy → `getByPlaceholder` for static copy); generate `.skip()` stub only if all fail and only for types that require DOM selectors (not `api-response` or `auth-boundary`); document alternatives tried in stub comment (see stub template in `references/test-generation-patterns.md`); update `testid-gaps.md`
 9. **Update manifest** — write changes atomically with lockfile
 10. **Rebuild import index** — trace routes to source files, update `manifest/import-index.json`
@@ -114,7 +115,7 @@ Complete these in order:
 ```
 tests/verification-playwright/
 ├── manifest/
-│   ├── items.json              # Item-to-test mapping, hashes, pin status
+│   ├── items.json              # Item-to-test mapping, hashes (hash_version field), pin status
 │   ├── import-index.json       # Source file → page tag mapping
 │   └── config.json             # Tier config, dry-run, test isolation
 ├── metadata/                   # Derivative docs — this skill's own research
@@ -384,6 +385,27 @@ Testid enforcement belongs upstream in the workflow:
 
 **This skill's position:** for new feature development, testids should already exist when this skill runs. `testid-gaps.md` is not deprecated — it remains active as the retrofit backlog for existing code that predates the testid standard, and as the fallback until upstream enforcement is fully in place. Gaps on *new features* are an upstream process failure. Gaps on *existing code* are expected and tracked here.
 
+## ID Source Discipline
+
+The single most important invariant in this skill: **every `@begin:ID` and `@end:ID` marker emitted must correspond to an ID returned by `parseVerificationItems()` on the source doc.** Never invent, derive, or slugify an ID.
+
+The failure mode this prevents: 91 orphan `@begin` markers appeared in one project because the generator was "being creative" — emitting markers for IDs that `parseVerificationItems()` never returned. The orphan check (`verify-pipeline.js --check-orphans`) caught them at the pre-commit gate, but they had already been merged across 5 PRs before the gate existed.
+
+**The rule:**
+
+1. Call `parseVerificationItems()` on the source doc before writing any test.
+2. Build a set of the returned IDs.
+3. For each test you generate, look up the item's ID in that set.
+4. If the ID is in the set → emit `@begin:ID` and `@end:ID` normally.
+5. If the ID is NOT in the set → do NOT emit markers. Log the gap: "Item has no parseable ID in source doc — skipping markers. Check doc format." Do not generate a test for this item. This is a doc format gap, not a generator decision point.
+
+**Consequences:**
+- Format B IDs (slugified from action text) may or may not match what `parseVerificationItems()` returns, depending on which slugify function was used and when. This is exactly why Format A (explicit `**ID**` in bold) is required in verification docs — it gives the parser an unambiguous ID to return.
+- If `parseVerificationItems()` returns no IDs for a doc, STOP. Do not generate tests. Report: "No items parseable from [doc path] — verification-writer may need to add Format A IDs to this doc."
+- Flow docs: FLOW-PREFIX-NN IDs in flow step items are valid Format A IDs. They must appear in the flow doc as `**FLOW-PREFIX-NN**` for `parseVerificationItems()` to return them. If a flow doc uses only narrative steps with no explicit IDs, report the gap to the user — do not mint FLOW-* IDs.
+
+**Shared slugify:** Both this skill and `sync-tests.js` must use the same slugify function. During pipeline initialization, extract or confirm that `scripts/verification-playwright/lib/slugify.js` exists and that both files import from it. Divergent slugify implementations produce different IDs for the same input, which causes drift whenever both tools touch the same item.
+
 ## Generating Tests
 
 ### Item-to-test mapping
@@ -495,6 +517,36 @@ The `version_delta` field tells the agent whether the change is `patch`, `minor`
 | `--check` flag | Script runs, output printed, no generation |
 | postToolUse hook | `sync-tests.js` runs first, then `check-versions.js` if sync detected changes |
 
+## Hash Algorithm
+
+The `generated_hash` field in `items.json` records the content hash of each test (content between `@begin`/`@end` markers). A hash mismatch signals that a developer manually edited the test — the test is then pinned and never overwritten.
+
+### Normalization (must be applied before hashing)
+
+The normalization algorithm must be consistent across all runs. Lock it:
+
+1. Strip trailing whitespace from each line
+2. Normalize line endings: CRLF → LF
+3. Trim leading and trailing blank lines from the block
+4. Encode as UTF-8
+
+Any deviation from this algorithm produces a different hash for the same logical content — triggering false "manually edited" detections and flooding the pinned test list.
+
+### hash_version field
+
+`items.json` includes a top-level `hash_version` field that records which version of the normalization algorithm was used to produce the hashes in that file:
+
+```json
+{
+  "hash_version": 1,
+  "items": { ... }
+}
+```
+
+- Drift within the same `hash_version` is a bug — the algorithm is non-deterministic.
+- Drift across `hash_version` values is expected — bump `hash_version` when the normalization algorithm changes, and regenerate all hashes on the next `--force` run.
+- When reading `items.json`, if the `hash_version` is absent, treat it as version 0 (legacy, pre-normalization-lock). All hashes from version 0 are suspect — a `--force` regeneration is recommended.
+
 ## Skill Version Compatibility
 
 This skill consumes documents produced by verification-writer. When verification-writer evolves (new item ID conventions, frontmatter changes, structural renames), the manifests and test markers in this skill's territory are pinned to the OLD naming. Silent adoption of a newer verification-writer version will corrupt the `@tag` annotations, break `@begin:ID`/`@end:ID` marker alignment, and produce misleading diffs.
@@ -585,6 +637,12 @@ Browser-verification findings feed back to verification-writer, which updates do
 | Silently regenerating tests when verification-writer has been upgraded | `check-versions.js` reports `skill-version-mismatch` for this exact case — STOP and require `--resync`; never auto-update the `source_generated_by` field |
 | Regenerating test bodies during a `--resync` pass | `--resync` rewrites IDs, stamps, and headers only; `generated_hash` and test content are preserved so pinned tests stay pinned |
 | Creating a metadata doc without recording `source_generated_by` | Every metadata doc MUST stamp the verification-writer version it was synced against — without it `check-versions.js` cannot detect skill-version drift |
+| Generating `@begin:ID` for an ID not returned by `parseVerificationItems()` | Every marker ID must exist in the parsed item set — if the ID isn't in the set, the test is an orphan. Log the gap and skip the block |
+| Writing a spec file without pre-flight ID validation | Validate every `@begin:ID` against the parsed item set before calling Write — orphans at commit time are expensive to clean up |
+| Using a different slugify implementation than sync-tests.js | Both tools must import from `scripts/verification-playwright/lib/slugify.js` — divergent implementations produce different IDs for the same input |
+| Generating tests for a flow doc with no Format A IDs | Flow docs without `**FLOW-PREFIX-NN**` IDs have nothing for `parseVerificationItems()` to return — report the gap, don't mint IDs |
+| Hash drift within the same hash_version | The normalization algorithm must be deterministic — strip trailing whitespace, normalize CRLF→LF, trim surrounding blank lines, encode UTF-8; any variation produces false manual-edit detections |
+| Writing absolute paths into manifest files | All paths in `items.json`, `import-index.json`, and `pending-generation.json` must be project-relative — absolute paths (especially worktree paths) break on any other machine or after worktree cleanup |
 
 ## Red Flags — STOP
 
@@ -599,3 +657,5 @@ Browser-verification findings feed back to verification-writer, which updates do
 - `check-versions.js` reports `skill-version-mismatch` and `--resync` has not been run — STOP; silent adoption of a newer verification-writer version corrupts manifests and test markers
 - About to overwrite a `source_generated_by` or `@source-generated-by` value as part of normal generation — these only change during a `--resync` pass
 - `check-versions.js` reports `stamp-missing` on a verification doc — tell the user to re-run verification-writer so it stamps the doc; do not invent a `source_generated_by` value
+- `items.json`, `import-index.json`, or `pending-generation.json` contain absolute paths (including worktree paths like `.claude/worktrees/...`) — these paths break on any machine other than where they were written; rebuild the manifest with project-relative paths
+- Multiple parallel agents were used to generate tests and their work has been merged — run `verify-pipeline.js` before declaring done; parallel worktree merges silently discard all-but-last for shared files

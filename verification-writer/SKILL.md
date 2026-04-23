@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.1.0
+version: 3.2.0
 author: Bernier LLC
 ---
 
@@ -108,6 +108,7 @@ Every page file MUST include YAML frontmatter describing the page's requirements
 ---
 version: "1.0.0"         # semver — bump on content changes (see versioning rules below)
 generated_by: "verification-writer@3.1.0"   # skill version that last wrote this doc — NEVER edit by hand
+id_namespace: EVT-DTL    # all item IDs in this doc must start with this prefix
 path: /events/{id}        # route pattern
 title: Event Detail Page
 
@@ -152,6 +153,7 @@ environment:
 - **`data_dependencies`**: Plain-language descriptions of state that must exist. Not scripts or setup code — just what needs to be true.
 - **`environment.services`**: Abstract service names. A downstream consumer maps these to actual infrastructure in its own config.
 - **`environment.feature_flags`**: Feature flags that affect this page's behavior. Empty array if none.
+- **`id_namespace`**: A short prefix string that all item IDs in this doc must start with (e.g., `EVT-DTL` means all IDs must begin `EVT-DTL-`). Verification-writer validates every item ID against this prefix before writing. Downstream parsers assert the same constraint. Choose the namespace from the page abbreviation used in the ID convention. On first generation, set this from the IDs you are minting. On subsequent runs, validate existing IDs match and flag any that don't.
 
 **Auth model guidelines:**
 
@@ -173,6 +175,7 @@ When a page has different access rules per user type section (e.g., admin sees e
 ---
 version: "1.0.0"
 generated_by: "verification-writer@3.1.0"
+id_namespace: EVT-DTL
 path: /events/{id}
 title: Event Detail Page
 access:
@@ -229,6 +232,10 @@ The `version` field in frontmatter uses semver and enables downstream consumers 
 
 **Item ID convention:** `{PAGE-ABBREV}-{SECTION}-{ROLE-ABBREV}-{NUMBER}`. The role abbreviation makes it easy to filter: `EVT-DTL-ADM-01` is an admin item on the event detail page, `EVT-DTL-PUB-01` is a public visitor item. Items in the "All User Types" section omit the role abbreviation: `EVT-DTL-01`.
 
+**Format A is the only output format.** Every generated checklist item MUST have an explicit bold ID: `**EVT-DTL-ADM-01**`. This is called Format A. The alternative (Format B — slugifying the action text to derive an ID) must never be generated. Format B parsing is supported in downstream parsers as a migration safety net for legacy docs, but verification-writer must not produce Format B output. The reason: different tools (sync-tests.js, playwright-test-generator) slugify differently, producing different IDs for the same action text — causing drift, orphan markers, and phantom duplicates that are difficult to trace.
+
+**If you cannot determine an ID for a new item, pick the next sequential number in the section.** Never derive an ID from the action text.
+
 **This convention describes NEW IDs only.** On any run that touches an existing doc, preserve every existing item ID verbatim — do not renumber, do not reformat, do not retrofit older IDs to the current convention. Reminting IDs orphans downstream references (playwright test `@tag` annotations, manifest entries, findings reports, commit history). See "Skill Version Tracking and Migration" for the renaming protocol, which requires both an explicit `--migrate-ids` invocation and a matching row in the migration table.
 
 #### Flow files
@@ -243,6 +250,7 @@ Flow files also include YAML frontmatter with versioning and metadata:
 ---
 version: "1.0.0"
 generated_by: "verification-writer@3.1.0"
+id_namespace: FLOW-NOMLC  # all step IDs in this flow must start with this prefix
 title: Event Lifecycle
 user_types: [admin, promoter, artist]
 pages: [event-create, event-detail, magic-link-landing]
@@ -263,6 +271,7 @@ Flow frontmatter is lighter than page frontmatter — flows don't have their own
 ---
 version: "1.0.0"
 generated_by: "verification-writer@3.1.0"
+id_namespace: FLOW-NOMLC  # all step IDs in this flow must start with this prefix
 title: Event Lifecycle
 user_types: [admin, promoter, artist]
 pages: [event-create, event-detail, magic-link-landing]
@@ -320,6 +329,17 @@ Admin, Promoter, Artist
 - Activity log captures all changes across user types
 - Workflow engine fired at each state transition
 ```
+
+**Flow steps require explicit Format A IDs.** Every verification step in a flow doc must have a `**FLOW-<PREFIX>-NN**` ID so that `parseVerificationItems()` can extract it and downstream test generators can emit `@begin:FLOW-<PREFIX>-NN` markers. The prefix is determined by the flow's `id_namespace` frontmatter field.
+
+Flow step items use the same Format A format as page items:
+
+```markdown
+- [ ] [standard] **FLOW-NOMLC-01** Admin creates nomination event and submits --- Event record created, workflow engine fires. *Expected: success with side effects*
+- [ ] [standard] **FLOW-NOMLC-02** Nominated artist receives email invitation --- Invitation email delivered to artist address. *Expected: success with side effects*
+```
+
+The narrative context (page reference, user type, setup notes, "After this step" checks) can remain as prose around the items. The items themselves are what downstream tools consume. A flow doc with only narrative steps and no Format A IDs gives the test generator nothing to extract — it will report the gap rather than inventing IDs.
 
 **Flow files are not independent item sets.** They reference page file items by ID. This means:
 - Items are authored and maintained in page files (single source of truth)
@@ -490,6 +510,7 @@ When the skill version bumps, add a row describing what changes (if any) need to
 |---|---|---|---|---|
 | (missing / unknown) | 3.1.0 | none — preserve all existing IDs | add `generated_by` stamp | no (automatic on first write) |
 | 3.0.0 | 3.1.0 | none — preserve all existing IDs | add `generated_by` stamp | no (automatic on first write) |
+| 3.1.0 | 3.2.0 | none — preserve all existing IDs | add `id_namespace` field to frontmatter (derive from existing item prefix pattern); flag any items whose IDs don't match the namespace | no (automatic on first write) |
 
 When you add a new version row, be explicit: list exact ID-to-ID mappings for any renames. Do not describe renames as "update to match new convention" — that is not actionable by a future Claude. If you cannot list the mappings, the skill is not ready to rename IDs and the rename should be postponed to a later version where the mapping can be defined.
 
@@ -731,6 +752,20 @@ Written to the location and structure determined in "Doc Location and Organizati
 - `valid_range:` — Bounds, constraints, or expected values. Be specific: not "reasonable number" but "0-72 hours" or "$10-$500" or "0-100%"
 - `cross_reference:` — Other values on the same page that should be consistent with this one
 - `red_flags:` — Specific symptoms that indicate a data bug, derived from reading the code. What would a wrong value look like and what would it mean?
+
+**Deferred/reverted feature annotation:** When a feature has been reverted, temporarily removed, or is not yet implemented, items for that feature should remain in the doc (preserving IDs and downstream references) but must be marked deferred:
+
+```markdown
+- [ ] [standard] **MEM-SET-01** Configure Gmail OAuth contacts sync --- Contacts sync enables address autocomplete. *Expected: success*
+<!-- DEFERRED: Gmail OAuth Contacts feature reverted 2026-04-02. Pending re-implementation. See project memory. -->
+```
+
+**Rules for DEFERRED annotations:**
+- Keep the item's Format A ID — removing items destroys downstream references (playwright markers, manifest entries, run logs)
+- The annotation signals downstream consumers (playwright-test-generator) to emit `test.skip()` with the deferral reason, preserving the Format A ID with no slug fallback
+- Include: what was reverted/deferred, when, and where to find more context (project memory, issue tracker, PR)
+- Remove the DEFERRED annotation when the feature is re-implemented and verified
+- Never add DEFERRED to an item that is actively working — DEFERRED means the feature does not exist in the current codebase
 
 **When to annotate:** Not every item needs a business context annotation. Use them when:
 - The item verifies a computed/derived value (timers, totals, percentages, derived status)
@@ -1039,6 +1074,11 @@ HTML visualization: [flow-views | sitemap | both | none]
 | Not bumping version on doc changes | Every edit to a verification doc must bump the frontmatter version. Downstream consumers depend on version changes to detect staleness |
 | Not stamping `generated_by` on write | Every write must set `generated_by: "verification-writer@<current-semver>"` — future skill versions rely on this stamp to pick the correct migration, and downstream skills rely on it to detect when their manifest is out of sync |
 | Reminting existing item IDs | Preserve every existing ID verbatim on subsequent runs. The naming convention is for new IDs only. Renaming requires `--migrate-ids` AND a matching migration-table row |
+| Removing items for reverted features | Preserve item IDs — removal destroys downstream references. Instead, add a `<!-- DEFERRED: reason -->` annotation; downstream generator emits test.skip() with the reason |
+| Leaving items for reverted features without a DEFERRED annotation | Items for features not in the current codebase must carry a DEFERRED annotation so downstream generators skip them properly rather than generating tests for non-existent UI |
+| Generating a checklist item without a bold **ID** | Format A (`**EVT-DTL-ADM-01**`) is required on every generated item — never derive an ID from action text (Format B) |
+| Not adding id_namespace to new page or flow frontmatter | Every new doc needs id_namespace; without it, downstream parsers cannot validate that IDs belong to this doc |
+| Writing flow docs with only narrative steps | Each flow step needs a Format A `**FLOW-PREFIX-NN**` ID — narrative-only steps give downstream generators nothing to extract, causing invented IDs |
 | Writing to a doc with a newer `generated_by` than the current skill | STOP. Do not write. Tell the user the skill is older than the doc — writing would lose structural information encoded by the newer version |
 | Running `--migrate-ids` without a migration table row | If the migration table has no row for the version gap being crossed, the skill does not know what to rename. Do not invent renames — postpone the migration until the table is populated |
 | Wrong auth_model in frontmatter | Read the actual auth code — don't guess. If the app uses RBAC middleware, set `auth_model: rbac`. If it uses OAuth scopes, set `oauth-scope`. Misclassification causes downstream consumers to wire up wrong auth strategies |
@@ -1053,3 +1093,6 @@ HTML visualization: [flow-views | sitemap | both | none]
 - About to write to a doc whose `generated_by` stamp is a newer version than this skill — the skill is older than the doc; writing risks destroying newer structure
 - About to renumber or reformat existing item IDs without `--migrate-ids` — ID stability is load-bearing for downstream manifests and references
 - `--migrate-ids` invoked but no migration-table row matches the version gap — the rename set is undefined; ask the user and add a table row before proceeding
+- About to generate a checklist item without a bold `**ID**` — Format A is mandatory for all generated items; derive or skip the item before writing without an ID
+- About to remove an item for a reverted feature — removal orphans downstream references; add a `<!-- DEFERRED: reason -->` annotation instead
+- A flow doc has steps with no Format A IDs and the test generator has been invoked — report the gap to the user; do not generate flow step IDs on behalf of the verification-writer
