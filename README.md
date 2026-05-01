@@ -34,8 +34,21 @@ This repository includes a diverse collection of example skills demonstrating di
 
 ## Development & Technical
 - 🅰️ **artifacts-builder** - Build complex claude.ai HTML artifacts using React, Tailwind CSS, and shadcn/ui components
-- 🅰️ **mcp-server** - Guide for creating high-quality MCP servers to integrate external APIs and services
+- 🅰️ **mcp-builder** - Guide for creating high-quality MCP servers to integrate external APIs and services
 - 🅰️ **webapp-testing** - Test local web applications using Playwright for UI verification and debugging
+
+## Testing & QA
+- ![Bernier LLC](assets/bernier-emoji-16.png) **browser-verification** - Manual QA verification of web application features in a browser using verification checklists
+- ![Bernier LLC](assets/bernier-emoji-16.png) **playwright-test-generator** - Convert verification docs to Playwright tests incrementally with support for auth-aware generation and hook-driven automation
+- ![Bernier LLC](assets/bernier-emoji-16.png) **playwright-test-runner** - Autonomous Playwright test execution, failure diagnosis, fix implementation, and environment teardown
+- ![Bernier LLC](assets/bernier-emoji-16.png) **ui-audit** - Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests
+- ![Bernier LLC](assets/bernier-emoji-16.png) **ux-audit** - Systematically identify user experience problems through browser inspection and code analysis with prioritized findings and WCAG 2.1 AA coverage
+- ![Bernier LLC](assets/bernier-emoji-16.png) **verification-writer** - Generate, update, and audit manual verification docs for browser-based QA from codebase routes, components, and user types
+
+## Developer Workflow
+- ![Bernier LLC](assets/bernier-emoji-16.png) **commit** - Standardized commit workflow with commitlint validation, gitignore checks, and safe push procedures
+- ![Bernier LLC](assets/bernier-emoji-16.png) **plan-review** - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
+- ![Bernier LLC](assets/bernier-emoji-16.png) **seed-data** - Create, modify, or audit application data across environments with data classification, idempotency enforcement, and framework-aware workflow
 
 ## Enterprise & Communication
 - 🅰️ **brand-guidelines** - Apply Anthropic's official brand colors and typography to artifacts
