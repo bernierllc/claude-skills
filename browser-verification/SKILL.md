@@ -1,7 +1,12 @@
 ---
 name: browser-verification
 description: Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes
-version: 2.2.0
+version: 2.3.0
+dependencies:
+  skills:
+    - name: verification-writer
+      min_version: "3.3.0"
+      reason: "Walks verification page and flow docs as the working checklist; reads affected_paths informationally to prioritize pages whose source globs intersect changed code."
 author: Bernier LLC
 ---
 
