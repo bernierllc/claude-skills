@@ -1,6 +1,11 @@
 ---
 name: playwright-test-generator
-version: 3.4.0
+version: 3.5.0
+dependencies:
+  skills:
+    - name: verification-writer
+      min_version: "3.3.0"
+      reason: "Reads verification page docs from docs/verification/pages/, including affected_paths globs and generated_by version stamps in frontmatter."
 description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
