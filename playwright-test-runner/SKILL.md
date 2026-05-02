@@ -1,6 +1,11 @@
 ---
 name: playwright-test-runner
-version: 1.2.0
+version: 1.3.0
+dependencies:
+  skills:
+    - name: verification-writer
+      min_version: "3.3.0"
+      reason: "Reads affected_paths frontmatter from verification page docs to support --changed-paths scope mode."
 description: Autonomous Playwright test execution, environment management, profiling, and bug-fixing loop. Spins up isolated test environments (database, server), executes test suites, profiles performance, diagnoses failures, implements fixes, cleans up all test artifacts, and tears down the environment. Companion to playwright-test-generator. Use when running Playwright test suites, when tests are failing and need diagnosis/fixing, when validating a feature branch before merge, or when the test suite needs a full pass with autonomous repair. Triggered by test failures, CI red builds, pre-merge validation, or explicit user request to run and fix tests.
 ---
 
