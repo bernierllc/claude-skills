@@ -32,7 +32,7 @@ The YAML frontmatter has 3 required properties:
     - Semantic version string (MAJOR.MINOR.PATCH)
     - PATCH for fixes, MINOR for new capabilities, MAJOR for breaking changes
 
-There are 4 optional properties:
+There are 5 optional properties:
 
 - `author`
     - The person or organization that created the skill
@@ -46,6 +46,17 @@ There are 4 optional properties:
     - A map from string keys to string values
     - Clients can use this to store additional properties not defined by the Agent Skills Spec
     - We recommend making your key names reasonably unique to avoid accidental conflicts
+- `dependencies`
+    - Declares other skills this skill depends on. Optional; absent means no declared dependencies.
+    - Schema:
+      ```yaml
+      dependencies:
+        skills:
+          - name: <skill-name>          # exact installable name
+            min_version: "X.Y.Z"        # minimum semver that satisfies the dependency
+            reason: "<why>"             # required, surfaced in install prompts
+      ```
+    - Resolution and approval flow are defined by the installer (e.g., AEC). Skills MUST continue to function on platforms that do not honor this field — declaring a dependency is informational on its own. Pair declarations with a runtime preflight if missing dependencies would produce confusing failures.
 
 ## Markdown Body
 
@@ -59,3 +70,4 @@ For a minimal example, see the `template-skill` example.
 
 - 1.0 (2025-10-16) Public Launch
 - 1.1 (2026-03-30) Added required version field and optional author field
+- 1.2 (2026-05-02) Added optional `dependencies` field for declaring inter-skill dependencies

@@ -73,6 +73,30 @@ author: Your Name or Organization
 [Concrete examples of usage]
 ```
 
+### Declaring Dependencies on Other Skills
+
+If your skill consumes output produced by another skill in this repo, declare it in frontmatter so installers (e.g., AEC) can resolve it at install time:
+
+```yaml
+---
+name: your-skill
+version: 1.0.0
+description: ...
+dependencies:
+  skills:
+    - name: upstream-skill
+      min_version: "3.3.0"
+      reason: "Reads output produced by this skill"
+---
+```
+
+Rules:
+
+- `name` must match an installable skill exactly.
+- `min_version` is the lowest semver your skill works against — bump it when you start relying on a newer feature of the upstream skill.
+- `reason` is required and is shown to the user during install approval. Keep it specific.
+- Declarations are informational on platforms without a resolver. Always pair them with a runtime preflight (see `playwright-test-generator/scripts/preflight.sh` for the pattern) so missing dependencies fail clearly at run time too.
+
 ### Versioning
 
 Every skill carries a semantic version (`MAJOR.MINOR.PATCH`) in its SKILL.md frontmatter. Any PR that modifies a skill must bump its version:
