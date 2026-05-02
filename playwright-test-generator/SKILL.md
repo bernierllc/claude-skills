@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.3.0
+version: 3.4.0
 description: Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items.
 ---
 
@@ -62,6 +62,7 @@ A JS script at `scripts/verification-playwright/check-versions.js` handles all m
 | `header-missing` | Test file exists but has no `@source` / `@metadata` header comments | Yes — add header comments to existing test |
 | `skill-version-mismatch` | Verification doc's `generated_by` (live verification-writer version) is newer than the metadata doc's `source_generated_by` (the version this manifest was synced against) | Yes — user MUST run `--resync` before any other generation work; the skill STOPS otherwise |
 | `stamp-missing` | Verification doc has frontmatter but no `generated_by` stamp (pre-v3.1.0 verification-writer output) | Yes — tell user to run verification-writer to add the stamp; proceed cautiously if user overrides |
+| `affected-path-missing-on-disk` | Verification doc lists a path or glob in `affected_paths` that expands to zero files in the working tree | Yes — flag to user; the source file moved or was deleted. Tests for this page may now be testing nothing. Do not generate or update tests for this page until verification-writer is re-run to re-verify the mapping |
 
 **This script replaces the full-scan approach.** Instead of the agent parsing every verification doc and test file to figure out what changed, the script does the comparison in milliseconds and hands the agent a precise task list. The agent only processes items that need work.
 
@@ -94,6 +95,7 @@ The hook runs `sync-tests.js` first. If the script detects items needing LLM int
 
 Complete these in order:
 
+0. **Preflight** — run `bash scripts/preflight.sh` from the skill directory. If exit code is 0, continue. If non-zero, print its stdout verbatim to the user and STOP. Do not attempt to recover, retry, or work around the failure. The script verifies that `docs/verification/pages/*.md` exists; without that, this skill has nothing to translate.
 1. **Run version check script** — execute `check-versions.js`, read the task list output
 2. **Check for `skill-version-mismatch` entries FIRST** — if any item has this status, STOP. Report the gap to the user and direct them to re-run with `--resync`. Do not proceed to step 3 until either every mismatch is resolved by a `--resync` pass OR the user explicitly overrides. Silent adoption of a newer verification-writer version corrupts downstream anchors (see "Skill Version Compatibility")
 3. **Triage the remaining task list** — separate into: frontmatter-missing (blocked), stamp-missing (blocked, direct user to verification-writer), metadata-missing (create), source-updated (re-evaluate), test-missing (generate), header-missing (patch), up-to-date (skip)
