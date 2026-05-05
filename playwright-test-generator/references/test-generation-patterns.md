@@ -170,6 +170,87 @@ When an item carries an `API-VERIFICATION-FLAG` annotation, use this table to de
 | `API-VERIFICATION-FLAG` present, no `*API-only*` tag | Driven by item text | Generate test for resolved type; embed `endpoint` as code comment regardless: `// API ref: POST /events/create`. Ignore `durability` unless type resolves to `api-response`. |
 | No annotation, item text matches `api-response` triggers | `api-response` | `page.request` test; no durability consideration |
 
+## Selector Verification (live tests only)
+
+A live test (non-`.skip()`) must use a selector confirmed against component source. Before writing the test:
+
+1. Use `manifest/import-index.json` to map the route → source file.
+2. Read the component file(s) rendered for that route.
+3. For each selector, confirm one of:
+   - exact `data-testid` attribute present in JSX
+   - exact `getByRole` + accessible name present in JSX
+   - exact `getByLabel` association present in JSX
+   - exact static text/placeholder literal present in JSX
+
+If verification fails, emit a `.skip()` stub with skip reason 3 (selector unverified) using this template:
+
+```typescript
+// @begin:PUB-07
+test.skip('@PUB-07 @standard @public-home article cards visible',
+  async ({ page }) => {
+    // SKIP REASON: missing data-testid (skip reason 3) — selector unverified
+    // Component read: components/PublicHome/ArticleList.tsx
+    // Alternatives tried:
+    //   data-testid="article-card": not found in component source
+    //   getByRole('article'): component renders <div>, not <article>
+    //   getByText: card content is dynamic data, not static copy
+    // TODO: Add data-testid="article-card" to ArticleCard.tsx, then remove .skip()
+  });
+// @end:PUB-07
+```
+
+**Forbidden in live tests** (these patterns indicate a guess, not a verification):
+
+- `[data-testid*="..."]` — substring matching is a guess that the testid contains a word; the actual attribute may not exist.
+- `locator('form').first()`, `nav a`, `article`, `.card` — generic CSS that assumes markup shape.
+- `OR-chains` like `[data-testid*="x"], article, .x` — stacking guesses does not produce a verified selector; it produces a more tolerant guess.
+- `getByText(/dynamic regex/i)` against data values that vary per environment.
+
+If you find yourself writing one of these because you cannot read the source, that's the signal to emit a stub instead.
+
+## Live Data Dependencies
+
+When a verification item asserts presence of dynamic content (e.g., cards, feed entries, table rows), the test depends on seeded data.
+
+**Generation pattern when `data_setup.ready = true`:**
+
+```typescript
+// @begin:PUB-07
+test('@PUB-07 @standard @public-home article cards visible',
+  async ({ page }) => {
+    // Classification: ui-navigation (with data dependency)
+    // Required data: ≥1 published article (see metadata/public-home.md)
+    await seedArticles({ count: 3 });
+    await page.goto('/');
+    await expect(page.getByTestId('article-card').first()).toBeVisible();
+  });
+// @end:PUB-07
+```
+
+**Generation pattern when `data_setup.ready = false`:**
+
+```typescript
+// @begin:PUB-07
+test.skip('@PUB-07 @standard @public-home article cards visible',
+  async ({ page }) => {
+    // SKIP REASON: data_setup.ready = false (skip reason 2)
+    // Required data: ≥1 published article
+    // TODO: Implement helpers/seed.ts#seedArticles, set data_setup.ready=true in metadata/public-home.md
+  });
+// @end:PUB-07
+```
+
+**Anti-pattern (do not generate this):**
+
+```typescript
+// WRONG — masks real assertion failures
+const hasCards = await page.locator('[data-testid*="article-card"], article').count() > 0;
+const hasEmptyState = await page.getByText(/no articles yet/i).isVisible().catch(() => false);
+expect(hasCards || hasEmptyState).toBe(true);
+```
+
+The `hasContent || hasEmptyState` fallback is only valid when the verification item itself is explicitly typed `graceful empty state` — i.e., the *expected outcome* under test is the empty state. For items asserting content presence, the only valid outcomes are: seeded + assertion, or stubbed.
+
 ## Missing Testid Handling
 
 When a verification item references UI elements without `data-testid` attributes:
@@ -190,7 +271,8 @@ test.skip('@EVT-FRM-SD-01 @deep @admin-event-form state cascade on type change',
 // @end:EVT-FRM-SD-01
 ```
 
-2. Log the gap to `testid-gaps.md`:
+2. Log the gap to `testid-gaps.md`. Every skip-reason-3 stub gets an entry — both *confirmed-missing* (component read, testid not present) and *unverified* (selector guessed because source could not be confirmed). The `Status` column distinguishes them so component owners can prioritize:
+
 ```markdown
 # Verification Playwright: Missing data-testids
 
@@ -199,18 +281,26 @@ test.skip('@EVT-FRM-SD-01 @deep @admin-event-form state cascade on type change',
 
 ## Priority: High (standard depth items)
 
-| Item ID | Description | Suggested testid | Component file |
-|---------|-------------|-----------------|----------------|
-| EVT-FRM-TKT-04 | Negative price validation | `ticket-price-min-error` | EventForm.tsx |
+| Item ID | Description | Suggested testid | Component file | Status |
+|---------|-------------|------------------|----------------|--------|
+| EVT-FRM-TKT-04 | Negative price validation | `ticket-price-min-error` | EventForm.tsx | confirmed-missing |
+| PUB-07 | Article cards visible | `article-card` | ArticleCard.tsx | confirmed-missing |
+| ADM-CORE-04 | Recent activity panel | `recent-activity` | AdminDashboard.tsx | unverified (component not located via import-index) |
 
 ## Priority: Normal (deep depth items)
 
-| Item ID | Description | Suggested testid | Component file |
-|---------|-------------|-----------------|----------------|
-| EVT-FRM-SD-01 | State cascade on type change | `event-type-select` | EventForm.tsx |
+| Item ID | Description | Suggested testid | Component file | Status |
+|---------|-------------|------------------|----------------|--------|
+| EVT-FRM-SD-01 | State cascade on type change | `event-type-select` | EventForm.tsx | confirmed-missing |
 ```
 
-3. On subsequent runs, grep the codebase for previously-missing testids. If found, remove `.skip()` and update status to `active`.
+**Status values:**
+- `confirmed-missing` — component source was read; the suggested testid (or any stable alternative) is not present. Add the testid.
+- `unverified` — component source could not be confidently located or read. The testid may or may not exist; needs human disambiguation. Pair with a note in the Description column explaining what blocked verification.
+
+3. On subsequent runs, grep the codebase for previously-missing testids. If found, remove `.skip()` and update status to `active`. For `unverified` rows, re-attempt source location before grepping — the gap may resolve once `import-index.json` is corrected.
+
+4. **Data-dependency stubs (skip reason 2) do NOT belong in `testid-gaps.md`.** They go in a separate `data-setup-gaps.md` (or a labeled section within the same report) keyed by required seed shape. Mixing them obscures which component owners need to act vs. which seed authors do.
 
 ## Test Pinning
 
