@@ -1,0 +1,29 @@
+{
+  "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
+  "version": "1.0.0",
+  "hooks": [
+    {
+      "id": "ptg-check-changed-docs-pre-commit",
+      "event": "pre_commit",
+      "command": "git diff --cached --name-only -- 'docs/verification/**/*.md' | xargs -I{} aec run-script playwright-test-generator sync-tests.js --changed-doc {} && aec run-script playwright-test-generator preflight.sh",
+      "description": "Before commit, check staged verification docs for changes. For each changed doc, sync/regenerate playwright tests. Then run preflight to ensure all tests pass.",
+      "blocking": true,
+      "timeout_ms": 60000,
+      "when": {
+        "repo_has": ["docs/verification"]
+      }
+    },
+    {
+      "id": "ptg-sync-tests-on-doc-edit",
+      "event": "on_file_edit",
+      "command": "aec run-script playwright-test-generator sync-tests.js --check-only",
+      "description": "After verification doc changes, check if playwright tests need regeneration.",
+      "match": "docs/verification/**/*.md",
+      "blocking": false,
+      "timeout_ms": 10000,
+      "when": {
+        "repo_has": ["docs/verification"]
+      }
+    }
+  ]
+}
