@@ -138,6 +138,19 @@ parse/`tsc --noEmit` smoke check on changed specs as an additional gate.
   SKILL.md states explicitly that skip stubs carry markers. The marker-less
   stubs you observed are a *generation* bug, not an over-strict check.
 
+  **Generation-bug follow-up (skill v3.8.1).** Root cause of the marker-less
+  stubs traced to SKILL.md itself: the only two inline test-code examples in the
+  always-loaded skill body (the auth-aware live test and `.skip()` stub) were
+  written without `@begin`/`@end` markers, contradicting the prose invariant a
+  few sections below. A generating agent pattern-matches the nearest concrete
+  example over distant prose, so it reproduced marker-less stubs. Both examples
+  now carry markers (and use the canonical tags-first title format), with an
+  explicit note that the wrapping is required even inside a `test.describe`
+  block. The stub source — verification-writer — was ruled out: it only writes
+  `docs/verification/*.md` (item IDs + `<!-- DEFERRED -->` annotations) and never
+  emits spec code or markers; all `.skip()`/marker emission is owned by
+  playwright-test-generator's generation step.
+
 - **Defect #3 — FIXED (defense in depth).** SKILL.md step 7b.1 adds a pre-write
   artifact-token guard (hard stop, regenerate). `verify-pipeline.js` adds a
   deterministic on-disk `checkSpecArtifacts` gate that fails any spec containing

@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.8.0
+version: 3.8.1
 dependencies:
   skills:
     - name: verification-writer
@@ -284,9 +284,11 @@ test.describe('Event Detail - Admin', () => {
     await loginAsAdmin(page);
   });
 
-  test('EVT-DTL-ADM-01 Verify edit button is visible @EVT-DTL-ADM-01 @standard @event-detail', async ({ page }) => {
+  // @begin:EVT-DTL-ADM-01
+  test('@EVT-DTL-ADM-01 @standard @event-detail edit button is visible', async ({ page }) => {
     // ... test code
   });
+  // @end:EVT-DTL-ADM-01
 });
 ```
 
@@ -294,13 +296,17 @@ test.describe('Event Detail - Admin', () => {
 
 ```typescript
 test.describe('Event Detail - Admin', () => {
-  // SKIP: no auth helper for 'admin' role — see metadata/event-detail.md
-  test.skip('EVT-DTL-ADM-01 Verify edit button is visible @EVT-DTL-ADM-01 @standard @event-detail', async ({ page }) => {
+  // @begin:EVT-DTL-ADM-01
+  test.skip('@EVT-DTL-ADM-01 @standard @event-detail edit button is visible', async ({ page }) => {
+    // SKIP REASON: auth.ready = false (skip reason 1) — no auth helper for 'admin' role
     // Auth requirement: rbac, role: admin
-    // Implement helpers/auth.ts#loginAsAdmin, then update metadata/event-detail.md auth.ready=true
+    // TODO: Implement helpers/auth.ts#loginAsAdmin, set auth.ready=true in metadata/event-detail.md, then remove .skip()
   });
+  // @end:EVT-DTL-ADM-01
 });
 ```
+
+Both examples — live and `.skip()` — wrap each test in its own `@begin:ID`/`@end:ID` markers, **including inside a `test.describe` block**. This is not optional: a marker-less stub is invisible to `sync-tests.js` and is flagged as an orphan by `verify-pipeline.js`. See "ID Source Discipline" and "Generating Tests" for the invariant.
 
 ### Auth strategy is a per-project decision
 
