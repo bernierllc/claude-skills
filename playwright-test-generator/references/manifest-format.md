@@ -48,6 +48,8 @@ Tracks the mapping between verification items and generated Playwright tests.
 
 Maps source files to the verification page docs they affect. Used by `map-changes.js` for change-scoped test execution.
 
+Keys are **repo-root-relative** (the git toplevel), not relative to the Playwright project dir. This lets keys span multiple packages in a monorepo and match `git diff --name-only` output, which is always repo-root-relative. `map-changes.js` and `verify-pipeline.js` resolve the repo root with `git rev-parse --show-toplevel` and fall back to the project dir outside a git repo, so single-root projects (where the two bases coincide) are unaffected. The example below uses keys like `admin/static/admin/src/...` and `admin/app/...` — two packages under one repo root.
+
 ```json
 {
   "version": "1.0",

@@ -90,6 +90,42 @@ describe('mapFilesToTags', () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain('not in import index');
   });
+
+  it('maps repo-root-relative git paths across packages against repoRoot', async () => {
+    // Monorepo: Playwright project root is a subdir; git diff and index keys are
+    // repo-root-relative and span two packages. Sources live at the repo root.
+    const projectDir = join(tempDir, 'apps', 'web');
+    await mkdir(join(tempDir, 'packages', 'ui', 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'packages', 'ui', 'src', 'Button.tsx'), '');
+    await mkdir(join(tempDir, 'apps', 'web', 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'apps', 'web', 'src', 'Home.tsx'), '');
+
+    const importIndex = {
+      entries: {
+        'packages/ui/src/Button.tsx': ['shared-ui'],
+        'apps/web/src/Home.tsx': ['web-home']
+      }
+    };
+
+    const result = await mapFilesToTags(
+      ['packages/ui/src/Button.tsx', 'apps/web/src/Home.tsx'],
+      importIndex,
+      projectDir,
+      tempDir
+    );
+    expect(result.tags).toContain('@shared-ui');
+    expect(result.tags).toContain('@web-home');
+    expect(result.warnings).toHaveLength(0);
+
+    // Regression guard: single-base behavior would treat both as stale → 0 tags.
+    const buggy = await mapFilesToTags(
+      ['packages/ui/src/Button.tsx', 'apps/web/src/Home.tsx'],
+      importIndex,
+      projectDir
+    );
+    expect(buggy.tags).toHaveLength(0);
+    expect(buggy.warnings).toHaveLength(2);
+  });
 });
 
 describe('main', () => {
