@@ -8,10 +8,14 @@ import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { readManifestFileSync } from './lib/manifest.js';
+import { resolveRepoRoot } from './lib/repo.js';
 import { fileURLToPath } from 'node:url';
 
-/** Map file list to affected page tags using an import index. */
-export async function mapFilesToTags(files, importIndex, projectDir) {
+/** Map file list to affected page tags using an import index.
+ * `files` (from `git diff --name-only`) and import-index keys are both
+ * repo-root-relative, so existence is checked against repoRoot. repoRoot
+ * defaults to projectDir for single-root projects. */
+export async function mapFilesToTags(files, importIndex, projectDir, repoRoot = projectDir) {
   const tags = new Set();
   const warnings = [];
 
@@ -27,7 +31,7 @@ export async function mapFilesToTags(files, importIndex, projectDir) {
     const pageTags = entries[file];
 
     if (pageTags) {
-      const fullPath = join(projectDir, file);
+      const fullPath = join(repoRoot, file);
       if (!existsSync(fullPath)) {
         warnings.push(`Index entry "${file}" is stale (file no longer exists)`);
         continue;
@@ -48,6 +52,7 @@ export async function main(args, projectDir) {
   const importIndex = readManifestFileSync(projectDir, 'import-index.json');
   if (!importIndex) return { tags: [], warnings: [] };
 
+  const repoRoot = resolveRepoRoot(projectDir);
   let files;
   if (args.includes('--since-main')) {
     try {
@@ -61,7 +66,7 @@ export async function main(args, projectDir) {
     files = args.filter(f => f !== '--since-main' && f !== '--help');
   }
 
-  return mapFilesToTags(files, importIndex, projectDir);
+  return mapFilesToTags(files, importIndex, projectDir, repoRoot);
 }
 
 // --- CLI entry point ---

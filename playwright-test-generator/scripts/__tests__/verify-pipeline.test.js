@@ -4,6 +4,7 @@ import {
   checkSourceFiles,
   checkSpecFiles,
   checkItemConsistency,
+  checkSpecArtifacts,
   checkPinnedTests,
   checkPendingGeneration,
   verifyPipeline
@@ -91,6 +92,37 @@ describe('checkSourceFiles', () => {
     expect(missing.status).toBe('fail');
     expect(missing.message).toContain('not found');
   });
+
+  it('resolves repo-root-relative index keys against repoRoot in a monorepo', async () => {
+    // Monorepo shape: Playwright project root is a subdirectory; manifest lives
+    // under it. Index keys are repo-root-relative and span two packages.
+    const projectDir = join(tempDir, 'apps', 'web');
+    const manifestDir = join(projectDir, 'manifest');
+    await mkdir(manifestDir, { recursive: true });
+
+    await writeFile(join(manifestDir, 'import-index.json'), JSON.stringify({
+      version: '1.0',
+      entries: {
+        'packages/ui/src/Button.tsx': ['page-a'],
+        'apps/web/src/Home.tsx': ['page-b']
+      }
+    }));
+
+    // Sources exist at the REPO ROOT (tempDir), not under projectDir.
+    await mkdir(join(tempDir, 'packages', 'ui', 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'packages', 'ui', 'src', 'Button.tsx'), 'export const Button = () => {};');
+    await mkdir(join(tempDir, 'apps', 'web', 'src'), { recursive: true });
+    await writeFile(join(tempDir, 'apps', 'web', 'src', 'Home.tsx'), 'export const Home = () => {};');
+
+    // With repoRoot passed, both resolve and pass.
+    const results = await checkSourceFiles(manifestDir, projectDir, tempDir);
+    expect(results.every(r => r.status === 'pass')).toBe(true);
+
+    // Regression guard: the old single-base behavior (repoRoot === projectDir)
+    // would double the path and falsely report both as not found.
+    const buggy = await checkSourceFiles(manifestDir, projectDir);
+    expect(buggy.every(r => r.status === 'fail')).toBe(true);
+  });
 });
 
 describe('checkSpecFiles', () => {
@@ -169,6 +201,104 @@ test('EVT-01', async () => {});
     expect(evt01.status).toBe('pass');
     expect(evt02.status).toBe('fail');
     expect(evt02.message).toContain('Orphaned');
+  });
+
+  it('passes a skipped item whose marked block is a real .skip() stub', async () => {
+    const manifestDir = join(tempDir, 'manifest');
+    await mkdir(manifestDir, { recursive: true });
+    const testsDir = join(tempDir, 'tests');
+    await mkdir(testsDir, { recursive: true });
+
+    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
+      version: '1.0',
+      items: { 'PUB-07': { spec_file: 'tests/page.spec.ts', status: 'skipped' } }
+    }));
+
+    await writeFile(join(testsDir, 'page.spec.ts'), `
+// @begin:PUB-07
+test.skip('@PUB-07 article cards visible', async ({ page }) => {});
+// @end:PUB-07
+`);
+
+    const results = await checkItemConsistency(manifestDir, tempDir);
+    expect(results.find(r => r.itemId === 'PUB-07').status).toBe('pass');
+  });
+
+  it('fails a skipped item whose marked block has no .skip()', async () => {
+    const manifestDir = join(tempDir, 'manifest');
+    await mkdir(manifestDir, { recursive: true });
+    const testsDir = join(tempDir, 'tests');
+    await mkdir(testsDir, { recursive: true });
+
+    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
+      version: '1.0',
+      items: { 'PUB-07': { spec_file: 'tests/page.spec.ts', status: 'skipped' } }
+    }));
+
+    await writeFile(join(testsDir, 'page.spec.ts'), `
+// @begin:PUB-07
+test('@PUB-07 article cards visible', async ({ page }) => {});
+// @end:PUB-07
+`);
+
+    const results = await checkItemConsistency(manifestDir, tempDir);
+    const r = results.find(r => r.itemId === 'PUB-07');
+    expect(r.status).toBe('fail');
+    expect(r.message).toContain('no .skip()');
+  });
+});
+
+describe('checkSpecArtifacts', () => {
+  let tempDir;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'verify-artifact-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('fails specs containing leaked tool-call artifact tokens', async () => {
+    const manifestDir = join(tempDir, 'manifest');
+    await mkdir(manifestDir, { recursive: true });
+    const testsDir = join(tempDir, 'tests');
+    await mkdir(testsDir, { recursive: true });
+
+    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
+      version: '1.0',
+      items: {
+        'A': { spec_file: 'tests/clean.spec.ts' },
+        'B': { spec_file: 'tests/corrupt.spec.ts' }
+      }
+    }));
+
+    await writeFile(join(testsDir, 'clean.spec.ts'), `test('a', async () => {});`);
+    // Build the artifact token at runtime so this test file itself stays clean.
+    const tok = '<' + '/invoke>';
+    await writeFile(join(testsDir, 'corrupt.spec.ts'), `test('b', async () => {});\n${tok}\n`);
+
+    const results = await checkSpecArtifacts(manifestDir, tempDir);
+    expect(results.find(r => r.file === 'tests/clean.spec.ts').status).toBe('pass');
+    const bad = results.find(r => r.file === 'tests/corrupt.spec.ts');
+    expect(bad.status).toBe('fail');
+    expect(bad.message).toContain('artifact');
+  });
+
+  it('passes when all specs are clean', async () => {
+    const manifestDir = join(tempDir, 'manifest');
+    await mkdir(manifestDir, { recursive: true });
+    const testsDir = join(tempDir, 'tests');
+    await mkdir(testsDir, { recursive: true });
+
+    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
+      version: '1.0',
+      items: { 'A': { spec_file: 'tests/clean.spec.ts' } }
+    }));
+    await writeFile(join(testsDir, 'clean.spec.ts'), `test('a', async () => {});`);
+
+    const results = await checkSpecArtifacts(manifestDir, tempDir);
+    expect(results.every(r => r.status === 'pass')).toBe(true);
   });
 });
 
