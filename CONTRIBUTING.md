@@ -105,6 +105,14 @@ Every skill carries a semantic version (`MAJOR.MINOR.PATCH`) in its SKILL.md fro
 - **MINOR** (e.g., 1.0.0 → 1.1.0): New capabilities, additional examples, expanded instructions
 - **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes to the skill's interface or behavior
 
+If your skill has a `hooks.json` alongside `SKILL.md`, the `version` field in `hooks.json` must match the `version` in `SKILL.md`. A repo pre-commit hook enforces this — install it once per clone:
+
+```bash
+scripts/install-hooks.sh
+```
+
+That sets `core.hooksPath` to `.githooks/`, which runs `scripts/check-hook-versions.py` before each commit and blocks any mismatch.
+
 ### 5. Test Your Skill
 
 Before submitting:

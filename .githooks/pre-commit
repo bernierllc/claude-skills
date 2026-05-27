@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Block commits when any skill's hooks.json version disagrees with its SKILL.md version.
+# Install with: scripts/install-hooks.sh
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+exec python3 "$repo_root/scripts/check-hook-versions.py"
