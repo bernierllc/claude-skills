@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.0.0
+version: 1.0.1
 author: Bernier LLC
 ---
 
@@ -78,6 +78,17 @@ synthesizes, and integrates — it does not do fan-out work itself.
 - Adversarial verification on risky stages: anything touching money, auth, data integrity, or
   a contract change gets independent verify agents prompted to refute.
 - Worktree isolation only when workers mutate files in parallel.
+- **Environment moves come first.** Create worktrees and pin directories *before* dispatching
+  background agents; a mid-run move strands in-flight agents (their shell calls against the
+  old checkout get refused). If a move becomes necessary mid-run, wait for in-flight agents
+  to return, then move, then dispatch the rest with paths absolute to the new location.
+- **Worktree hygiene at creation:** add dependency/build symlinks (`node_modules` and
+  friends) to the worktree's `.git/info/exclude`, and prefer explicit `git add <paths>` over
+  `git add -A` inside worktrees — symlinked artifacts show as untracked and `-A` will commit
+  them.
+- **Re-verify the branch at every commit.** Run `git branch --show-current` immediately
+  before each commit — never trust intake-phase or snapshot git state after context
+  compaction, a long run, or when another session shares the checkout.
 - Every worker prompt names the skill it should invoke when installed (e.g.
   `superpowers:test-driven-development` for implementation,
   `superpowers:systematic-debugging` when a worker hits a bug).
