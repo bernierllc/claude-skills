@@ -48,6 +48,15 @@ Workers that edit the repo concurrently get `isolation: 'worktree'` and **file o
 map every file each worker touches before dispatch; a file in two scopes means one owner or
 sequential execution. After integration, run the test suite before committing the merge.
 
+## Checkpoint as you go (large fan-outs)
+
+A run killed mid-fan-out (usage limit, crash, host restart) loses every worker result still
+in memory. On fan-outs where re-running workers is expensive, make each worker prompt end
+with: "Before returning, write your full result to `<plans-or-scratchpad-dir>/<run>-<key>.md`."
+The files are the checkpoint — a dead run is then reconstructable from disk even when
+`resumeFromRunId` isn't available, and a resumed run can skip workers whose file exists.
+Cheap insurance: one extra Write per worker.
+
 ## Resume, don't restart
 
 Interrupted or partially wrong run → fix the script file and relaunch with `resumeFromRunId`;
