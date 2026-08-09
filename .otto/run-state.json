@@ -44,9 +44,10 @@
     {
       "id": "documentation",
       "description": "Document new skills in Otto HQ, add pointers to global CLAUDE.md, mark plan 5.2 done, Activity Log row",
-      "status": "pending"
+      "status": "done",
+      "evidence": "Otto HQ page 3b74efec-c95a-81ee created; CLAUDE.md Session resumability section updated with /ship, /resume, hooks, headless pointers; plan 5.2 checked; docs Tracker row Done+unblocked; Activity Log row 3b74efec-c95a-8107 (Project=Admin — no claude-skills option exists)"
     }
   ],
   "blockers": [],
-  "next_action": "Write ~/.claude/references/headless-mode.md (verify flags via claude --help first)"
+  "next_action": "Run complete. Deferred: 5.1 friction review (session task #1), 5.3 token audit ~2026-08-16, orchata friction-output improvement (task #2)"
 }
