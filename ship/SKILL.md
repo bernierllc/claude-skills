@@ -1,7 +1,7 @@
 ---
 name: ship
 description: 'Use when work on the current branch is ready to land — "ship this", "/ship", "wrap this up and open the PR", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.'
-version: 1.0.1
+version: 1.1.1
 author: Bernier LLC
 ---
 
@@ -14,9 +14,12 @@ fails, stop there, report plainly, and fix or hand back — never ship red.
 
 - `git status` + `git branch --show-current`. Nothing to ship (clean tree, no unpushed
   commits) → say so and stop.
-- On the default branch (`main`/`master`) with uncommitted work → move to a feature
-  branch first (create one named for the work), then continue. Never commit directly to
-  the default branch.
+- On the default branch (`main`/`master`) with anything to ship — uncommitted work
+  **or** unpushed local commits → move it to a feature branch first: create one named
+  for the work at HEAD (unpushed commits ride along), then point the local default
+  branch back at its upstream — from the feature branch, `git branch -f <default>
+  origin/<default>` using the actual default branch name you were just on. Never
+  commit to or push the default branch directly.
 - Check nothing staged is gitignored or secret-shaped (`.env*`, keys, tokens). Never
   force-add ignored files.
 
