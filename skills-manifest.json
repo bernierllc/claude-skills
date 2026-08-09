@@ -78,12 +78,12 @@
       "author": "Bernier LLC"
     },
     "resume": {
-      "version": "1.1.0",
+      "version": "1.2.0",
       "description": "Use at the start of a session in a repo with prior work in flight, or when the user says \"resume\", \"/resume\", \"where were we\", \"pick up where we left off\". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.",
       "author": "Bernier LLC"
     },
     "ship": {
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.",
       "author": "Bernier LLC"
     },
