@@ -18,5 +18,5 @@
   "blockers": [
     {"what": "formExpert.co pre-commit build fails on Stripe apiVersion type error", "tracker_row": "https://www.notion.so/3b74efecc95a8156b7e3cc651530a283", "routed_around": true}
   ],
-  "next_action": "Launch Workflow: pipeline(7 repos, recon, implement); on return, integrate results and update Tracker rows"
+  "next_action": "Workflow wf_577c4b1e-7c5 running (recon+implement per repo); on completion verify worker evidence, write fleet-results.json, update Tracker rows with branch links"
 }
