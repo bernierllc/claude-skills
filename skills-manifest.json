@@ -83,7 +83,7 @@
       "author": "Bernier LLC"
     },
     "ship": {
-      "version": "1.1.0",
+      "version": "1.1.1",
       "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.",
       "author": "Bernier LLC"
     },
