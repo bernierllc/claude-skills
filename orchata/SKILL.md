@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.1.0
+version: 1.2.0
 author: Bernier LLC
 ---
 
@@ -18,10 +18,11 @@ either proceed, or punch-list it.
 
 ## Phase 1 — Intake
 
-**Resume check first.** If `.otto/run-state.json` exists on the current branch with a
-non-done run (see `references/run-state.md`): reconcile it against reality (git log, open
-PRs, CI/deploy status, the linked Tracker row), report any drift in one line each, and
-continue from the first non-done step. Do NOT re-plan a run that is already in flight.
+**Resume check first.** If `<state-dir>/run-state.json` exists on the current branch with a
+non-done run (see `references/run-state.md`; state dir per "State files" below): reconcile
+it against reality (git log, open PRs, CI/deploy status, the external tracker row if one is
+linked), report any drift in one line each, and continue from the first non-done step. Do
+NOT re-plan a run that is already in flight.
 
 Read before asking, in order:
 
@@ -72,8 +73,8 @@ in the plan or retro — proceed generically if not taken up. **Never auto-insta
 
 The plan file is the map; the task brief is all a worker gets. **Every task brief must be
 executable from its brief + named file paths alone** — never "read the plan" or "check the
-project docs" (same standard as an otto-ready Tracker row's runnable brief: goal, inputs,
-constraints, landing spot). Size tasks by the tier doing them:
+project docs". A runnable brief has: goal, inputs, constraints, and where the output lands.
+Size tasks by the tier doing them:
 
 | Tier | Task size |
 |---|---|
@@ -84,8 +85,9 @@ constraints, landing spot). Size tasks by the tier doing them:
 **Docs and code never share a stage.** Documentation expansion is cheap and self-contained —
 its own stage, tagged low-tier. Implementation stages get the full budget headroom.
 
-**Tracker rows at plan time:** every stage gets a Tracker row (not only otto-ready ones),
-`Source Link` set to the branch URL when execution starts on it. The plan seeds the queue.
+**Tracker rows at plan time:** if an external tracker is configured (see "External tracker"
+below), every stage gets a row/issue at plan time, linked to the branch when execution
+starts on it. The plan seeds the queue.
 
 ## Phase 3 — Orchestrate
 
@@ -114,13 +116,14 @@ A usage-limit cut must cost at most one step, never the run. Read
 `references/run-state.md` before the first stage executes, then after **every** completed
 step, in this order (each layer is a fallback for the one after it):
 
-1. Update `.otto/run-state.json` (local write — always succeeds)
-2. `git add .otto/ && git commit` on the working branch (survives the laptop)
-3. Update the stage's Tracker row (visible outside the CLI)
+1. Update `<state-dir>/run-state.json` (local write — always succeeds)
+2. `git add <state-dir>/ && git commit` on the working branch (survives the machine)
+3. Update the stage's row in the external tracker, if one is configured (visible outside
+   the CLI)
 
-Layer 3 failing (Notion down, permission-blocked) never blocks — note the miss in
-run-state and move on. Checkpoint **early and after each step**, not at the end: the whole
-point is that the tail of the run is the part that gets cut.
+Layer 3 is optional, and it failing (tracker down, permission-blocked) never blocks — note
+the miss in run-state and move on. Checkpoint **early and after each step**, not at the
+end: the whole point is that the tail of the run is the part that gets cut.
 
 ### Supervisor resilience
 
@@ -132,8 +135,8 @@ Fan-out runs assume workers die. Rules:
   `failed`.
 - **Retry budget: 2** per task, then mark `blocked` with the last error as evidence and
   move on — never spin on one worker.
-- **Stream results:** append each verdict to `.otto/fleet-results.json` as it arrives, not
-  in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
+- **Stream results:** append each verdict to `<state-dir>/fleet-results.json` as it
+  arrives, not in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
 - **Propose in parallel, merge serially:** workers produce branches/patches concurrently;
   the orchestrator integrates one at a time in dependency order, running tests before each
   merge commit.
@@ -177,6 +180,18 @@ for defaults). `capabilities.json` per Phase 1; `friction.json` per
 user-level decision. If `friction.json` has `"opt_out": true`, skip all friction logging and
 never offer the improvement conversation.
 
-**Per-run state is different:** it lives in the project at `.otto/` (run-state.json,
-fleet-results.json, activity.jsonl) and is committed to the working branch — see
-`references/run-state.md`. Global `~/.claude/orchata/` holds cross-project skill state only.
+**Per-run state is different:** it lives in the project at `<state-dir>/` (run-state.json,
+fleet-results.json) and is committed to the working branch — see `references/run-state.md`.
+Default state dir: **`.orchata/`**; the user's global or project instructions may name a
+different directory — honor theirs. Global `~/.claude/orchata/` holds cross-project skill
+state only.
+
+## External tracker (optional checkpoint layer 3)
+
+The third checkpoint layer is whatever system the user already tracks work in — an issue
+tracker, a project database, a team wiki. Orchata never assumes one exists or names one.
+At intake, use whatever the user's global/project instructions configure for work tracking;
+if nothing is configured, run with layers 1–2 (local write + git commit are sufficient on
+their own), and once — at retro, not mid-run — suggest the user name a tracker in their
+global instructions if they want run state visible outside the CLI. Never block any step
+on the tracker.
