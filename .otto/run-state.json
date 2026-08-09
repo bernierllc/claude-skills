@@ -64,8 +64,8 @@
     {
       "id": "retro",
       "description": "Verify evidence, update Tracker rows with branch links, friction register, report",
-      "status": "in_progress",
-      "evidence": null,
+      "status": "done",
+      "evidence": "7 Tracker rows + master row + Stripe blocker row updated; Activity Log row 3b74efec-c95a-81be-a0b7-e608d88aa508; plan Phase 4 checkboxes marked; retro report delivered in-session",
       "timestamp": "2026-08-09"
     }
   ],
@@ -76,5 +76,5 @@
       "routed_around": false
     }
   ],
-  "next_action": "Retro: update 7 Tracker rows with branch links (Status: Send), aec side-effect note, Activity Log row, friction register review, final report"
+  "next_action": "Run complete. Matt: review/merge the 7 chore/ops-baseline branches + claude-skills feat/orchata-v1.1-checkpointed-runs; fix aec pre-push hook (worktree side effect)"
 }
