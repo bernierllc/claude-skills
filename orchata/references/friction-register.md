@@ -23,6 +23,10 @@ Entry fields: `date`, `severity`, `project` (repo name or path), `summary` (what
 `suggestion` (the concrete fix to the skill's text). Optional: `phase` (intake / plan /
 orchestrate / escalate / retro) when it's clear which phase's instructions were at fault.
 
+Entries written by pre-1.3 versions used `level` and `what_happened`: read those as
+`severity` and `summary` (treat `suggestion` as absent), count them in thresholds
+normally, and rewrite them to the current field names on the next write to the file.
+
 - One register across all projects (user-global). `entries.length` is the authoritative count;
   never store a separate total.
 - Severities: **high** (caused wrong output or a blocked run), **medium** (caused rework or a
