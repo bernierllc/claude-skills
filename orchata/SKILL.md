@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.2.0
+version: 1.3.0
 author: Bernier LLC
 ---
 
@@ -94,6 +94,38 @@ starts on it. The plan seeds the queue.
 Author and run Workflow scripts; the orchestrator (you, the session model) plans, judges,
 synthesizes, and integrates — it does not do fan-out work itself.
 
+### Orchestration economy
+
+Token cost is an explicit objective, not a side effect. The orchestrator's job is to get as
+much of the project completed as possible through orchestration while executing as little of
+the actual work as possible:
+
+- Any unit of work a worker can do from a context-minimal brief is delegated — the
+  orchestrator never "quickly does it inline" to save a dispatch.
+- The orchestrator consumes conclusions and structured returns, never workers' file dumps or
+  transcripts.
+- Worker tier and effort are set per the tier table; mechanical batches go low-tier.
+
+### Shared-worktree mode
+
+When the user asks for work against a single branch, or the stages are mostly serial, run
+the whole fleet against **one worktree branch the orchestrator oversees**: workers propose
+patches concurrently, the orchestrator applies and commits them serially in dependency
+order (tests before each commit). The orchestrator owns the branch — workers never commit
+to it directly. Per-worker worktree isolation remains the fallback for genuinely parallel
+file mutation.
+
+Worktree hygiene (either mode):
+
+- Sequence environment moves **before** dispatching background agents: create the worktree
+  and complete any `cd` first, then dispatch with worktree-absolute paths. An agent
+  dispatched against a checkout that then moves gets its Bash calls refused.
+- At worktree creation, exclude the `node_modules` symlink from git's view (worktree
+  equivalent of `.git/info/exclude`) — gitignore does not match symlinks, so `git add -A`
+  is otherwise a standing hazard.
+
+### Orchestration mechanics
+
 - Use the **Workflow tool** where the host provides it (`agent()` accepts per-call `model`
   and `effort` overrides). If unavailable, fall back to the **Agent tool**: dispatch
   independent workers in parallel, `model` override only (no per-call effort), and note the
@@ -107,6 +139,9 @@ synthesizes, and integrates — it does not do fan-out work itself.
 - Every worker prompt names the skill it should invoke when installed (e.g.
   `superpowers:test-driven-development` for implementation,
   `superpowers:systematic-debugging` when a worker hits a bug).
+- Workflow scripts whose `args` carries structure start with a defensive parse —
+  `args = typeof args === 'string' ? JSON.parse(args) : args` — hosts may deliver args as a
+  JSON string.
 - Log friction as it happens — a wrong default in these instructions, an unnecessary pause, a
   missed case that caused rework → append to the friction register (see Phase 5).
 
@@ -117,7 +152,9 @@ A usage-limit cut must cost at most one step, never the run. Read
 step, in this order (each layer is a fallback for the one after it):
 
 1. Update `<state-dir>/run-state.json` (local write — always succeeds)
-2. `git add <state-dir>/ && git commit` on the working branch (survives the machine)
+2. `git add <state-dir>/ && git commit` on the working branch (survives the machine) —
+   run `git branch --show-current` immediately before **every** commit; never trust
+   intake-phase branch state after compaction, a long run, or an environment move
 3. Update the stage's row in the external tracker, if one is configured (visible outside
    the CLI)
 
@@ -142,6 +179,10 @@ Fan-out runs assume workers die. Rules:
   merge commit.
 - **Context-minimal prompts:** workers get their brief + exact file paths + expected
   return shape — never the conversation, the plan file, or "figure out the context".
+- **Name cross-file contracts:** when splitting work by file ownership, the worker prompt
+  states any contract its files must honor with files it doesn't own (e.g. "CI assumes a
+  `packageManager` field in package.json") — or a smoke stage runs the consumer's setup
+  after integration. Ownership splits hide exactly these seams.
 
 ## Phase 4 — Escalate
 
@@ -160,17 +201,28 @@ it. Punch list goes to `plans/<task>-punchlist.md`, unless a project or global i
 names a task-tracking location (checked at intake), AND is summarized in the end-of-turn
 report. The run never blocks on a punch-list item.
 
+**Terminal condition — all work blocked.** If every remaining stage is on the punch list
+(nothing runnable is left), stop and report the punch list as a needs-from-human list in
+priority order: what's needed, why it blocks, what resumes when it lands. This is the only
+legitimate mid-run stop. One blocker never stops the run while other work can progress.
+
 ## Phase 5 — Retro
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality. A page
-   load is not verification. Report failures plainly.
+   load is not verification. Deploy verification asserts deployment **identity** (a new
+   deployment id/commit visible in the provider's deployment list) plus a response-body
+   match — never a bare HTTP status code, which a stale or placeholder deploy also returns.
+   Report failures plainly.
 2. **Report:** what shipped, what's on the punch list (inline summary + file path), what was
    assumed at intake.
 3. **Friction register** — read `references/friction-register.md`. Log this run's friction,
-   then evaluate the register: any high-level entry, ≥3 medium, or ≥5 total since the last
-   review → offer the improvement conversation (Y / N / Never) exactly as the reference
-   describes. On Y: review entries together, draft concrete diffs to this skill's files, and
-   offer a PR back to the skill's source repo — PR only with explicit confirmation.
+   then evaluate the register: any high-severity entry, ≥3 medium, or ≥5 total since the
+   last review → present the compact register verdict from the reference (verdict line, top
+   entries with proposed fixes, proposed diffs) and offer the improvement conversation
+   (Y / N / Never) exactly as the reference describes. On Y: review entries together, draft
+   concrete diffs to this skill's files, and offer a PR back to the skill's source repo —
+   PR only with explicit confirmation. Entries addressed by a shipped fix are pruned on
+   review — the register is a queue, not an archive.
 
 ## State files
 
