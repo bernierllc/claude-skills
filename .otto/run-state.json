@@ -1,80 +1,46 @@
 {
-  "run_id": "orchata-2026-08-09-phase4-ops-baseline",
-  "objective": "Phase 4: scripts + CLAUDE.md Scripts/Local Development sections + hooks + CI baseline + mirrors across 7 active repos, each on a pushed chore/ops-baseline branch",
+  "run_id": "orchata-2026-08-09-insights-closeout",
+  "objective": "Close out remaining insights-plan items: Notion propagation banners (5.2), /ship + /resume skills, headless-mode reference, global session logging hooks, Notion + CLAUDE.md documentation",
   "branch": "feat/orchata-v1.1-checkpointed-runs",
   "plan_file": "plans/2026-08-09-context-orchestration-optimization.md",
-  "tracker_row": "https://www.notion.so/3b74efecc95a81db94d3f0cd1d9c4df8",
+  "tracker_row": "",
   "steps": [
     {
-      "id": "recon",
-      "description": "Parallel recon of 7 repos: stack, infra, deploy target, hooks, mirrors, CI-failure flags",
-      "status": "done",
-      "evidence": "7 recon agents returned structured surveys (wf_577c4b1e-7c5 journal)",
-      "timestamp": "2026-08-09"
+      "id": "tracker-rows",
+      "description": "Create 6 Tracker rows with Depends On relations for all closeout items",
+      "status": "pending"
     },
     {
-      "id": "fundingos",
-      "description": "Ops baseline via worker (worktree, chore/ops-baseline, push)",
-      "status": "done",
-      "evidence": "commit f76f50e \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/fundingos.git * [new branch] chore/ops-baseli",
-      "timestamp": "2026-08-09"
+      "id": "global-hooks",
+      "description": "Add SessionStart/Stop logging hooks to ~/.claude/settings.json so .otto/activity.jsonl logging happens in ALL CLI sessions, not just the 7 repos with branch-pending hooks",
+      "status": "pending"
     },
     {
-      "id": "email_demo",
-      "description": "Ops baseline via worker",
-      "status": "done",
-      "evidence": "Commit 7458046 on branch chore/ops-baseline: \"chore(ops): add scripts, preconditions, and session hooks\", 5 files changed, 120 insertions(+). Push output: \"* [n",
-      "timestamp": "2026-08-09"
+      "id": "notion-banners",
+      "description": "5.2: add 'machine copy lives at ~/.claude/references/...' banners to the Otto HQ source pages (roadmap-sync process page, otto-ready page)",
+      "status": "pending"
     },
     {
-      "id": "a10d.info",
-      "description": "Ops baseline via worker",
-      "status": "done",
-      "evidence": "Commit 71c2ab0 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 110 insertions). Push output: \"To github.com:bernierllc/a10d.info.g",
-      "timestamp": "2026-08-09"
+      "id": "ship-skill",
+      "description": "Build /ship skill (verify -> commit -> push -> draft PR -> tracker sync) in claude-skills repo, install to ~/.claude/skills/ship",
+      "status": "pending"
     },
     {
-      "id": "tools",
-      "description": "Ops baseline via worker",
-      "status": "done",
-      "evidence": "commit 8a9f2fa2 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 68 insertions); push output: \"* [new branch] chore/ops-baseline ->",
-      "timestamp": "2026-08-09"
+      "id": "resume-skill",
+      "description": "Build /resume skill (read run-state/activity.jsonl/tracker, resume from next_action) in claude-skills repo, install to ~/.claude/skills/resume",
+      "status": "pending"
     },
     {
-      "id": "formExpert.co",
-      "description": "Ops baseline via worker (pre-commit build may block \u2014 known Stripe apiVersion issue)",
-      "status": "done",
-      "evidence": "commit 89462af pushed to origin (supervisor resolved worker blocker: pnpm install --frozen-lockfile + .env.local copy let the pre-commit next build pass); local",
-      "timestamp": "2026-08-09"
+      "id": "headless-reference",
+      "description": "Write ~/.claude/references/headless-mode.md with claude -p patterns for mechanical work",
+      "status": "pending"
     },
     {
-      "id": "agents-environment-config",
-      "description": "Ops baseline via worker",
-      "status": "done",
-      "evidence": "Commit e922a1f \"chore(ops): add scripts, preconditions, and session hooks\" on branch chore/ops-baseline; push output: \"* [new branch] chore/ops-baseline -> chor",
-      "timestamp": "2026-08-09"
-    },
-    {
-      "id": "communitycenter",
-      "description": "Ops baseline via worker",
-      "status": "done",
-      "evidence": "commit 140860b \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/communitycenter.git * [new branch] chore/ops-",
-      "timestamp": "2026-08-09"
-    },
-    {
-      "id": "retro",
-      "description": "Verify evidence, update Tracker rows with branch links, friction register, report",
-      "status": "done",
-      "evidence": "7 Tracker rows + master row + Stripe blocker row updated; Activity Log row 3b74efec-c95a-81be-a0b7-e608d88aa508; plan Phase 4 checkboxes marked; retro report delivered in-session",
-      "timestamp": "2026-08-09"
+      "id": "documentation",
+      "description": "Document new skills in Otto HQ, add pointers to global CLAUDE.md, mark plan 5.2 done, Activity Log row",
+      "status": "pending"
     }
   ],
-  "blockers": [
-    {
-      "what": "RESOLVED: formExpert.co pre-commit failure was missing worktree deps/.env.local, not Stripe apiVersion; main builds clean. Stripe row may still apply to staging.",
-      "tracker_row": "https://www.notion.so/3b74efecc95a8156b7e3cc651530a283",
-      "routed_around": false
-    }
-  ],
-  "next_action": "Run complete. Matt: review/merge the 7 chore/ops-baseline branches + claude-skills feat/orchata-v1.1-checkpointed-runs; fix aec pre-push hook (worktree side effect)"
+  "blockers": [],
+  "next_action": "Create Tracker rows"
 }
