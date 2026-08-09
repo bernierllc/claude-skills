@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.0.0
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -17,6 +17,11 @@ around them. If you are about to ask the user something mid-run, you are doing i
 either proceed, or punch-list it.
 
 ## Phase 1 — Intake
+
+**Resume check first.** If `.otto/run-state.json` exists on the current branch with a
+non-done run (see `references/run-state.md`): reconcile it against reality (git log, open
+PRs, CI/deploy status, the linked Tracker row), report any drift in one line each, and
+continue from the first non-done step. Do NOT re-plan a run that is already in flight.
 
 Read before asking, in order:
 
@@ -63,6 +68,25 @@ in the plan or retro — proceed generically if not taken up. **Never auto-insta
   - **escalation flags** — does this stage touch the escalation contract? (see Phase 4)
 - Write the plan to `plans/` (or the project's overriding location) per repo conventions.
 
+### Task granularity
+
+The plan file is the map; the task brief is all a worker gets. **Every task brief must be
+executable from its brief + named file paths alone** — never "read the plan" or "check the
+project docs" (same standard as an otto-ready Tracker row's runnable brief: goal, inputs,
+constraints, landing spot). Size tasks by the tier doing them:
+
+| Tier | Task size |
+|---|---|
+| Low (haiku / low effort) | Larger mechanical batches — context reload cost dominates, fewer/bigger wins |
+| Mid (sonnet) | One commit-able unit, ≤ ~15 tool calls — a usage-limit cut costs at most one unit |
+| High (opus/fable reasoning) | Smallest possible brief + pointers; the model pulls threads itself |
+
+**Docs and code never share a stage.** Documentation expansion is cheap and self-contained —
+its own stage, tagged low-tier. Implementation stages get the full budget headroom.
+
+**Tracker rows at plan time:** every stage gets a Tracker row (not only otto-ready ones),
+`Source Link` set to the branch URL when execution starts on it. The plan seeds the queue.
+
 ## Phase 3 — Orchestrate
 
 Author and run Workflow scripts; the orchestrator (you, the session model) plans, judges,
@@ -83,6 +107,38 @@ synthesizes, and integrates — it does not do fan-out work itself.
   `superpowers:systematic-debugging` when a worker hits a bug).
 - Log friction as it happens — a wrong default in these instructions, an unnecessary pause, a
   missed case that caused rework → append to the friction register (see Phase 5).
+
+### Checkpoint discipline
+
+A usage-limit cut must cost at most one step, never the run. Read
+`references/run-state.md` before the first stage executes, then after **every** completed
+step, in this order (each layer is a fallback for the one after it):
+
+1. Update `.otto/run-state.json` (local write — always succeeds)
+2. `git add .otto/ && git commit` on the working branch (survives the laptop)
+3. Update the stage's Tracker row (visible outside the CLI)
+
+Layer 3 failing (Notion down, permission-blocked) never blocks — note the miss in
+run-state and move on. Checkpoint **early and after each step**, not at the end: the whole
+point is that the tail of the run is the part that gets cut.
+
+### Supervisor resilience
+
+Fan-out runs assume workers die. Rules:
+
+- **Worker contract:** every worker prompt ends with a required structured return —
+  `{task_id, status: fixed|failed|blocked, files_changed, tests_passing, evidence, notes}`
+  (use Workflow `schema` when available). A worker that returns anything else counts as
+  `failed`.
+- **Retry budget: 2** per task, then mark `blocked` with the last error as evidence and
+  move on — never spin on one worker.
+- **Stream results:** append each verdict to `.otto/fleet-results.json` as it arrives, not
+  in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
+- **Propose in parallel, merge serially:** workers produce branches/patches concurrently;
+  the orchestrator integrates one at a time in dependency order, running tests before each
+  merge commit.
+- **Context-minimal prompts:** workers get their brief + exact file paths + expected
+  return shape — never the conversation, the plan file, or "figure out the context".
 
 ## Phase 4 — Escalate
 
@@ -120,3 +176,7 @@ for defaults). `capabilities.json` per Phase 1; `friction.json` per
 `references/friction-register.md` — one register across all projects, so opt-out is a
 user-level decision. If `friction.json` has `"opt_out": true`, skip all friction logging and
 never offer the improvement conversation.
+
+**Per-run state is different:** it lives in the project at `.otto/` (run-state.json,
+fleet-results.json, activity.jsonl) and is committed to the working branch — see
+`references/run-state.md`. Global `~/.claude/orchata/` holds cross-project skill state only.
