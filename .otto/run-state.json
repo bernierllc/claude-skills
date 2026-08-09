@@ -5,18 +5,76 @@
   "plan_file": "plans/2026-08-09-context-orchestration-optimization.md",
   "tracker_row": "https://www.notion.so/3b74efecc95a81db94d3f0cd1d9c4df8",
   "steps": [
-    {"id": "recon", "description": "Parallel recon of 7 repos: stack, infra, deploy target, hooks, mirrors, CI-failure flags", "status": "in_progress", "evidence": null, "timestamp": "2026-08-09"},
-    {"id": "fundingos", "description": "Ops baseline via worker (worktree, chore/ops-baseline, push)", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "email_demo", "description": "Ops baseline via worker", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "a10d.info", "description": "Ops baseline via worker", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "tools", "description": "Ops baseline via worker", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "formExpert.co", "description": "Ops baseline via worker (pre-commit build may block — known Stripe apiVersion issue)", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "agents-environment-config", "description": "Ops baseline via worker", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "communitycenter", "description": "Ops baseline via worker", "status": "pending", "evidence": null, "timestamp": null},
-    {"id": "retro", "description": "Verify evidence, update Tracker rows with branch links, friction register, report", "status": "pending", "evidence": null, "timestamp": null}
+    {
+      "id": "recon",
+      "description": "Parallel recon of 7 repos: stack, infra, deploy target, hooks, mirrors, CI-failure flags",
+      "status": "done",
+      "evidence": "7 recon agents returned structured surveys (wf_577c4b1e-7c5 journal)",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "fundingos",
+      "description": "Ops baseline via worker (worktree, chore/ops-baseline, push)",
+      "status": "done",
+      "evidence": "commit f76f50e \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/fundingos.git * [new branch] chore/ops-baseli",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "email_demo",
+      "description": "Ops baseline via worker",
+      "status": "done",
+      "evidence": "Commit 7458046 on branch chore/ops-baseline: \"chore(ops): add scripts, preconditions, and session hooks\", 5 files changed, 120 insertions(+). Push output: \"* [n",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "a10d.info",
+      "description": "Ops baseline via worker",
+      "status": "done",
+      "evidence": "Commit 71c2ab0 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 110 insertions). Push output: \"To github.com:bernierllc/a10d.info.g",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "tools",
+      "description": "Ops baseline via worker",
+      "status": "done",
+      "evidence": "commit 8a9f2fa2 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 68 insertions); push output: \"* [new branch] chore/ops-baseline ->",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "formExpert.co",
+      "description": "Ops baseline via worker (pre-commit build may block \u2014 known Stripe apiVersion issue)",
+      "status": "done",
+      "evidence": "commit 89462af pushed to origin (supervisor resolved worker blocker: pnpm install --frozen-lockfile + .env.local copy let the pre-commit next build pass); local",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "agents-environment-config",
+      "description": "Ops baseline via worker",
+      "status": "done",
+      "evidence": "Commit e922a1f \"chore(ops): add scripts, preconditions, and session hooks\" on branch chore/ops-baseline; push output: \"* [new branch] chore/ops-baseline -> chor",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "communitycenter",
+      "description": "Ops baseline via worker",
+      "status": "done",
+      "evidence": "commit 140860b \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/communitycenter.git * [new branch] chore/ops-",
+      "timestamp": "2026-08-09"
+    },
+    {
+      "id": "retro",
+      "description": "Verify evidence, update Tracker rows with branch links, friction register, report",
+      "status": "in_progress",
+      "evidence": null,
+      "timestamp": "2026-08-09"
+    }
   ],
   "blockers": [
-    {"what": "formExpert.co pre-commit build fails on Stripe apiVersion type error", "tracker_row": "https://www.notion.so/3b74efecc95a8156b7e3cc651530a283", "routed_around": true}
+    {
+      "what": "RESOLVED: formExpert.co pre-commit failure was missing worktree deps/.env.local, not Stripe apiVersion; main builds clean. Stripe row may still apply to staging.",
+      "tracker_row": "https://www.notion.so/3b74efecc95a8156b7e3cc651530a283",
+      "routed_around": false
+    }
   ],
-  "next_action": "Workflow wf_577c4b1e-7c5 running (recon+implement per repo); on completion verify worker evidence, write fleet-results.json, update Tracker rows with branch links"
+  "next_action": "Retro: update 7 Tracker rows with branch links (Status: Send), aec side-effect note, Activity Log row, friction register review, final report"
 }
