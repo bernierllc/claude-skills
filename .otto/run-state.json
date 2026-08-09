@@ -38,7 +38,8 @@
     {
       "id": "headless-reference",
       "description": "Write ~/.claude/references/headless-mode.md with claude -p patterns for mechanical work",
-      "status": "pending"
+      "status": "done",
+      "evidence": "Reference written; all flags verified against claude --help 2026-08-09 (-p, --allowedTools, --permission-mode, --max-budget-usd, --json-schema, --output-format, --bare, --bg)"
     },
     {
       "id": "documentation",
