@@ -1,7 +1,7 @@
 ---
 name: resume
 description: Use at the start of a session in a repo with prior work in flight, or when the user says "resume", "/resume", "where were we", "pick up where we left off". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.
-version: 1.2.2
+version: 1.2.3
 author: Bernier LLC
 ---
 
@@ -21,8 +21,9 @@ re-plan** — a run that is already mapped gets picked up at its first non-done 
   recent first, for a committed checkpoint
   (`git show <branch>:<state-dir>/run-state.json`) — work through the list until a hit
   or it's exhausted, never just the top few — before concluding no run is in flight.
-  Only a checkpoint with a **non-done** run counts; a completed run-state is history,
-  not a run in flight. A live hit means the run lives on that branch — handle it per
+  Only a checkpoint with an in-flight run counts — one with at least one step whose
+  status is neither `done` nor `skipped`; a fully terminal run-state is history, not a
+  run in flight. A live hit means the run lives on that branch — handle it per
   the branch-mismatch rule in step 2.
 - **External tracker:** if the user's instructions configure one, query its open
   (non-done) rows whose source link matches this repo — match on `org/repo` from
