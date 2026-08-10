@@ -1,0 +1,107 @@
+[
+  {
+    "task_id": "agents-environment-config",
+    "status": "fixed",
+    "files_changed": [
+      ".claude/settings.json"
+    ],
+    "tests_passing": true,
+    "evidence": "Commit e922a1f \"chore(ops): add scripts, preconditions, and session hooks\" on branch chore/ops-baseline; push output: \"* [new branch] chore/ops-baseline -> chore/ops-baseline; branch 'chore/ops-baseline' set up to track 'origin/chore/ops-baseline'.\" JSON validated with python3 json.load (JSON_OK). Repo pre-commit hook (script parity, Python/shell syntax checks) passed.",
+    "notes": "Deliverables 1-4 skipped per recon (no local infra \u2192 no env-up/down; no deploy target \u2192 no verify/deploy-prod scripts; no ci_flags \u2192 no CI section; no CLAUDE.md content changed \u2192 nothing to mirror into QWEN.md/AGENTS.md/GEMINI.md/.cursor/rules). Only deliverable 5 applied: merged into existing .claude/settings.json without touching the existing SessionStart hook (kept the repo's dependency-install hook, added the branch/activity-log SessionStart command as a second hook entry) and added a new Stop hook appending to .otto/activity.jsonl. No PostToolUse typecheck hook added (repo has no type checker). bash -n not needed since no new scripts were written; only settings.json was touched and validated with json.load.\n\nIMPORTANT SIDE EFFECT TO FLAG: `git push` from the worktree triggered this repo's shared pre-push hook (git hooks are shared across worktrees via the common .git dir), which ran a \"sync cursor commands from agents/skills\" step and made an unrelated commit (84ba6bc, \"chore: sync cursor commands from agents/skills\") directly on the MAIN CHECKOUT's currently active branch `feat/orchata-skill` at /Users/mattbernier/projects/agents-environment-config. This was not something I ran directly \u2014 it's baked into the repo's own pre-push hook and appears to always target the main worktree's working directory regardless of which worktree initiates the push. I did not revert or otherwise touch the main checkout further, since doing so risked compounding the unintended change. Recommend checking `git -C /Users/mattbernier/projects/agents-environment-config status` and the commit 84ba6bc before doing further work on feat/orchata-skill, and consider filing a fix for the pre-push hook so it operates relative to $CLAUDE_PROJECT_DIR / the actual worktree instead of a fixed main-checkout path."
+  },
+  {
+    "task_id": "email_demo",
+    "status": "fixed",
+    "files_changed": [
+      "/private/tmp/.../wt-email_demo/scripts/env-up.sh (committed)",
+      "/private/tmp/.../wt-email_demo/scripts/env-down.sh (committed)",
+      "/private/tmp/.../wt-email_demo/scripts/verify-prod.sh (committed)",
+      "/private/tmp/.../wt-email_demo/scripts/deploy-prod.sh (committed)",
+      "/private/tmp/.../wt-email_demo/.claude/settings.json (committed - merged SessionStart+Stop hooks; PostToolUse tsc hook already existed, left as-is)",
+      "/private/tmp/.../wt-email_demo/CLAUDE.md (created locally, NOT committed - see notes)"
+    ],
+    "tests_passing": true,
+    "evidence": "Commit 7458046 on branch chore/ops-baseline: \"chore(ops): add scripts, preconditions, and session hooks\", 5 files changed, 120 insertions(+). Push output: \"* [new branch] chore/ops-baseline -> chore/ops-baseline\" with PR-creation hint URL https://github.com/bernierllc/email_demo/pull/new/chore/ops-baseline. bash -n passed on all 4 scripts; python3 json.load succeeded on .claude/settings.json.",
+    "notes": "Deviation from task spec, done deliberately: this repo's .gitignore (line 2-6) explicitly ignores CLAUDE.md, AGENTS.md, GEMINI.md, QWEN.md, and .cursor/rules \u2014 they're intentionally local/untracked in this repo (confirmed via git log on .gitignore, e.g. commit e0752d4). Per global CLAUDE.md instruction \"Verify targets aren't gitignored before committing,\" I did not force-add CLAUDE.md. I still created it locally (deliverable 3: Scripts + Local Development + CI/Build sections) so this session and local tooling see it, but it is NOT in the commit/push and will not appear on GitHub for this branch \u2014 that's consistent with repo convention, not an oversight. Mirror step (deliverable 6) was a no-op: none of AGENTS.md/GEMINI.md/QWEN.md/.cursor/rules/* exist on the `main` branch this worktree was cut from (recon's claude_md/mirrors data reflects the dirty main checkout or `staging` branch, not `main` HEAD \u2014 verified via git log --all -- CLAUDE.md returning zero commits).\n\nPorts: used ports.json entry under key \"nevarmail\" (not \"email_demo\" \u2014 recon's \"no entry found\" was checking the wrong key name); supabase-api 54370 referenced in env-up.sh/CLAUDE.md.\n\n.claude/settings.json already had a PostToolUse tsc hook (recon's has_posttooluse_typecheck:true confirmed) \u2014 did not duplicate it; only added SessionStart and Stop hooks per spec.\n\nCI baseline: added the \"package.json must declare packageManager\" rule to CLAUDE.md per ci_flags, but did NOT add the packageManager field to package.json itself \u2014 that's a separate fix, out of scope for this ops-baseline task (only asked to document the CI rule, not remediate every flag).\n\nBranch pushed but no PR opened (not requested, and PR-open is a stop-and-confirm action per global rules).",
+    "branch_url": "https://github.com/bernierllc/email_demo/tree/chore/ops-baseline"
+  },
+  {
+    "task_id": "tools",
+    "status": "fixed",
+    "files_changed": [
+      "/Users/mattbernier/projects/tools/CLAUDE.md",
+      "/Users/mattbernier/projects/tools/QWEN.md",
+      "/Users/mattbernier/projects/tools/AGENTS.md",
+      "/Users/mattbernier/projects/tools/GEMINI.md",
+      "/Users/mattbernier/projects/tools/.claude/settings.json"
+    ],
+    "tests_passing": true,
+    "evidence": "commit 8a9f2fa2 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 68 insertions); push output: \"* [new branch] chore/ops-baseline -> chore/ops-baseline\", branch tracking set up on origin",
+    "branch_url": "https://github.com/bernierllc/tools/tree/chore/ops-baseline",
+    "notes": "Deliverables 1 (env-up/down) and 2 (verify/deploy-prod) skipped per recon: no local infra, no deploy target \u2014 confirmed, no scripts written, nothing to bash -n or chmod +x.\n\nDeliverable 3: added '## Scripts' and '## Local Development' sections to CLAUDE.md noting these scripts don't apply here and pointing to the existing manager CLI/scripts/ dir instead.\n\nDeliverable 4: added '## CI / Build' section with exactly the missing-packageManager rule (only flag present).\n\nDeliverable 5: merged SessionStart and Stop hooks into .claude/settings.json alongside the existing PostToolUse tsc hook (left untouched). Validated with python3 json.load.\n\nDeliverable 6: mirrored the three new sections verbatim into QWEN.md, AGENTS.md, GEMINI.md (all three are literal full-content mirrors of CLAUDE.md up to a trailing '---', matching the existing mirroring pattern). Did NOT mirror into .cursor/rules/**/*.mdc \u2014 those 17 files are narrow topic-scoped policy docs (packages/, coding/, scripts/scripts.mdc, etc.), not full CLAUDE.md mirrors like the other three; none is a natural home for ops-baseline session/CI sections, and appending to all of them would be unrequested duplication/bloat. Flagging this deviation from the literal mirror list rather than silently doing it.\n\nPre-commit/pre-push hooks ran normally (smart validation skipped since no packages/ changes) and did not block. Worktree removed after successful push."
+  },
+  {
+    "task_id": "fundingos",
+    "status": "fixed",
+    "files_changed": [
+      "scripts/env-up.sh",
+      "scripts/env-down.sh",
+      "scripts/deploy-prod.sh",
+      "scripts/verify-prod.sh",
+      "CLAUDE.md",
+      ".claude/settings.json"
+    ],
+    "tests_passing": true,
+    "evidence": "commit f76f50e \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/fundingos.git * [new branch] chore/ops-baseline -> chore/ops-baseline\"; bash -n passed on all 4 scripts; python3 json.load succeeded on .claude/settings.json",
+    "branch_url": "https://github.com/bernierllc/fundingos/tree/chore/ops-baseline",
+    "notes": "Recon deviation found and corrected: local `main` ref (b606f9b) was stale/broken \u2014 its tree contained only .gitignore + index.html (a placeholder commit), while the real repo content recon described lives on origin/main (7dbcb7f). Built the worktree off origin/main instead of local main to get accurate stack files; this matches AGENTINFO.md, package.json, supabase/config.toml as recon expected.\n\nPorts: no \"fundingos\" entry in ~/projects/ports.json (confirmed by reading the file) \u2014 used the repo's own supabase/config.toml values (API 55321, DB 55322, shadow 55320, Studio 55323, Inbucket 55324), as instructed for the no-entry case.\n\nDeploy target confirmed real: Railway GitHub integration (main branch -> production, staging branch -> staging env), confirmed via .github/workflows/{staging,production}.yml comments and AGENTINFO.md \"Deploy\" section. No Railway CLI deploy command exists in this repo \u2014 \"deploying\" is literally pushing to main, so deploy-prod.sh's --yes path does `git push origin <branch>:main`. Never invoked.\n\nverify-prod.sh takes PROD_URL via env var or $1 (no hardcoded URL \u2014 none was found anywhere in the repo, per the \"never invent\" instruction) and curls `${PROD_URL}/health`.\n\n.claude/settings.json did not exist; created fresh (no merge needed) with SessionStart/Stop/PostToolUse(tsc) hooks exactly as specified.\n\nNo mirror files (QWEN.md/AGENTS.md/GEMINI.md/.cursor/rules) exist in this repo \u2014 skipped step 6 per YAGNI/skip-if-absent.\n\nDid not run any script, deploy, or start/stop local infra. Main checkout at /Users/mattbernier/projects/fundingos was untouched (still on branch \"staging\", dirty state preserved)."
+  },
+  {
+    "task_id": "a10d.info",
+    "status": "fixed",
+    "files_changed": [
+      "scripts/env-up.sh",
+      "scripts/env-down.sh",
+      "scripts/verify-prod.sh",
+      "scripts/deploy-prod.sh",
+      ".claude/settings.json"
+    ],
+    "tests_passing": true,
+    "evidence": "Commit 71c2ab0 \"chore(ops): add scripts, preconditions, and session hooks\" (5 files changed, 110 insertions). Push output: \"To github.com:bernierllc/a10d.info.git * [new branch] chore/ops-baseline -> chore/ops-baseline\". bash -n passed on all 4 scripts; python3 json.load passed on .claude/settings.json.",
+    "branch_url": "https://github.com/bernierllc/a10d.info/tree/chore/ops-baseline",
+    "notes": "Ports: no \"a10d\" entry in ~/projects/ports.json, so env-up/env-down use the repo's own supabase/config.toml values (API 54321, DB 54322, shadow 54320, pooler 54329, Studio 54323, Inbucket 54324) \u2014 noted in env-up.sh header.\n\nDeploy target correction vs recon: vercel.json is real (apps/web deploys to Vercel via its native git integration), but apps/api and apps/worker actually deploy to Railway via Railway's native git integration (confirmed in .github/workflows/staging.yml and production.yml, which only run DB migrations \u2014 the old Railway CLI deploy jobs were removed as dead code). verify-prod.sh and deploy-prod.sh only cover the Vercel-deployed web front door and say so explicitly; they don't touch Railway. deploy-prod.sh defaults to a dry run and only calls `vercel --prod --cwd apps/web` with `--yes`; never executed.\n\nCLAUDE.md/AGENTS.md/GEMINI.md/QWEN.md are gitignored in this repo (.gitignore lines 26-29) \u2014 they're AEC-generated, machine-local files, not tracked in git. I copied them into the worktree, inserted the '## Scripts', '## Local Development', and '## CI / Build' sections (before the AEC-managed <!-- aec-blurb --> block, which I left untouched) into all four for parity, but did NOT git-add or commit them since they're intentionally ignored \u2014 committing would require force-adding an ignored path, which isn't something to do without confirmation. Those edited copies lived only in the now-removed worktree, so if you want this context to actually persist, either edit the repo's real (untracked) CLAUDE.md/mirrors directly or remove them from .gitignore and I can redo the commit.\n\n.claude/settings.json: merged in SessionStart and Stop hooks exactly as specified; left the existing PostToolUse tsc hook untouched (already present, matches deliverable 5's tsc requirement so nothing to add there). Recon mentioned a separate \"verification-writer scan-versions.py\" hook but it wasn't present in the .claude/settings.json I read \u2014 possibly in settings.local.json or another repo state; not touched since out of scope.\n\nPre-commit hook ran clean, no blockers. Worktree removed after successful push; main checkout at /Users/mattbernier/projects/a10d.info was never touched (git worktree list confirms it's still on fix/sync-hydration-robustness, untouched)."
+  },
+  {
+    "task_id": "formExpert.co",
+    "status": "fixed",
+    "files_changed": [
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/scripts/env-up.sh",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/scripts/env-down.sh",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/scripts/verify-prod.sh",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/scripts/deploy-prod.sh",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/.cursor/rules/workflow.mdc",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/CLAUDE.md (created, intentionally NOT committed \u2014 see notes)",
+      "/private/tmp/claude-501/-Users-mattbernier/3184af01-83c2-4f86-a217-4a1e098ac682/scratchpad/wt-formExpert.co/.claude/settings.json (created, intentionally NOT committed \u2014 see notes)"
+    ],
+    "tests_passing": true,
+    "evidence": "commit 89462af pushed to origin (supervisor resolved worker blocker: pnpm install --frozen-lockfile + .env.local copy let the pre-commit next build pass); local-only CLAUDE.md sections + SessionStart/Stop hooks merged into main checkout",
+    "notes": "Validations that DID pass before the commit attempt: `bash -n` clean on all 4 new scripts; chmod +x applied; `.claude/settings.json` is valid JSON (python3 json.load succeeded).\n\nDeviation from the literal task worth flagging: CLAUDE.md and .claude/ are gitignored identically on BOTH `main` and `staging` in this repo (`.gitignore` lines 45 and 137) \u2014 this is an established, deliberate repo convention, not an artifact of my worktree. Recon's claim that \"CLAUDE.md exists\" with a rich section list was read off the live main-checkout's disk (which sits on branch `staging`), not from git history \u2014 `git show main:CLAUDE.md` / `git show staging:CLAUDE.md` both 404. Since the convention is identical and intentional on both branches, I created CLAUDE.md and .claude/settings.json as local files in the worktree (content matches the deliverable spec: '## Scripts' + '## Local Development' sections; SessionStart/Stop/PostToolUse-tsc hooks) but did NOT `git add -f` them, to avoid fighting the repo's own ignore convention un-asked. The mirror-worthy content was instead folded into `.cursor/rules/workflow.mdc` (already git-tracked), which IS staged/committable. If you actually want CLAUDE.md/.claude/settings.json tracked in git going forward, that's a repo-convention change worth a one-line decision, not something I should force silently.\n\nPorts used (real, from ~/projects/ports.json key \"formExpert.co\", not invented): dev-server 3500, supabase-api 54380, supabase-db 54381, supabase-studio 54382. Local infra confirmed real: `supabase/` dir is gitignored working state (not absent) per .gitignore comment \"Supabase local working files\"; AGENTINFO.md documents the same ports table, confirming recon.\n\nDeploy target confirmed real (vercel.json present, functions/rewrites for embed routes; `vercel` CLI installed at /opt/homebrew/bin/vercel). Could not find a canonical production domain in-repo (vercel-env.json only has a `staging.formexpert.co` root domain for a staging env) \u2014 deploy-prod.sh/verify-prod.sh therefore use the vercel CLI's own `--prod` / `ls --prod` flags rather than a guessed hardcoded URL.\n\nNext step to unblock: `cd` into the worktree, run `npm install` (or `pnpm install` \u2014 note stale pnpm-lock.yaml alongside package-lock.json, pre-existing drift, not touched), then re-run `git add scripts/*.sh .cursor/rules/workflow.mdc && git commit -m \"chore(ops): add scripts, preconditions, and session hooks\"` and push. I did not run npm install myself since the task's explicit instruction for this exact failure signature (pre-existing build error unrelated to my files) was to leave the worktree in place and report blocked rather than try to work around it. | RESOLVED by supervisor post-fleet: blocker was missing node_modules + .env.local in fresh worktree, not the Stripe apiVersion issue (main builds clean).",
+    "branch_url": "https://github.com/bernierllc/formExpert.co/tree/chore/ops-baseline"
+  },
+  {
+    "task_id": "communitycenter",
+    "status": "fixed",
+    "files_changed": [
+      "scripts/env-up.sh",
+      "scripts/env-down.sh",
+      "scripts/verify-prod.sh",
+      "scripts/deploy-prod.sh",
+      "CLAUDE.md",
+      "AGENTS.md"
+    ],
+    "tests_passing": true,
+    "evidence": "commit 140860b \"chore(ops): add scripts, preconditions, and session hooks\"; push output: \"To github.com:bernierllc/communitycenter.git * [new branch] chore/ops-baseline -> chore/ops-baseline\"; bash -n passed on all 4 scripts; python3 json.load succeeded on .claude/settings.json.",
+    "notes": "Ports: no \"communitycenter\" entry in ~/projects/ports.json, and supabase/config.toml sets no explicit port overrides either, so env-up.sh/env-down.sh use plain `supabase start`/`stop`/`status` (repo's own config -> CLI defaults 54321/54322/54323/54324) rather than inventing ports.\n\nDeploy target confirmed via .github/workflows/deploy.yml and README.md: S3 bucket unicorn-gives-web-391668783184-1774490745, CloudFront distribution ER9WIPUKON9J3, URL https://d25w74w41kavdz.cloudfront.net \u2014 used real values found in-repo, not fabricated. deploy-prod.sh defaults to dry-run (prints plan), requires --yes to act; never executed by me.\n\nCI baseline section skipped: ci_flags was empty per recon.\n\n.claude/settings.json: created with SessionStart/Stop/PostToolUse(tsc on apps/mobile/tsconfig.json) hooks exactly as specified, chmod n/a (json), validated with python3 json.load. However this repo's .gitignore explicitly ignores `.claude/settings.json` (line 57) \u2014 `git add` silently skipped it (git warned \"ignored by .gitignore\"). I did not force-add it, since gitignoring it appears to be a deliberate repo convention (only .claude/launch.json is tracked). The file exists in the worktree's history at commit time but is NOT in the pushed commit. Flagging this as worth a human decision: either the repo wants settings.json tracked (un-ignore it) or hooks need to live elsewhere (e.g. settings.local.json is also gitignored, so there's currently no committed path for shared hooks in this repo). Recommend discussing before assuming the hooks are active for other contributors.\n\nAGENTS.md is not \"near-identical\" to CLAUDE.md as recon stated \u2014 it's only the 23-line nx-generated block. Mirrored the same Scripts/Local Development sections into it anyway, inserted before the nx block, since it's still a Claude/agent-facing rules file.\n\nWorktree removed after push; main checkout untouched (verified `git worktree list` shows only main).",
+    "branch_url": "https://github.com/bernierllc/communitycenter/tree/chore/ops-baseline"
+  }
+]
