@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.3.2
+version: 1.3.3
 author: Bernier LLC
 ---
 
@@ -25,7 +25,9 @@ linked), report any drift in one line each, and continue from the first non-done
 NOT re-plan a run that is already in flight. No run-state on the current branch → before
 planning fresh, check other branches (`git branch -a --sort=-committerdate`, local and
 remote-tracking) for a committed checkpoint via
-`git show <branch>:<state-dir>/run-state.json`; a hit means the run lives on that branch —
+`git show <branch>:<state-dir>/run-state.json`; only a checkpoint with a **non-done** run
+counts — a completed run-state is history, not an in-flight run. A live hit means the run
+lives on that branch —
 switch to it when the tree is clean, otherwise surface the conflict and pause (same rule as
 the resume skill).
 
