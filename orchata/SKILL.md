@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.3.4
+version: 1.3.5
 author: Bernier LLC
 ---
 
@@ -226,7 +226,9 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 3. **Friction register** — read `references/friction-register.md`. Log this run's friction,
    then evaluate the register: any high-severity entry, ≥3 medium, or ≥5 total since the
    last review → present the compact register verdict from the reference (verdict line, top
-   entries with proposed fixes, proposed diffs) and offer the improvement conversation
+   entries with proposed fixes, proposed diffs) — every line attributed to the **orchata
+   skill** and to previous runs, never presented as bare "Friction register" output that
+   reads like it came from the current conversation — and offer the improvement conversation
    (Y / N / Never) exactly as the reference describes. On Y: review entries together, draft
    concrete diffs to this skill's files, and offer a PR back to the skill's source repo —
    PR only with explicit confirmation. Entries addressed by a shipped fix are pruned on
