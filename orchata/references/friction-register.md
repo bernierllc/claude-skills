@@ -39,15 +39,17 @@ Count only entries with `date` **after** `last_review` (all clauses). Offer the 
 conversation when: **any high, or ≥3 medium, or ≥5 total.**
 
 When a threshold trips, present the register in this compact shape — never dump the raw JSON
-or narrate every entry:
+or narrate every entry. Every line the user sees must name **orchata**: the register belongs
+to this skill and is about *past* runs, so an unattributed "Friction register:" header reads
+as if it came from the current conversation.
 
 ```
-Friction register: <N> entries since <last_review> — threshold hit (<which clause>).
-Top entries:
+Orchata skill — friction register: <N> entries since <last_review> — threshold hit (<which clause>).
+Top orchata entries (from previous orchata runs):
 - [high] <summary> → <proposed fix>
 - [medium] <summary> → <proposed fix>
 (<K> more low-severity entries, listed on request)
-Proposed diffs: <file>: <one-line change description> (one line per file)
+Proposed diffs to the orchata skill: <file>: <one-line change description> (one line per file)
 ```
 
 Then the offer, verbatim:
