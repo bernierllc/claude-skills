@@ -6,12 +6,25 @@ Walks docs/verification/, reads YAML frontmatter from page/flow/shared docs,
 and reports which version of verification-writer produced each one. Uses an
 on-disk SHA-256 cache to avoid re-scanning unchanged files.
 
+Also runs a deterministic integrity pass over the docs it scans. Four defect
+classes silently destroy downstream item coverage, because the playwright
+manifest keys items by ID in a single global map and skips lines it cannot
+parse:
+
+  duplicate-item-id      two items in one doc share an ID
+  duplicate-namespace    two docs declare the same `id_namespace`
+  namespace-mismatch     an item ID does not start with the doc's namespace
+  malformed-item         a checklist line is not Format A (missing bold ID,
+                         missing ` --- ` separator, or missing *Expected:*)
+  frontmatter-missing    (already reported) — every item in the doc is invisible
+
 Output: JSON summary on stdout for the agent to consume. Optional --quiet
 suppresses output (used by post-edit hooks).
 
 Exit codes:
   0 — scan completed successfully
   1 — fatal error (missing dirs, malformed cache, etc.)
+  2 — integrity errors found and --fail-on-integrity was passed
 """
 
 from __future__ import annotations
@@ -32,9 +45,13 @@ CACHE_FILENAME = ".scan-cache.json"
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
 FORMAT_A_REGEX = re.compile(r"^- \[[ x]\] (\[\w+\] )?\*\*[A-Z][A-Z0-9-]+\*\*")
-SCANNED_SUBDIRS = ("pages", "flows")
-SINGLE_FILES = ("shared.md",)
-EXCLUDED_TOP_FILES = {"index.md"}
+CHECKLIST_LINE_REGEX = re.compile(r"^\s*- \[[ x]\] ")
+ITEM_ID_REGEX = re.compile(r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*([A-Z][A-Z0-9-]*)\*\*")
+FORMAT_A_FULL_REGEX = re.compile(
+    r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*[A-Z][A-Z0-9-]*\*\* .+ --- .+\*Expected:.+\*"
+)
+FENCE_REGEX = re.compile(r"^\s*```")
+EXCLUDED_TOP_FILES = {"index.md", "README.md"}
 EXCLUDED_DIRS = {"findings", "logs", "visualizations"}
 
 
@@ -49,6 +66,11 @@ class FileResult:
     fingerprint_inferred: bool = False
     issues: list[str] = field(default_factory=list)
     has_affected_paths: bool = False
+    id_namespace: str | None = None
+    item_ids: list[str] = field(default_factory=list)
+    duplicate_item_ids: list[str] = field(default_factory=list)
+    namespace_mismatches: list[str] = field(default_factory=list)
+    malformed_items: list[dict[str, Any]] = field(default_factory=list)
 
 
 def sha256_of(path: Path) -> str:
@@ -109,6 +131,52 @@ def has_format_a_items(text: str) -> bool:
     return False
 
 
+def scan_items(text: str, namespace: str | None) -> dict[str, Any]:
+    """Walk checklist lines and report ID and Format A integrity defects.
+
+    Returns item_ids (in document order, deduplicated), duplicate_item_ids,
+    namespace_mismatches, and malformed_items (line number + reason).
+    """
+    seen: set[str] = set()
+    item_ids: list[str] = []
+    duplicates: list[str] = []
+    mismatches: list[str] = []
+    malformed: list[dict[str, Any]] = []
+    in_fence = False
+
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if FENCE_REGEX.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or not CHECKLIST_LINE_REGEX.match(line):
+            continue
+
+        m = ITEM_ID_REGEX.match(line)
+        if not m:
+            malformed.append({"line": lineno, "reason": "no-bold-id", "text": line.strip()})
+            continue
+        if not FORMAT_A_FULL_REGEX.match(line):
+            reason = "missing-separator" if " --- " not in line else "missing-expected"
+            malformed.append({"line": lineno, "reason": reason, "text": line.strip()})
+            # Still record the ID — the item exists, it just won't parse downstream.
+
+        item_id = m.group(1)
+        if item_id in seen:
+            duplicates.append(item_id)
+        else:
+            seen.add(item_id)
+            item_ids.append(item_id)
+        if namespace and not item_id.startswith(namespace):
+            mismatches.append(item_id)
+
+    return {
+        "item_ids": item_ids,
+        "duplicate_item_ids": sorted(set(duplicates)),
+        "namespace_mismatches": sorted(set(mismatches)),
+        "malformed_items": malformed,
+    }
+
+
 def fingerprint_version(keys: set[str] | None, body_text: str) -> str:
     """Walk the version-fingerprints table to assign a best-guess version.
 
@@ -128,15 +196,23 @@ def fingerprint_version(keys: set[str] | None, body_text: str) -> str:
 
 
 def discover_files(verification_root: Path) -> list[Path]:
+    """Every verification doc under the root, excluding report/log directories.
+
+    Walks the whole tree rather than a fixed pages/ + flows/ list: docs that
+    live at the verification root or in a project-specific subdirectory hold
+    real checklist items, and anything not scanned here is invisible to both
+    the version report and the integrity pass.
+    """
     files: list[Path] = []
-    for sub in SCANNED_SUBDIRS:
-        d = verification_root / sub
-        if d.is_dir():
-            files.extend(sorted(p for p in d.glob("*.md") if p.is_file()))
-    for name in SINGLE_FILES:
-        p = verification_root / name
-        if p.is_file():
-            files.append(p)
+    for p in sorted(verification_root.rglob("*.md")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(verification_root)
+        if rel.parts[0] in EXCLUDED_DIRS:
+            continue
+        if len(rel.parts) == 1 and rel.name in EXCLUDED_TOP_FILES:
+            continue
+        files.append(p)
     return files
 
 
@@ -157,6 +233,8 @@ def save_cache(cache_path: Path, data: dict[str, Any]) -> None:
 def cache_entry_fresh(entry: dict[str, Any], current_sha: str) -> bool:
     if entry.get("sha256") != current_sha:
         return False
+    if "item_ids" not in entry:
+        return False  # pre-integrity-pass cache entry — re-scan to populate it
     scanned_at = entry.get("scanned_at")
     if not scanned_at:
         return False
@@ -196,6 +274,11 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
             fingerprint_inferred=cached.get("fingerprint_inferred", False),
             issues=list(cached.get("issues", [])),
             has_affected_paths=cached.get("has_affected_paths", False),
+            id_namespace=cached.get("id_namespace"),
+            item_ids=list(cached.get("item_ids", [])),
+            duplicate_item_ids=list(cached.get("duplicate_item_ids", [])),
+            namespace_mismatches=list(cached.get("namespace_mismatches", [])),
+            malformed_items=list(cached.get("malformed_items", [])),
         )
 
     text = path.read_text(errors="replace")
@@ -206,6 +289,7 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
     inferred_version: str | None = None
     frontmatter_version: str | None = None
     has_affected_paths = False
+    id_namespace: str | None = None
 
     if body is None:
         issues.append("frontmatter-missing")
@@ -215,6 +299,9 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         keys, scalars = frontmatter_keys_and_scalars(body)
         frontmatter_version = scalars.get("version")
         has_affected_paths = "affected_paths" in keys
+        id_namespace = scalars.get("id_namespace")
+        if not id_namespace:
+            issues.append("id_namespace-missing")
         stamp = scalars.get("generated_by")
         if stamp:
             m = STAMP_REGEX.match(stamp)
@@ -229,6 +316,8 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
             inferred_version = fingerprint_version(keys, text)
             fingerprint_inferred = True
 
+    item_scan = scan_items(text, id_namespace)
+
     return FileResult(
         path=rel_key,
         sha256=sha,
@@ -239,6 +328,11 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         fingerprint_inferred=fingerprint_inferred,
         issues=issues,
         has_affected_paths=has_affected_paths,
+        id_namespace=id_namespace,
+        item_ids=item_scan["item_ids"],
+        duplicate_item_ids=item_scan["duplicate_item_ids"],
+        namespace_mismatches=item_scan["namespace_mismatches"],
+        malformed_items=item_scan["malformed_items"],
     )
 
 
@@ -252,6 +346,63 @@ def result_to_cache(r: FileResult) -> dict[str, Any]:
         "fingerprint_inferred": r.fingerprint_inferred,
         "issues": r.issues,
         "has_affected_paths": r.has_affected_paths,
+        "id_namespace": r.id_namespace,
+        "item_ids": r.item_ids,
+        "duplicate_item_ids": r.duplicate_item_ids,
+        "namespace_mismatches": r.namespace_mismatches,
+        "malformed_items": r.malformed_items,
+    }
+
+
+def build_integrity(results: list[FileResult]) -> dict[str, Any]:
+    """Cross-doc and per-doc integrity report.
+
+    Namespace collisions are the cross-doc case: two docs claiming the same
+    `id_namespace` will mint colliding item IDs, and a downstream manifest keyed
+    globally by ID keeps only whichever doc synced last.
+    """
+    by_namespace: dict[str, list[str]] = {}
+    for r in results:
+        if r.id_namespace:
+            by_namespace.setdefault(r.id_namespace, []).append(r.path)
+
+    duplicate_namespaces = [
+        {"id_namespace": ns, "docs": sorted(paths)}
+        for ns, paths in sorted(by_namespace.items())
+        if len(paths) > 1
+    ]
+    duplicate_item_ids = [
+        {"path": r.path, "ids": r.duplicate_item_ids}
+        for r in results
+        if r.duplicate_item_ids
+    ]
+    namespace_mismatches = [
+        {"path": r.path, "id_namespace": r.id_namespace, "ids": r.namespace_mismatches}
+        for r in results
+        if r.namespace_mismatches
+    ]
+    malformed_items = [
+        {"path": r.path, "items": r.malformed_items}
+        for r in results
+        if r.malformed_items
+    ]
+    missing_namespace = [r.path for r in results if "id_namespace-missing" in r.issues]
+
+    error_count = (
+        len(duplicate_namespaces)
+        + sum(len(d["ids"]) for d in duplicate_item_ids)
+        + sum(len(d["ids"]) for d in namespace_mismatches)
+        + sum(len(d["items"]) for d in malformed_items)
+    )
+
+    return {
+        "error_count": error_count,
+        "total_items": sum(len(r.item_ids) for r in results),
+        "duplicate_namespaces": duplicate_namespaces,
+        "duplicate_item_ids": duplicate_item_ids,
+        "namespace_mismatches": namespace_mismatches,
+        "malformed_items": malformed_items,
+        "missing_id_namespace": missing_namespace,
     }
 
 
@@ -264,6 +415,7 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
     missing_frontmatter = [r for r in results if "frontmatter-missing" in r.issues]
     stamp_missing = [r for r in results if "stamp-missing" in r.issues]
     no_affected_paths = [r for r in results if not r.has_affected_paths]
+    integrity = build_integrity(results)
 
     return {
         "summary": {
@@ -274,7 +426,9 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
             "stamp_missing": len(stamp_missing),
             "no_affected_paths": len(no_affected_paths),
             "current_skill_version": current_skill_version,
+            "integrity_errors": integrity["error_count"],
         },
+        "integrity": integrity,
         "stale": [
             {
                 "path": r.path,
@@ -308,6 +462,13 @@ def main() -> int:
         "--quiet",
         action="store_true",
         help="Suppress JSON output. Cache is still updated. Used by post-edit hooks.",
+    )
+    parser.add_argument(
+        "--fail-on-integrity",
+        action="store_true",
+        help="Exit 2 if the integrity pass finds any error (duplicate item IDs, "
+             "duplicate id_namespace across docs, namespace mismatches, malformed items). "
+             "Use in blocking hooks and CI; the default is report-only.",
     )
     parser.add_argument(
         "--no-gitignore-touch",
@@ -349,10 +510,19 @@ def main() -> int:
     }
     save_cache(cache_path, output)
 
+    summary = build_summary(results, args.current_version)
+
     if not args.quiet:
-        summary = build_summary(results, args.current_version)
         json.dump(summary, sys.stdout, indent=2)
         sys.stdout.write("\n")
+
+    errors = summary["integrity"]["error_count"]
+    if errors and args.fail_on_integrity:
+        sys.stderr.write(
+            f"ERROR: {errors} verification doc integrity error(s). "
+            "Re-run without --quiet for the full report.\n"
+        )
+        return 2
 
     return 0
 
