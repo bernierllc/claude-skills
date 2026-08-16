@@ -195,6 +195,33 @@ describe('syncTests (integration)', () => {
     expect(pending).toContain('EVT-02');
   });
 
+  it('refuses to write when an item ID is already owned by another doc', async () => {
+    const docPath = join(tempDir, 'use-cases.md');
+    await writeFile(docPath, `# Use Cases
+- [ ] [standard] **USC-01** Do action --- Expected. *Expected: success*
+`);
+
+    const itemsPath = join(manifestDir, 'items.json');
+    const original = {
+      version: '1.0',
+      items: {
+        'USC-01': {
+          source_doc: join(tempDir, 'u-scheduling.md'),
+          content_hash: 'abc',
+          depth: 'standard',
+          status: 'active',
+        },
+      },
+    };
+    await writeFile(itemsPath, JSON.stringify(original));
+
+    await expect(syncTests(docPath, manifestDir)).rejects.toThrow(/USC-01/);
+
+    // The other doc's ownership must survive the refusal untouched.
+    const after = JSON.parse(await readFile(itemsPath, 'utf-8'));
+    expect(after.items['USC-01'].source_doc).toBe(join(tempDir, 'u-scheduling.md'));
+  });
+
   it('detects removed items from manifest', async () => {
     const docPath = join(tempDir, 'verification.md');
     await writeFile(docPath, `# Empty\nNo items.`);
