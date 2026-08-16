@@ -202,4 +202,16 @@ describe('missingAffectedPaths', () => {
     ]);
     await rm(dir, { recursive: true, force: true });
   });
+
+  it('matches framework dynamic-route dirs, which glob would read as char classes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'affected-paths-dyn-'));
+    await mkdir(join(dir, 'app', '(app)', 'p', '[projectSlug]', 'domains'), { recursive: true });
+    expect(
+      missingAffectedPaths(
+        ['app/(app)/p/[projectSlug]/domains/**', 'app/(app)/p/[projectSlug]/gone/**'],
+        dir
+      )
+    ).toEqual(['app/(app)/p/[projectSlug]/gone/**']);
+    await rm(dir, { recursive: true, force: true });
+  });
 });
