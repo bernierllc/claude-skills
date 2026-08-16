@@ -5,6 +5,8 @@ import {
   classifyModification,
   removeTestBlock,
   detectPinning,
+  readPendingIds,
+  resolveDocArg,
   syncTests
 } from '../sync-tests.js';
 import { hashItem } from '../lib/hash.js';
@@ -158,6 +160,41 @@ test('original', () => {});
   });
 });
 
+describe('readPendingIds', () => {
+  it('reads the manifest envelope, a bare legacy array, and missing files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pending-queue-'));
+    const p = join(dir, 'pending-generation.json');
+
+    await writeFile(p, JSON.stringify({ version: '1.0', generated_at: null, items: ['EVT-01'] }));
+    expect(readPendingIds(p)).toEqual(['EVT-01']);
+
+    await writeFile(p, JSON.stringify(['EVT-02']));
+    expect(readPendingIds(p)).toEqual(['EVT-02']);
+
+    expect(readPendingIds(join(dir, 'absent.json'))).toEqual([]);
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe('resolveDocArg', () => {
+  const hookPayload = (p) => () => JSON.stringify({ tool_input: { file_path: p } });
+
+  it('prefers an explicit path argument', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js', 'docs/verification/pages/a.md'], hookPayload('x.md')))
+      .toBe('docs/verification/pages/a.md');
+  });
+
+  it('falls back to the edited verification doc on stdin', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js'], hookPayload('/repo/docs/verification/pages/a.md')))
+      .toBe('/repo/docs/verification/pages/a.md');
+  });
+
+  it('ignores edits to files that are not verification docs, and unreadable stdin', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js'], hookPayload('/repo/src/app.ts'))).toBeNull();
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => { throw new Error('EAGAIN'); })).toBeNull();
+  });
+});
+
 describe('syncTests (integration)', () => {
   let tempDir;
   let manifestDir;
@@ -191,8 +228,8 @@ describe('syncTests (integration)', () => {
 
     const pendingPath = join(tempDir, 'pending-generation.json');
     const pending = JSON.parse(await readFile(pendingPath, 'utf-8'));
-    expect(pending).toContain('EVT-01');
-    expect(pending).toContain('EVT-02');
+    expect(pending.items).toContain('EVT-01');
+    expect(pending.items).toContain('EVT-02');
   });
 
   it('refuses to write when an item ID is already owned by another doc', async () => {
