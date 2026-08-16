@@ -170,6 +170,24 @@ export async function syncTests(docPath, manifestDir) {
     delete items.items[removed.id];
   }
 
+  // Refuse to write when an added ID is already owned by a different doc.
+  // items.items is keyed globally by item ID, so writing here would silently
+  // reassign the other doc's item to this one and drop its test coverage with
+  // no error anywhere. Two docs sharing an id_namespace is the usual cause —
+  // verification-writer's integrity pass reports that upstream.
+  // ponytail: keying the manifest by source_doc + id would remove the
+  // collision entirely; that is a manifest format change, deferred.
+  const collisions = changes.added
+    .filter((a) => items.items[a.id])
+    .map((a) => `  ${a.id} — already owned by ${items.items[a.id].source_doc}`);
+  if (collisions.length > 0) {
+    throw new Error(
+      `sync-tests: ${collisions.length} item ID collision(s) syncing ${docFilename}; manifest not written.\n` +
+        `${collisions.join('\n')}\n` +
+        `Give each verification doc a unique id_namespace, then re-run.`
+    );
+  }
+
   // Process additions
   const pendingIds = [];
   for (const added of changes.added) {
@@ -245,6 +263,9 @@ Usage: node sync-tests.js <verification-doc-path>
     if (result.unchanged) parts.push(`${result.unchanged} unchanged`);
     if (result.pendingGeneration) parts.push(`${result.pendingGeneration} queued`);
     console.log(`sync-tests: ${basename(docPath, '.md')} — ${parts.join(', ') || 'no changes'}`);
+  } catch (err) {
+    console.error(err.message);
+    process.exitCode = 1;
   } finally {
     release();
   }
