@@ -37,6 +37,14 @@ def test_scan_items_flags_duplicates_and_malformed():
     assert reasons == ["missing-separator", "missing-expected", "no-bold-id"], reasons
 
 
+def test_scan_items_accepts_lowercase_id_suffixes():
+    """Downstream parses `OSB-03b`, so reporting it malformed is a false positive."""
+    doc = "- [ ] [standard] **OSB-03b** Do a thing --- It happens. *Expected: success*"
+    r = sv.scan_items(doc, "OSB")
+    assert r["item_ids"] == ["OSB-03b"], r["item_ids"]
+    assert r["malformed_items"] == [], r["malformed_items"]
+
+
 def test_scan_items_ignores_fenced_code():
     doc = "\n".join(["```markdown", "- [ ] example line with no id", "```"])
     assert sv.scan_items(doc, None)["malformed_items"] == []
