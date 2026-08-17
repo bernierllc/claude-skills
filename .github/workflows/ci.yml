@@ -21,8 +21,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter: stacked PRs target another feature branch, and those
+  # need the gates just as much as the ones targeting main.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
