@@ -48,6 +48,45 @@ describe('parseVerificationItems', () => {
     const items = parseVerificationItems(markdown);
     expect(items[0].expectedType).toBe('client-side validation error');
   });
+
+  // Regression: the pattern required both ` --- ` and a literal `. ` before the
+  // *Expected:* trailer. Items that fused action and expectation, or ended the
+  // clause with a quote/paren/backtick, matched neither — they were dropped
+  // silently, so they never reached the manifest and never got a test.
+  it('keeps items that omit the --- separator', () => {
+    const markdown = `- [ ] [standard] **EVT-FRM-03** Sign out then open the page; the app redirects to \`/login\`. *Expected: auth boundary enforcement*`;
+    const items = parseVerificationItems(markdown);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('EVT-FRM-03');
+    expect(items[0].expectedType).toBe('auth boundary enforcement');
+    expect(items[0].action).toContain('redirects to');
+  });
+
+  it('keeps items whose expected clause ends with a quote, paren, or backtick', () => {
+    const markdown = `# Doc
+- [ ] [standard] **EVT-FRM-04** Click delete --- A dialog reads "Are you sure?" *Expected: warning dialog*
+- [ ] [standard] **EVT-FRM-05** Open the menu --- The row shows the slug (lowercase). *Expected: success*
+`;
+    const items = parseVerificationItems(markdown);
+    expect(items.map(i => i.id)).toEqual(['EVT-FRM-04', 'EVT-FRM-05']);
+  });
+
+  it('keeps trailing annotations after the Expected trailer', () => {
+    const markdown = `- [ ] [standard] **EVT-FRM-06** Call the webhook --- 202 returned. *Expected: success* *API-only*`;
+    const items = parseVerificationItems(markdown);
+    expect(items).toHaveLength(1);
+    expect(items[0].expectedType).toBe('success');
+  });
+
+  // Regression: Format B re-scans the whole doc, and its non-greedy `**(.+?)**`
+  // spans from a real item's ID to any later bold phrase on the same line,
+  // minting a phantom slug ID for a line that already had a real one.
+  it('does not mint a phantom slug ID for a line Format A already claimed', () => {
+    const markdown = `- [ ] [standard] **SEC-SES-11** Reuse a magic link that **has been used** --- Error shown. *Expected: error*`;
+    const items = parseVerificationItems(markdown, 'security');
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('SEC-SES-11');
+  });
 });
 
 describe('detectChanges', () => {
@@ -164,7 +203,9 @@ describe('syncTests (integration)', () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'sync-tests-'));
-    manifestDir = join(tempDir, 'manifest');
+    // Mirror the real on-disk layout: syncTests derives the project root from
+    // manifestDir to locate the shared pending-generation queue.
+    manifestDir = join(tempDir, 'tests', 'verification-playwright', 'manifest');
     await mkdir(manifestDir, { recursive: true });
   });
 
@@ -189,7 +230,7 @@ describe('syncTests (integration)', () => {
     expect(result.added).toBe(2);
     expect(result.pendingGeneration).toBe(2);
 
-    const pendingPath = join(tempDir, 'pending-generation.json');
+    const pendingPath = join(tempDir, 'tests', 'verification-playwright', 'pending-generation.json');
     const pending = JSON.parse(await readFile(pendingPath, 'utf-8'));
     expect(pending).toContain('EVT-01');
     expect(pending).toContain('EVT-02');

@@ -12,7 +12,17 @@ import { fileURLToPath } from 'node:url';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- expected. *Expected: type*
 // ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30)
-const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+//
+// The body (action + expected) is captured as one group and split on ` --- `
+// afterwards. Anchoring on the `*Expected: type*` trailer rather than on a
+// literal `. ` before it is deliberate: real docs end the expected clause with
+// a closing quote, paren, or backtick after the period, and docs in the wild
+// omit the ` --- ` separator entirely on a meaningful fraction of items.
+// Requiring either made the parser silently drop those items — they got no
+// manifest entry and therefore no test. The trailing `.*$` keeps post-Expected
+// annotations (` *API-only*`, a parenthetical) inside fullMatch instead of
+// rejecting the whole line.
+const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\* (.+?)\s*[_*]Expected: ([^_*]+)[_*].*$/gm;
 // Format B: - [ ] [depth] **Action text** --- expected. _Expected: type_  (no separate ID)
 const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected: (.+?)[_*]/gm;
 
@@ -23,12 +33,22 @@ const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected
 export function parseVerificationItems(markdown, pageTag = '') {
   const items = [];
   const seen = new Set();
+  // Line offsets consumed by Format A. Format B re-scans the whole document,
+  // and its non-greedy `**(.+?)**` happily spans from an item's ID to a bold
+  // phrase inside the action text ("**SEC-SES-11** ... that **has been used**"),
+  // minting a phantom slug ID for a line that already has a real one.
+  const consumed = new Set();
 
   // Try Format A first (has explicit item IDs)
   const patternA = new RegExp(ITEM_PATTERN_A.source, 'gm');
   let match;
   while ((match = patternA.exec(markdown)) !== null) {
-    const [fullMatch, depth, id, action, expected, expectedType] = match;
+    const [fullMatch, depth, id, body, expectedType] = match;
+    const sep = body.indexOf(' --- ');
+    // No separator: the doc fused action and expected into one statement.
+    const action = sep === -1 ? body : body.slice(0, sep);
+    const expected = sep === -1 ? body : body.slice(sep + 5);
+    consumed.add(match.index);
     if (seen.has(id)) continue;
     seen.add(id);
     const afterMatch = markdown.substring(match.index + fullMatch.length);
@@ -46,6 +66,7 @@ export function parseVerificationItems(markdown, pageTag = '') {
   const patternB = new RegExp(ITEM_PATTERN_B.source, 'gm');
   while ((match = patternB.exec(markdown)) !== null) {
     const [fullMatch, depth, actionBold, expected, expectedType] = match;
+    if (consumed.has(match.index)) continue;
     // Generate a stable ID from the action text (slugify)
     const id = slugifyAction(actionBold, pageTag);
     if (seen.has(id)) continue;
@@ -213,11 +234,7 @@ export async function syncTests(docPath, manifestDir) {
 
   // Write pending queue
   if (pendingIds.length > 0) {
-    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-    let existing = [];
-    try { existing = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch {}
-    const merged = [...new Set([...existing, ...pendingIds])];
-    writeFileSync(pendingPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+    appendPendingQueue(resolve(manifestDir, '..', '..', '..'), pendingIds);
   }
 
   // Write updated manifest

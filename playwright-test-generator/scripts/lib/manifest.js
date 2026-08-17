@@ -154,21 +154,40 @@ export function releaseLockSync(projectDir) {
   try { unlinkSync(lockPath); } catch { /* already removed */ }
 }
 
+function queuePath(projectDir) {
+  return join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
+}
+
+/**
+ * The canonical on-disk queue is a bare array of item IDs. The skill's drain
+ * pass has historically rewritten it as `{ version, generated_at, items }`,
+ * so accept that shape too rather than treating it as corruption. Anything
+ * else throws — a queue we can't read must not look like an empty one.
+ */
+export function normalizePendingQueue(parsed) {
+  const ids = Array.isArray(parsed) ? parsed
+    : Array.isArray(parsed?.items) ? parsed.items
+      : null;
+  if (!ids) {
+    throw new Error('pending-generation.json: expected an array of item IDs or { items: [...] }');
+  }
+  return [...new Set(ids)];
+}
+
+/** Throws if the file exists but is unreadable/unrecognized; [] if absent. */
 export function readPendingQueue(projectDir) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
-  try { return [...new Set(JSON.parse(readFileSync(queuePath, 'utf8')))]; } catch { return []; }
+  const path = queuePath(projectDir);
+  if (!existsSync(path)) return [];
+  return normalizePendingQueue(JSON.parse(readFileSync(path, 'utf8')));
 }
 
 export function appendPendingQueue(projectDir, itemIds) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
-  let existing = [];
-  try { existing = JSON.parse(readFileSync(queuePath, 'utf8')); } catch { /* new */ }
-  const merged = [...new Set([...existing, ...itemIds])];
-  mkdirSync(join(projectDir, 'tests', 'verification-playwright'), { recursive: true });
-  writeFileSync(queuePath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  const path = queuePath(projectDir);
+  const merged = [...new Set([...readPendingQueue(projectDir), ...itemIds])];
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 }
 
 export function clearPendingQueue(projectDir) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
-  try { unlinkSync(queuePath); } catch { /* already gone */ }
+  try { unlinkSync(queuePath(projectDir)); } catch { /* already gone */ }
 }
