@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.9.0
+version: 3.9.1
 dependencies:
   skills:
     - name: verification-writer

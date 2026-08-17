@@ -1,0 +1,69 @@
+# CI for claude-skills
+#
+# This repo ships behaviour, not a build artifact: every skill is instructions
+# plus a handful of deterministic scripts that other repos run against their own
+# code. The gates below are the ones that catch the failures that actually
+# escaped into consuming projects:
+#
+#   1. Script tests — the parsers and manifest writers under
+#      playwright-test-generator/scripts/. A regression here silently drops
+#      verification items, which is invisible until someone audits coverage.
+#   2. Version consistency — a skill's SKILL.md frontmatter version and its
+#      hooks.json version must agree, or installed hooks run a version the skill
+#      no longer describes.
+#   3. Manifest freshness — skills-manifest.json is what `aec` resolves against.
+#      When it drifts behind SKILL.md, installs silently pull a stale version.
+#
+# All three are seconds-fast and need no secrets.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # No base-branch filter: stacked PRs target another feature branch, and those
+  # need the gates just as much as the ones targeting main.
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    name: Skill script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: playwright-test-generator/scripts/package-lock.json
+
+      - name: Install script deps
+        working-directory: playwright-test-generator/scripts
+        run: npm ci
+
+      - name: Test
+        working-directory: playwright-test-generator/scripts
+        run: npm test
+
+  consistency:
+    name: Version + manifest consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: SKILL.md version matches hooks.json
+        run: python3 scripts/check-hook-versions.py
+
+      - name: skills-manifest.json is current
+        run: python3 scripts/generate-manifest.py --check

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readManifestFile, writeManifestFile, acquireLock, releaseLock } from '../../lib/manifest.js';
+import { readManifestFile, writeManifestFile, acquireLock, releaseLock, normalizePendingQueue } from '../../lib/manifest.js';
 import { mkdtemp, rm, readFile, writeFile, stat, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -140,5 +140,31 @@ describe('manifest', () => {
     it('does not throw if lockfile already removed', async () => {
       await expect(releaseLock(tempDir)).resolves.not.toThrow();
     });
+  });
+});
+
+// Regression: verify-pipeline.js read the queue as a bare array and called
+// .map() on it. The skill's drain pass writes `{version, generated_at, items}`,
+// so every health check reported "Queue file corrupted" — and sync-tests.js's
+// own inline merge (`[...existing]` on that object) threw outright.
+describe('normalizePendingQueue', () => {
+  it('accepts the canonical bare array', () => {
+    expect(normalizePendingQueue(['A-01', 'B-02'])).toEqual(['A-01', 'B-02']);
+  });
+
+  it('accepts the { items: [...] } shape the drain pass writes', () => {
+    const drained = { version: '1.0', generated_at: '2026-08-16T20:29:30.544Z', items: [] };
+    expect(normalizePendingQueue(drained)).toEqual([]);
+    expect(normalizePendingQueue({ ...drained, items: ['A-01'] })).toEqual(['A-01']);
+  });
+
+  it('deduplicates', () => {
+    expect(normalizePendingQueue(['A-01', 'A-01'])).toEqual(['A-01']);
+  });
+
+  it('throws rather than reporting an empty queue for an unrecognized shape', () => {
+    expect(() => normalizePendingQueue({ pending: ['A-01'] })).toThrow(/expected an array/);
+    expect(() => normalizePendingQueue('A-01')).toThrow(/expected an array/);
+    expect(() => normalizePendingQueue(null)).toThrow(/expected an array/);
   });
 });
