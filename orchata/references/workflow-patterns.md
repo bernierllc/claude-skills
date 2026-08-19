@@ -29,6 +29,22 @@ Notes:
   superpowers:test-driven-development skill before writing code").
 - Escalation-flagged stages are **excluded from the script** and go straight to the punch
   list. Never put a stop-and-confirm action inside a worker prompt.
+- Stream per-agent verdicts to `<state-dir>/fleet-results.json` as they land. Workflow
+  scripts have no filesystem access, so the script itself cannot write the file — instead,
+  each worker's prompt ends with "append your verdict as one JSON line to
+  `<state-dir>/fleet-results.json`" (workers have Bash). In Agent-tool fallback mode the
+  orchestrator appends between dispatches. Either way, a dead run's progress is readable
+  from the file; the Workflow tool's own `journal.jsonl` is the backstop.
+- Guards over generated or matched text fail **open**, not closed: a regex that misses
+  (a transaction guard, a filename-prefix comparison, a `NaN <= N` branch) silently lets
+  the unguarded case through. When a worker authors such a guard, its verify stage must
+  include an input designed to slip past it.
+
+## Waiting on CI/deploy
+
+Use a backgrounded until-loop capped by an iteration counter. Prefer it over a foreground
+`sleep` (some harnesses refuse foreground sleeps) and over coreutils `timeout` (absent on
+macOS).
 
 ## Adversarial verify (risky stages: money/auth/data/contract changes)
 

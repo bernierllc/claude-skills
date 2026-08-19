@@ -65,6 +65,15 @@ Then the offer, verbatim:
 - **Never** — confirm once ("Stop logging friction and never ask again?"); on confirmation set
   `opt_out: true`.
 
+## Folding rules (when a fix ships into the skill)
+
+Each lesson lands in the section that **owns its concern** (tracker lessons → External
+tracker, git-integration lessons → Integration & shipping, verify lessons → the retro
+checklist), stated at the highest generality that still prevents the recurrence. A lesson
+that can't be generalized beyond one project's artifact doesn't go in — the register entry
+is pruned as not-a-skill-problem. Never assume host-specific behavior is universal; phrase
+harness quirks as "some harnesses" with the portable alternative.
+
 ## Prune on review
 
 The register is a **queue, not an archive**. At each review (Y or N), remove entries that are
