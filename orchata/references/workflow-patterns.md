@@ -29,6 +29,21 @@ Notes:
   superpowers:test-driven-development skill before writing code").
 - Escalation-flagged stages are **excluded from the script** and go straight to the punch
   list. Never put a stop-and-confirm action inside a worker prompt.
+- Stream per-agent verdicts to `<state-dir>/fleet-results.json` from inside the script
+  (append on each `agent()` return, not just the final `return`) — a dead workflow's
+  progress is then readable without journal spelunking.
+
+## Waiting on CI/deploy
+
+Use a backgrounded until-loop, never a foreground `sleep` (the harness refuses it), and
+never coreutils `timeout` — macOS doesn't have it. Cap the loop with an iteration counter.
+
+## Migration-runner authoring
+
+Two known fail-opens: BEGIN/COMMIT guard clauses over SQL text need a semicolon anchor
+(`DO $$ ... END $$` bodies otherwise trip them), and numeric-prefix comparisons need an
+explicit NaN branch — `NaN <= N` is false, so an unnumbered filename executes instead of
+being baselined.
 
 ## Adversarial verify (risky stages: money/auth/data/contract changes)
 

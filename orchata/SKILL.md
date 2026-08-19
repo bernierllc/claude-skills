@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.3.5
+version: 1.3.6
 author: Bernier LLC
 ---
 
@@ -38,6 +38,12 @@ Read before asking, in order:
 2. Git state (branch, recent commits, cleanliness)
 3. `.aec.json` if present; note any project override for where tasks/punch lists live
 4. Capabilities cache — see "AEC awareness" below; refresh if stale
+
+Baseline before writing code: run the repo's build/typecheck once at intake so a pre-existing
+red baseline is a known punch-list item, not a discovery at first commit (pre-commit hooks
+surface it at the worst moment). And when acceptance for any item requires a live
+authenticated check on a remote environment, confirm credential availability now and
+punch-list the check upfront — never discover the gap at retro.
 
 Then ask **at most one batched `AskUserQuestion`** covering only genuine unknowns that would
 materially change the plan (e.g., prod posture when no profile exists, a real fork in scope).
@@ -150,6 +156,14 @@ Worktree hygiene (either mode):
 - Workflow scripts whose `args` carries structure start with a defensive parse —
   `args = typeof args === 'string' ? JSON.parse(args) : args` — hosts may deliver args as a
   JSON string.
+- Prefer absolute paths (or `git -C <path>`) in every Bash call — never rely on the shell's
+  persisted cwd, which drifts across calls and environment moves.
+- Promotion PRs between long-lived branches (staging → main) use **merge commits, never
+  squash** — a squash leaves the branches' blobs divergent and the next promotion reports
+  false conflicts. If a squash promotion already exists in history, back-merge the target
+  into the source branch before opening the next promotion.
+- Before the first create against an external tracker collection in a run, fetch its schema
+  once and cache the property names in run-state — never guess field names into a 400.
 - Log friction as it happens — a wrong default in these instructions, an unnecessary pause, a
   missed case that caused rework → append to the friction register (see Phase 5).
 
@@ -220,7 +234,11 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
    load is not verification. Deploy verification asserts deployment **identity** (a new
    deployment id/commit visible in the provider's deployment list) plus a response-body
    match — never a bare HTTP status code, which a stale or placeholder deploy also returns.
-   Report failures plainly.
+   Report failures plainly. When smoke-testing deployed tools, read the run's own
+   schema/handoff doc first instead of guessing arg names. When a monorepo's workspaces share
+   one local database, run the suite with workspace concurrency 1 before diagnosing a timeout
+   as a code defect. Before waiting on bot reviews for a PR, check `.github/workflows` is
+   non-empty or the repo has known review bots — if neither, skip the wait.
 2. **Report:** what shipped, what's on the punch list (inline summary + file path), what was
    assumed at intake.
 3. **Friction register** — read `references/friction-register.md`. Log this run's friction,
