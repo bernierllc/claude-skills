@@ -7,9 +7,14 @@ including metadata about layouts, error boundaries, loading states,
 and dynamic segments.
 
 Usage:
-    python3 route-scanner.py [app_dir]
+    python3 route-scanner.py [app_dir] [--quiet]
 
-    app_dir: Path to the app/ directory (default: ./app)
+    app_dir: Path to the app/ directory. Defaults to the first of
+             ./src/app or ./app that exists — Next.js supports both
+             layouts and the hook that runs this passes no argument.
+    --quiet: Suppress the JSON manifest; print only the summary to stderr.
+             Used by the on-file-edit hook, which wants the counts, not a
+             few hundred route objects in the transcript on every edit.
 
 Output:
     JSON array of route objects to stdout.
@@ -203,10 +208,24 @@ def _relative_or_none(filepath: str | None, base: Path) -> str | None:
         return filepath
 
 
+APP_DIR_CANDIDATES = ("./src/app", "./app")
+
+
+def default_app_dir() -> str:
+    """First existing App Router root, or ./app so the error names something real."""
+    for candidate in APP_DIR_CANDIDATES:
+        if Path(candidate).is_dir():
+            return candidate
+    return "./app"
+
+
 def main():
-    app_dir = sys.argv[1] if len(sys.argv) > 1 else "./app"
+    args = [a for a in sys.argv[1:] if a != "--quiet"]
+    quiet = "--quiet" in sys.argv[1:]
+    app_dir = args[0] if args else default_app_dir()
     routes = scan_routes(app_dir)
-    print(json.dumps(routes, indent=2))
+    if not quiet:
+        print(json.dumps(routes, indent=2))
 
     # Summary to stderr
     pages = [r for r in routes if r["type"] == "page"]

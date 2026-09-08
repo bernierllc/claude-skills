@@ -1,11 +1,11 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "3.4.2",
+  "version": "3.4.3",
   "hooks": [
     {
       "id": "vw-scan-on-edit",
       "event": "on_file_edit",
-      "command": "aec run-script skill:verification-writer scan-versions.py --root . --current-version 3.4.2 --quiet",
+      "command": "aec run-script skill:verification-writer scan-versions.py --root . --current-version 3.4.3 --quiet",
       "description": "After frontend/UI file changes, scan verification docs for staleness. Flags stale docs so the agent can update them while still in context.",
       "match": "*.tsx|*.ts|*.jsx|*.js|*.html|*.htm|*.css|*.scss|*.sass|*.less|*.vue|*.svelte|*.astro|*.ejs|*.hbs|*.handlebars|*.pug|*.jade|*.njk|*.twig|*.liquid|*.erb|*.py|*.kt|*.swift|*.dart|*.xml",
       "blocking": false,
@@ -19,7 +19,7 @@
     {
       "id": "vw-route-scan-on-edit",
       "event": "on_file_edit",
-      "command": "aec run-script skill:verification-writer route-scanner.py",
+      "command": "aec run-script skill:verification-writer route-scanner.py --quiet",
       "description": "After route/screen file changes, re-scan routes to detect new or removed pages that need verification docs.",
       "match": "app/**/*.tsx|app/**/*.ts|app/**/*.jsx|app/**/*.js|pages/**/*.tsx|pages/**/*.ts|pages/**/*.jsx|pages/**/*.js|src/routes/**/*|src/pages/**/*|src/screens/**/*|src/views/**/*|templates/**/*.html|templates/**/*.py|src/app/**/*.tsx|src/app/**/*.ts|src/app/**/*.jsx|src/app/**/*.js",
       "blocking": false,
