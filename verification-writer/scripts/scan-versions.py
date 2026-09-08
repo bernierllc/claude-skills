@@ -46,9 +46,13 @@ GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
 FORMAT_A_REGEX = re.compile(r"^- \[[ x]\] (\[\w+\] )?\*\*[A-Z][A-Z0-9-]+\*\*")
 CHECKLIST_LINE_REGEX = re.compile(r"^\s*- \[[ x]\] ")
-ITEM_ID_REGEX = re.compile(r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*([A-Z][A-Z0-9-]*)\*\*")
+# ID charset matches playwright-test-generator's parser exactly. A stricter
+# charset here reports items as malformed that downstream parses fine (e.g.
+# a lowercase variant suffix like OSB-03b), which is worse than useless: it
+# buries the genuinely-unparseable items in false positives.
+ITEM_ID_REGEX = re.compile(r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\*")
 FORMAT_A_FULL_REGEX = re.compile(
-    r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*[A-Z][A-Z0-9-]*\*\* .+ --- .+\*Expected:.+\*"
+    r"^\s*- \[[ x]\] (?:\[\w+\] )?\*\*[A-Za-z0-9][-A-Za-z0-9]*\*\* .+ --- .+\*Expected:.+\*"
 )
 FENCE_REGEX = re.compile(r"^\s*```")
 EXCLUDED_TOP_FILES = {"index.md", "README.md"}
