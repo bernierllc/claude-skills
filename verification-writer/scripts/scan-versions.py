@@ -42,6 +42,11 @@ from typing import Any
 
 CACHE_TTL_DAYS = 7
 CACHE_FILENAME = ".scan-cache.json"
+# Bump whenever the parsers below change what a scan produces. Cache entries
+# written by an older SCAN_VERSION are discarded wholesale — otherwise a fix
+# to an item regex is invisible for every doc whose bytes have not changed,
+# and the report keeps citing defects the current parser no longer finds.
+SCAN_VERSION = 2
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
 FORMAT_A_REGEX = re.compile(r"^- \[[ x]\] (\[\w+\] )?\*\*[A-Z][A-Z0-9-]+\*\*")
@@ -495,7 +500,9 @@ def main() -> int:
 
     cache_path = verification_root / CACHE_FILENAME
     cache_data = load_cache(cache_path)
-    file_cache = cache_data.get("files", {}) if isinstance(cache_data, dict) else {}
+    if not isinstance(cache_data, dict) or cache_data.get("scan_version") != SCAN_VERSION:
+        cache_data = {}
+    file_cache = cache_data.get("files", {})
 
     files = discover_files(verification_root)
     results: list[FileResult] = []
@@ -508,7 +515,7 @@ def main() -> int:
         new_file_cache[rel] = result_to_cache(r)
 
     output = {
-        "scan_version": 1,
+        "scan_version": SCAN_VERSION,
         "scanned_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "files": new_file_cache,
     }

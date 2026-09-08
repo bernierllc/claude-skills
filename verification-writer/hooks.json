@@ -1,11 +1,11 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "3.4.3",
+  "version": "3.4.4",
   "hooks": [
     {
       "id": "vw-scan-on-edit",
       "event": "on_file_edit",
-      "command": "aec run-script skill:verification-writer scan-versions.py --root . --current-version 3.4.3 --quiet",
+      "command": "aec run-script skill:verification-writer scan-versions.py --root . --current-version 3.4.4 --quiet",
       "description": "After frontend/UI file changes, scan verification docs for staleness. Flags stale docs so the agent can update them while still in context.",
       "match": "*.tsx|*.ts|*.jsx|*.js|*.html|*.htm|*.css|*.scss|*.sass|*.less|*.vue|*.svelte|*.astro|*.ejs|*.hbs|*.handlebars|*.pug|*.jade|*.njk|*.twig|*.liquid|*.erb|*.py|*.kt|*.swift|*.dart|*.xml",
       "blocking": false,
