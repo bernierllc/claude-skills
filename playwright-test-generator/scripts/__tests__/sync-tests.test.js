@@ -5,7 +5,9 @@ import {
   classifyModification,
   removeTestBlock,
   detectPinning,
-  syncTests
+  syncTests,
+  readPendingIds,
+  resolveDocArg
 } from '../sync-tests.js';
 import { hashItem } from '../lib/hash.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
@@ -191,8 +193,10 @@ describe('syncTests (integration)', () => {
 
     const pendingPath = join(tempDir, 'pending-generation.json');
     const pending = JSON.parse(await readFile(pendingPath, 'utf-8'));
-    expect(pending).toContain('EVT-01');
-    expect(pending).toContain('EVT-02');
+    // The queue is written in the same {version, generated_at, items} envelope
+    // as every other manifest file; readPendingIds still accepts bare arrays.
+    expect(pending.items).toContain('EVT-01');
+    expect(pending.items).toContain('EVT-02');
   });
 
   it('refuses to write when an item ID is already owned by another doc', async () => {
@@ -238,5 +242,54 @@ describe('syncTests (integration)', () => {
 
     const updatedManifest = JSON.parse(await readFile(join(manifestDir, 'items.json'), 'utf-8'));
     expect(updatedManifest.items['OLD-01']).toBeUndefined();
+  });
+});
+
+describe('readPendingIds', () => {
+  let tempDir;
+  beforeEach(async () => { tempDir = await mkdtemp(join(tmpdir(), 'pending-')); });
+  afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
+
+  it('reads the envelope form', async () => {
+    const p = join(tempDir, 'q.json');
+    await writeFile(p, JSON.stringify({ version: '1.0', items: ['A-01'] }));
+    expect(readPendingIds(p)).toEqual(['A-01']);
+  });
+
+  it('still reads bare arrays written by older runs', async () => {
+    const p = join(tempDir, 'q.json');
+    await writeFile(p, JSON.stringify(['A-01']));
+    expect(readPendingIds(p)).toEqual(['A-01']);
+  });
+
+  it('returns empty for a missing or corrupt queue', async () => {
+    expect(readPendingIds(join(tempDir, 'nope.json'))).toEqual([]);
+    const p = join(tempDir, 'bad.json');
+    await writeFile(p, 'not json');
+    expect(readPendingIds(p)).toEqual([]);
+  });
+});
+
+describe('resolveDocArg', () => {
+  const stdin = payload => () => JSON.stringify(payload);
+
+  it('prefers an explicit path argument', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js', 'docs/verification/pages/a.md'], stdin({})))
+      .toBe('docs/verification/pages/a.md');
+  });
+
+  it('falls back to the hook payload on stdin', () => {
+    const argv = ['node', 'sync-tests.js'];
+    const payload = { tool_input: { file_path: '/repo/docs/verification/pages/a.md' } };
+    expect(resolveDocArg(argv, stdin(payload))).toBe('/repo/docs/verification/pages/a.md');
+  });
+
+  it('ignores edits to files that are not verification docs', () => {
+    const payload = { tool_input: { file_path: '/repo/src/app/page.tsx' } };
+    expect(resolveDocArg(['node', 'sync-tests.js'], stdin(payload))).toBeNull();
+  });
+
+  it('returns null when stdin is empty or unparseable', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => '')).toBeNull();
   });
 });

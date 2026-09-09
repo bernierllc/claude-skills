@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-08-19T17:33:56.157426+00:00",
+  "generatedAt": "2026-09-08T22:27:29.093589+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -83,7 +83,7 @@
       "author": "Bernier LLC"
     },
     "playwright-test-generator": {
-      "version": "3.9.0",
+      "version": "3.9.3",
       "description": "Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items."
     },
     "playwright-test-runner": {
@@ -136,7 +136,7 @@
       "author": "Bernier LLC"
     },
     "verification-writer": {
-      "version": "3.4.0",
+      "version": "3.4.4",
       "description": "Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.",
       "author": "Bernier LLC"
     },

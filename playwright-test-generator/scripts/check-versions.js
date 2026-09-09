@@ -11,7 +11,6 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import * as nodeFs from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveRepoRoot } from './lib/repo.js';
@@ -111,25 +110,25 @@ export function discoverDocs(verificationRoot) {
   return found;
 }
 
-/** affected_paths entries that expand to zero files in the working tree.
- * Globs need fs.globSync (Node >= 22); on older runtimes only literal paths are
- * checked, so this under-reports rather than reporting false positives. */
+/** affected_paths entries that point at nothing in the working tree.
+ *
+ * Patterns are matched on their literal prefix — the path up to the first
+ * wildcard — rather than expanded. Framework dynamic-route directories are
+ * literal names containing brackets (`app/p/[projectSlug]/domains/**`,
+ * `blog/[slug]/**`), and every glob implementation reads `[...]` as a character
+ * class, so expanding those patterns returns zero matches for source that is
+ * plainly there. Prefix matching under-reports (a deleted file inside a
+ * surviving directory goes unnoticed) and that is the right bias: this status
+ * blocks test generation for the page, so a false positive is far more
+ * expensive than a missed one. */
 export function missingAffectedPaths(patterns, repoRoot) {
   const missing = [];
   for (const pattern of patterns || []) {
     if (pattern.startsWith('!')) continue; // negation refines, never requires a match
-    const hasMagic = /[*?[\]{}]/.test(pattern);
-    if (!hasMagic) {
-      if (!existsSync(join(repoRoot, pattern))) missing.push(pattern);
-      continue;
-    }
-    if (typeof nodeFs.globSync !== 'function') continue;
-    try {
-      if (nodeFs.globSync(pattern, { cwd: repoRoot }).length === 0) missing.push(pattern);
-    } catch {
-      // An unparseable pattern is a doc bug, not a missing file — leave it to
-      // verification-writer's own integrity pass rather than guessing here.
-    }
+    const wildcard = pattern.search(/[*?{]/);
+    // Trailing 'x' keeps dirname from eating a complete directory segment.
+    const literal = wildcard === -1 ? pattern : dirname(pattern.slice(0, wildcard) + 'x');
+    if (!existsSync(join(repoRoot, literal))) missing.push(pattern);
   }
   return missing;
 }

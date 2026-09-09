@@ -117,6 +117,21 @@ export function classifyModification(item, manifestEntry) {
   return 'minor';
 }
 
+/**
+ * Read the queued item IDs from pending-generation.json.
+ *
+ * The queue is written in the same `{version, generated_at, items}` envelope
+ * every other manifest file uses. Skill mode writes that envelope too, so a
+ * reader that assumed a bare array threw `existing is not iterable` and took
+ * the pre-commit hook down with it. Bare arrays from older runs still read.
+ */
+export function readPendingIds(pendingPath) {
+  let raw;
+  try { raw = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch { return []; }
+  if (Array.isArray(raw)) return raw;
+  return Array.isArray(raw?.items) ? raw.items : [];
+}
+
 /** Remove a test block between @begin:ID / @end:ID markers from spec content. */
 export function removeTestBlock(specContent, itemId) {
   const beginMarker = `// @begin:${itemId}`;
@@ -214,10 +229,9 @@ export async function syncTests(docPath, manifestDir) {
   // Write pending queue
   if (pendingIds.length > 0) {
     const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-    let existing = [];
-    try { existing = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch {}
-    const merged = [...new Set([...existing, ...pendingIds])];
-    writeFileSync(pendingPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+    const merged = [...new Set([...readPendingIds(pendingPath), ...pendingIds])];
+    const queue = { version: '1.0', generated_at: new Date().toISOString(), items: merged };
+    writeFileSync(pendingPath, JSON.stringify(queue, null, 2) + '\n', 'utf8');
   }
 
   // Write updated manifest
@@ -233,18 +247,42 @@ export async function syncTests(docPath, manifestDir) {
   };
 }
 
+/**
+ * Resolve the doc to sync: an explicit argument, else the edited file the
+ * postToolUse hook hands us on stdin as `{tool_input: {file_path}}`. That hook
+ * has no way to interpolate a path into the command, so without the stdin read
+ * it invoked the script with nothing to sync and failed on every doc edit.
+ */
+export function resolveDocArg(argv, readStdin) {
+  if (argv[2] && !argv[2].startsWith('-')) return argv[2];
+  let edited;
+  try {
+    edited = JSON.parse(readStdin())?.tool_input?.file_path;
+  } catch {
+    return null;
+  }
+  // The hook fires on every Edit/Write, not just verification docs — ignore
+  // anything that isn't one rather than rewriting the manifest for a stray file.
+  return /verification\/.*\.md$/.test(edited ?? '') ? edited : null;
+}
+
 // --- CLI entry point ---
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (isMain) {
-  if (process.argv.includes('--help') || process.argv.length < 3) {
+  const docArg = process.argv.includes('--help')
+    ? null
+    : resolveDocArg(process.argv, () => readFileSync(0, 'utf8'));
+
+  if (!docArg) {
     console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
 
 Usage: node sync-tests.js <verification-doc-path>
+       node sync-tests.js            # reads {"tool_input":{"file_path":…}} on stdin
        node sync-tests.js --help`);
     process.exit(0);
   }
 
-  const docPath = resolve(process.argv[2]);
+  const docPath = resolve(docArg);
   const projectDir = process.cwd();
 
   if (!existsSync(docPath)) {

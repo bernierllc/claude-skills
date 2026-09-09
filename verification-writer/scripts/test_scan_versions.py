@@ -6,6 +6,7 @@ verification item is visible to downstream consumers at all.
 """
 
 import importlib.util
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -35,6 +36,14 @@ def test_scan_items_flags_duplicates_and_malformed():
     assert r["namespace_mismatches"] == ["OTHER-01"]
     reasons = [m["reason"] for m in r["malformed_items"]]
     assert reasons == ["missing-separator", "missing-expected", "no-bold-id"], reasons
+
+
+def test_scan_items_accepts_lowercase_id_suffixes():
+    """Downstream parses `OSB-03b`, so reporting it malformed is a false positive."""
+    doc = "- [ ] [standard] **OSB-03b** Do a thing --- It happens. *Expected: success*"
+    r = sv.scan_items(doc, "OSB")
+    assert r["item_ids"] == ["OSB-03b"], r["item_ids"]
+    assert r["malformed_items"] == [], r["malformed_items"]
 
 
 def test_scan_items_ignores_fenced_code():
@@ -70,6 +79,52 @@ def test_cache_entry_without_item_ids_is_refreshed():
     assert sv.cache_entry_fresh(stale, "abc") is False
     fresh = {**stale, "item_ids": []}
     assert sv.cache_entry_fresh(fresh, "abc") is True
+
+
+def test_stale_scan_version_discards_whole_cache():
+    """A cache written by an older parser must not survive a scanner change.
+
+    The per-file entries are keyed on the doc's sha256 alone, so a doc whose
+    bytes have not changed would keep reporting whatever the old parsers found
+    — which is how a fixed item-ID regex stayed invisible and the report kept
+    citing 64 defects that no longer existed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        vroot = root / "docs" / "verification" / "pages"
+        vroot.mkdir(parents=True)
+        doc = vroot / "widgets.md"
+        doc.write_text(
+            "---\nid_namespace: WID\n---\n\n"
+            "- [ ] [smoke] **WID-01** Do a thing --- It happens. *Expected: success*\n"
+        )
+
+        cache_path = root / "docs" / "verification" / sv.CACHE_FILENAME
+        rel = str(doc.relative_to(root))
+        cache_path.write_text(json.dumps({
+            "scan_version": sv.SCAN_VERSION - 1,
+            "scanned_at": "2999-01-01T00:00:00Z",
+            "files": {rel: {
+                "sha256": sv.sha256_of(doc),
+                "scanned_at": "2999-01-01T00:00:00Z",
+                "item_ids": [],
+                "malformed_items": ["phantom defect from the old parser"],
+            }},
+        }))
+
+        argv = sys.argv
+        sys.argv = ["scan-versions.py", "--root", str(root),
+                    "--current-version", "3.4.4", "--quiet", "--no-gitignore-touch"]
+        try:
+            sv.main()
+        finally:
+            sys.argv = argv
+
+        written = json.loads(cache_path.read_text())
+        assert written["scan_version"] == sv.SCAN_VERSION, written["scan_version"]
+        entry = written["files"][rel]
+        assert entry["malformed_items"] == [], entry["malformed_items"]
+        assert entry["item_ids"] == ["WID-01"], entry["item_ids"]
 
 
 if __name__ == "__main__":

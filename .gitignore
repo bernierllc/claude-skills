@@ -7,3 +7,5 @@ QWEN.md
 AGENTS.md
 .cursor/rules
 /plans/
+__pycache__/
+*.pyc
