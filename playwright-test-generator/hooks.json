@@ -5,7 +5,7 @@
     {
       "id": "ptg-check-changed-docs-pre-commit",
       "event": "pre_commit",
-      "command": "docs=$(git diff --cached --name-only -- 'docs/verification/**/*.md'); if [ -n \"$docs\" ]; then printf '%s\\n' \"$docs\" | xargs -I{} aec run-script skill:playwright-test-generator sync-tests.js {} && aec run-script skill:playwright-test-generator preflight.sh; fi",
+      "command": "docs=$(git diff --cached --name-only -- ':(glob)docs/verification/**/*.md'); if [ -n \"$docs\" ]; then printf '%s\\n' \"$docs\" | xargs -I{} aec run-script skill:playwright-test-generator sync-tests.js {} && aec run-script skill:playwright-test-generator preflight.sh; fi",
       "description": "Before commit, if any verification docs are staged, sync/regenerate playwright tests for each and then run preflight. A commit that stages no verification docs is a no-op.",
       "blocking": true,
       "timeout_ms": 60000,

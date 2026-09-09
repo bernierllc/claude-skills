@@ -49,6 +49,17 @@ describe('ptg-check-changed-docs-pre-commit', () => {
     await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/);
   });
 
+  it('matches a verification doc at the root of docs/verification', async () => {
+    await writeFile(join(repo, 'docs/verification/home.md'), '# home\n');
+    execFileSync('git', ['add', 'docs/verification/home.md'], { cwd: repo, stdio: 'pipe' });
+
+    runHook(await preCommitCommand(), repo, bin);
+
+    const lines = (await readFile(log, 'utf8')).trim().split('\n');
+    expect(lines[0]).toContain('sync-tests.js docs/verification/home.md');
+    expect(lines[1]).toContain('preflight.sh');
+  });
+
   it('syncs each staged doc and then runs preflight', async () => {
     await writeFile(join(repo, 'docs/verification/pages/home.md'), '# home\n');
     execFileSync('git', ['add', 'docs/verification/pages/home.md'], { cwd: repo, stdio: 'pipe' });
