@@ -119,6 +119,10 @@ the actual work as possible:
 - The orchestrator consumes conclusions and structured returns, never workers' file dumps or
   transcripts.
 - Worker tier and effort are set per the tier table; mechanical batches go low-tier.
+- Exception to "never inline": when one implementation unit's brief *is* the full loaded
+  context (a spec plus a schema that just landed), re-sending that context to a worker
+  costs more than building it. Build that unit inline and spend the worker budget on an
+  adversarial reviewer of it instead — the independent check is never skipped.
 
 ### Shared-worktree mode
 
