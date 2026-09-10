@@ -233,6 +233,9 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality; report
    failures plainly. Specifics:
+   - Verifying an async trigger (queue enqueue, webhook, cron kick) means observing the
+     consumer's completion evidence — a worker log line, a row delta — never just the
+     producer's 200. A silent no-op enqueue returns 200 too.
    - A page load is not verification. Deploy verification asserts deployment **identity**
      (a new deployment id/commit visible in the provider's deployment list) plus a
      response-body match — never a bare HTTP status code, which a stale or placeholder
