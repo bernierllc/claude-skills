@@ -158,6 +158,9 @@ Worktree hygiene (either mode):
   JSON string.
 - Prefer absolute paths (or `git -C <path>`) in every Bash call — never rely on the shell's
   persisted cwd, which drifts across calls and environment moves.
+- Never stream logs in a harness (`railway logs` without `-n`, `tail -f`, `kubectl logs -f`):
+  a background task killed mid-stream loses its output, and some hosts lack coreutils
+  `timeout`. Fetch bounded slices (`-n N`, `--since`) instead.
 - Log friction as it happens — a wrong default in these instructions, an unnecessary pause, a
   missed case that caused rework → append to the friction register (see Phase 5).
 
