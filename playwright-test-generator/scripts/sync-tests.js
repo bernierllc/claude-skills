@@ -7,7 +7,12 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, basename, join } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
-import { readManifestFileSync, writeManifestFileSync, acquireLockSync, appendPendingQueue } from './lib/manifest.js';
+import { readManifestFileSync, writeManifestFileSync, acquireLockSync, readPendingIds, appendPendingIds } from './lib/manifest.js';
+
+// Re-exported: readPendingIds moved to lib/manifest.js so every consumer
+// (this script, readPendingQueue, verify-pipeline) shares one reader. Kept on
+// this module's surface because callers already import it from here.
+export { readPendingIds };
 import { fileURLToPath } from 'node:url';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- expected. *Expected: type*
@@ -117,21 +122,6 @@ export function classifyModification(item, manifestEntry) {
   return 'minor';
 }
 
-/**
- * Read the queued item IDs from pending-generation.json.
- *
- * The queue is written in the same `{version, generated_at, items}` envelope
- * every other manifest file uses. Skill mode writes that envelope too, so a
- * reader that assumed a bare array threw `existing is not iterable` and took
- * the pre-commit hook down with it. Bare arrays from older runs still read.
- */
-export function readPendingIds(pendingPath) {
-  let raw;
-  try { raw = JSON.parse(readFileSync(pendingPath, 'utf8')); } catch { return []; }
-  if (Array.isArray(raw)) return raw;
-  return Array.isArray(raw?.items) ? raw.items : [];
-}
-
 /** Remove a test block between @begin:ID / @end:ID markers from spec content. */
 export function removeTestBlock(specContent, itemId) {
   const beginMarker = `// @begin:${itemId}`;
@@ -226,12 +216,11 @@ export async function syncTests(docPath, manifestDir) {
     }
   }
 
-  // Write pending queue
+  // Write pending queue through the shared writer — this used to be an inline
+  // copy of the merge, which is how the envelope fix landed here and not in
+  // lib/manifest.js or verify-pipeline.js.
   if (pendingIds.length > 0) {
-    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-    const merged = [...new Set([...readPendingIds(pendingPath), ...pendingIds])];
-    const queue = { version: '1.0', generated_at: new Date().toISOString(), items: merged };
-    writeFileSync(pendingPath, JSON.stringify(queue, null, 2) + '\n', 'utf8');
+    appendPendingIds(join(manifestDir, '..', 'pending-generation.json'), pendingIds);
   }
 
   // Write updated manifest

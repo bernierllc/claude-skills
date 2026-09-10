@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveRepoRoot } from './lib/repo.js';
+import { readPendingIds, pendingQueuePath } from './lib/manifest.js';
 
 // Tool-call artifact tokens that must never appear in a generated spec. A
 // malformed generation can leak these trailer tokens into a file; because
@@ -183,14 +184,14 @@ export async function checkPinnedTests(manifestDir) {
 
 /** Report pending generation items. */
 export async function checkPendingGeneration(projectDir) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
+  const queuePath = pendingQueuePath(projectDir);
   if (!existsSync(queuePath)) return [];
-  try {
-    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
-    return queue.map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
-  } catch {
-    return [{ status: 'fail', message: 'Queue file corrupted' }];
-  }
+  // Through the shared reader. Calling .map() on the parsed value threw on the
+  // `{version, generated_at, items}` envelope the writer actually produces, and
+  // the bare catch reported a perfectly valid queue as "Queue file corrupted".
+  return readPendingIds(queuePath).map(id => ({
+    itemId: id, status: 'warn', message: 'Pending generation',
+  }));
 }
 
 /** Run full pipeline verification. */
