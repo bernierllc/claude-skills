@@ -41,7 +41,12 @@ Read before asking, in order:
 
 Baseline before writing code: run the repo's build/typecheck once at intake so a pre-existing
 red baseline is a known punch-list item, not a discovery at first commit (pre-commit hooks
-surface it at the worst moment). And when acceptance for any item requires a live
+surface it at the worst moment).
+
+Create the working worktree at intake, before the plan commit — pre-commit hooks already run
+there. At creation: symlink `node_modules` from the primary checkout and append
+`node_modules` to `$(git rev-parse --git-dir)/info/exclude` (a worktree's `.git` is a file,
+so `.git/info/exclude` is the wrong path). And when acceptance for any item requires a live
 authenticated check on a remote environment, confirm credential availability now and
 punch-list the check upfront — never discover the gap at retro.
 
@@ -134,9 +139,9 @@ Worktree hygiene (either mode):
 - Sequence environment moves **before** dispatching background agents: create the worktree
   and complete any `cd` first, then dispatch with worktree-absolute paths. An agent
   dispatched against a checkout that then moves gets its Bash calls refused.
-- At worktree creation, exclude the `node_modules` symlink from git's view (worktree
-  equivalent of `.git/info/exclude`) — gitignore does not match symlinks, so `git add -A`
-  is otherwise a standing hazard.
+- Worktree hygiene (symlink + git-dir exclude) is done at creation, at intake — see Phase 1.
+  Gitignore does not match symlinks, so an unexcluded `node_modules` symlink makes
+  `git add -A` a standing hazard.
 
 ### Orchestration mechanics
 
