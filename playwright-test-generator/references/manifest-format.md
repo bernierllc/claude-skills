@@ -158,3 +158,30 @@ Multiple Claude sessions editing different verification docs simultaneously can 
 **Atomic writes:** All manifest updates write to `<file>.tmp`, then rename atomically.
 
 **Queue deduplication:** The skill deduplicates item IDs in `pending-generation.json` before processing.
+
+## `pending-generation.json` shape
+
+**Canonical shape is the envelope**, the same one every other manifest file uses:
+
+```json
+{
+  "version": "1.0",
+  "generated_at": "2026-09-10T18:00:00.000Z",
+  "items": ["PUB-01", "PUB-02"]
+}
+```
+
+**One reader, one writer, both in `scripts/lib/manifest.js`:**
+
+- `readPendingIds(queuePath)` — the only reader. Accepts the envelope, and still
+  accepts a **bare array** from older runs. Returns `[]` for missing, empty or
+  unparseable files; it never throws.
+- `appendPendingIds(queuePath, ids)` / `appendPendingQueue(projectDir, ids)` — the
+  only writers. They merge through `readPendingIds` and always emit the envelope,
+  whatever shape they read.
+
+**Do not parse this file directly.** Every past bug here has been a second reader
+that assumed a bare array: `[...parsed]` on the envelope throws
+`TypeError: existing is not iterable` and takes the pre-commit hook down with it,
+and `parsed.map(...)` reports a perfectly valid queue as corrupted. Both shipped;
+both are covered by `scripts/__tests__/manifest-queue.test.js` now.

@@ -351,6 +351,21 @@ describe('checkPendingGeneration', () => {
     expect(results[0].status).toBe('warn');
   });
 
+  it('reads the envelope form the writer actually produces', async () => {
+    // Regression: this used to call .map() on the parsed object, throw, and
+    // report a perfectly valid queue as "Queue file corrupted".
+    const verDir = join(tempDir, 'tests', 'verification-playwright');
+    await mkdir(verDir, { recursive: true });
+    await writeFile(join(verDir, 'pending-generation.json'), JSON.stringify({
+      version: '1.0', generated_at: new Date().toISOString(), items: ['EVT-01', 'EVT-02'],
+    }));
+
+    const results = await checkPendingGeneration(tempDir);
+    expect(results).toHaveLength(2);
+    expect(results.map(r => r.itemId)).toEqual(['EVT-01', 'EVT-02']);
+    expect(results.every(r => r.status === 'warn')).toBe(true);
+  });
+
   it('returns empty when no pending file exists', async () => {
     const results = await checkPendingGeneration(tempDir);
     expect(results).toHaveLength(0);

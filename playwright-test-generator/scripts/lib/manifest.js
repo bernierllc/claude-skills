@@ -154,18 +154,45 @@ export function releaseLockSync(projectDir) {
   try { unlinkSync(lockPath); } catch { /* already removed */ }
 }
 
+/**
+ * Read the queued item IDs from a pending-generation.json path.
+ *
+ * THE ONE READER. The queue is written in the same `{version, generated_at,
+ * items}` envelope every other manifest file uses; bare arrays written by
+ * older runs still read. Every consumer goes through this — a reader that
+ * assumed a bare array threw `existing is not iterable` and took the
+ * pre-commit hook down with it, and the fix only held where it was applied.
+ */
+export function readPendingIds(queuePath) {
+  let raw;
+  try { raw = JSON.parse(readFileSync(queuePath, 'utf8')); } catch { return []; }
+  if (Array.isArray(raw)) return raw;
+  return Array.isArray(raw?.items) ? raw.items : [];
+}
+
+/** Path of the queue file for a project. */
+export function pendingQueuePath(projectDir) {
+  return join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
+}
+
 export function readPendingQueue(projectDir) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
-  try { return [...new Set(JSON.parse(readFileSync(queuePath, 'utf8')))]; } catch { return []; }
+  return [...new Set(readPendingIds(pendingQueuePath(projectDir)))];
+}
+
+/**
+ * THE ONE WRITER. Always writes the envelope, always merges through the one
+ * reader. Path-based so callers that only hold a manifest dir (sync-tests)
+ * use it too instead of keeping a second copy of the merge.
+ */
+export function appendPendingIds(queuePath, itemIds) {
+  const merged = [...new Set([...readPendingIds(queuePath), ...itemIds])];
+  mkdirSync(dirname(queuePath), { recursive: true });
+  const queue = { version: '1.0', generated_at: new Date().toISOString(), items: merged };
+  writeFileSync(queuePath, JSON.stringify(queue, null, 2) + '\n', 'utf8');
 }
 
 export function appendPendingQueue(projectDir, itemIds) {
-  const queuePath = join(projectDir, 'tests', 'verification-playwright', 'pending-generation.json');
-  let existing = [];
-  try { existing = JSON.parse(readFileSync(queuePath, 'utf8')); } catch { /* new */ }
-  const merged = [...new Set([...existing, ...itemIds])];
-  mkdirSync(join(projectDir, 'tests', 'verification-playwright'), { recursive: true });
-  writeFileSync(queuePath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  appendPendingIds(pendingQueuePath(projectDir), itemIds);
 }
 
 export function clearPendingQueue(projectDir) {

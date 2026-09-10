@@ -1,6 +1,6 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "3.9.4",
+  "version": "3.9.5",
   "hooks": [
     {
       "id": "ptg-check-changed-docs-pre-commit",
