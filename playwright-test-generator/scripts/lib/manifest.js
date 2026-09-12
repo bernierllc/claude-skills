@@ -184,11 +184,19 @@ export function readPendingQueue(projectDir) {
  * reader. Path-based so callers that only hold a manifest dir (sync-tests)
  * use it too instead of keeping a second copy of the merge.
  */
-export function appendPendingIds(queuePath, itemIds) {
-  const merged = [...new Set([...readPendingIds(queuePath), ...itemIds])];
+export function writePendingIds(queuePath, itemIds) {
   mkdirSync(dirname(queuePath), { recursive: true });
-  const queue = { version: '1.0', generated_at: new Date().toISOString(), items: merged };
+  const queue = { version: '1.0', generated_at: new Date().toISOString(), items: [...itemIds] };
   writeFileSync(queuePath, JSON.stringify(queue, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Merge ids into the queue. Callers that also need to REMOVE ids (sync-tests
+ * drops the ids of deleted items) compute the final list themselves and call
+ * writePendingIds — still the one writer, still the one shape.
+ */
+export function appendPendingIds(queuePath, itemIds) {
+  writePendingIds(queuePath, [...new Set([...readPendingIds(queuePath), ...itemIds])]);
 }
 
 export function appendPendingQueue(projectDir, itemIds) {
