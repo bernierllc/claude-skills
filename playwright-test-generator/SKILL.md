@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.11.1
+version: 3.12.0
 dependencies:
   skills:
     - name: verification-writer
@@ -713,6 +713,13 @@ Read `references/hook-templates.md` for the complete hook configuration. Summary
 | **Full** | pre-push to main/prod | All + mobile | All depths | All tests |
 
 Tier configuration is fully user-configurable in `manifest/config.json`.
+
+The gate enforces that table rather than describing it:
+
+- **Depth** comes from `tiers.gate.depths`. Depths named by other tiers but not this one are excluded with `--grep-invert`, so a `deep` test never runs at commit time.
+- **Browsers** come from `tiers.gate.browsers`, so adding a browser to the config changes the gate rather than silently affecting pre-push alone.
+- **The cap** is compared against the number of tests Playwright actually resolves (`--list`), not the number of tags. Tags are suite-level: a single changed file can pull in a whole suite, so a tag count is not a test count and a cap compared against one never fires.
+- **The app has to be running.** The gate probes it, starts it if it is down, and shuts down only what it started. If it cannot come up the gate says why in one line and skips — a wall of connection failures for tests that never ran is worse than no gate, because it teaches people to ignore the output.
 
 ## Cross-Skill Integration
 
