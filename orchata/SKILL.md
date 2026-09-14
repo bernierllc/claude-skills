@@ -233,6 +233,9 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality; report
    failures plainly. Specifics:
+   - Before opening a PR, run the CI workflow's **exact** lint/typecheck commands (read
+     `.github/workflows`) against the full changed-file set vs the base branch. Per-file spot
+     checks miss files CI lints and cost a full CI round-trip.
    - A page load is not verification. Deploy verification asserts deployment **identity**
      (a new deployment id/commit visible in the provider's deployment list) plus a
      response-body match — never a bare HTTP status code, which a stale or placeholder
