@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.11.0
+version: 3.11.1
 dependencies:
   skills:
     - name: verification-writer
@@ -145,7 +145,12 @@ Complete these in order:
    - **8b. Data dependency classification:** If a verification item asserts the presence of dynamic content (cards, list items, feed entries, table rows, counts > 0), classify as data-dependent. Set the page's metadata `data_setup.ready` accordingly. If `data_setup.ready = false`, generate a `.skip()` stub citing skip reason 2 — do not paper over with `hasCards || hasEmptyState` fallbacks unless the verification item is explicitly typed as `graceful empty state`. See "Live Data Dependencies" below.
 9. **Update manifest** — write changes atomically with lockfile
 10. **Rebuild import index** — trace routes to source files, update `manifest/import-index.json`. Index keys are **repo-root-relative** (the git toplevel), not relative to the Playwright project dir. This matters in monorepos where the project root is a subdirectory and sources span multiple packages: `map-changes.js --since-main` matches these keys against `git diff --name-only`, which always emits repo-root-relative paths. `verify-pipeline.js`/`map-changes.js` resolve the repo root via `git rev-parse --show-toplevel` and fall back to the project dir when not in a git repo (so single-root projects are unaffected).
-10b. **Link specs back into the manifest** — run `node scripts/link-specs.js`. Specs are written by
+10b. **Link specs back into the manifest** — run
+    `node <skill-dir>/scripts/link-specs.js <projectDir>`, by absolute skill path with the target
+    project passed explicitly. The skill's scripts do not live inside the project, so a bare
+    `scripts/link-specs.js` resolves to the *project's* scripts directory, and relying on
+    `process.cwd()` breaks the moment the caller runs from the skill directory. `projectDir`
+    defaults to the cwd for the common case. Specs are written by
     this skill, not by `sync-tests.js`, and nothing else writes `spec_file` back onto the manifest.
     **Without this step three of `verify-pipeline.js`'s checks — `checkSpecFiles`,
     `checkSpecArtifacts`, and the marker half of `checkItemConsistency` — silently iterate an empty
