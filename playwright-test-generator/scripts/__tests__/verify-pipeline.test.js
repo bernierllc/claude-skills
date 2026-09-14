@@ -90,7 +90,10 @@ describe('checkSourceFiles', () => {
 
     expect(existing.status).toBe('pass');
     expect(missing.status).toBe('fail');
-    expect(missing.message).toContain('not found');
+    // index-drift.js owns this message and makes it actionable rather than
+    // merely descriptive — it names the refresh command.
+    expect(missing.message).toContain('is stale');
+    expect(missing.message).toContain('playwright-test-generator');
   });
 
   it('resolves repo-root-relative index keys against repoRoot in a monorepo', async () => {

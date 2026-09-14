@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveRepoRoot } from './lib/repo.js';
+import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
 import { readPendingIds, pendingQueuePath } from './lib/manifest.js';
 
 // Tool-call artifact tokens that must never appear in a generated spec. A
@@ -54,11 +55,12 @@ export async function checkSourceFiles(manifestDir, projectDir, repoRoot = proje
   const index = JSON.parse(readFileSync(indexPath, 'utf8'));
   const results = [];
   for (const file of Object.keys(index.entries || {})) {
-    const fullPath = join(repoRoot, file);
-    if (existsSync(fullPath)) {
-      results.push({ file, status: 'pass' });
+    // Failing here is the other half of the split documented in
+    // lib/index-drift.js: drift that reaches CI means nobody refreshed.
+    if (isIndexEntryStale(file, repoRoot)) {
+      results.push({ file, status: 'fail', message: staleIndexMessage(file) });
     } else {
-      results.push({ file, status: 'fail', message: `Source file not found: ${file}` });
+      results.push({ file, status: 'pass' });
     }
   }
   return results;
@@ -186,12 +188,11 @@ export async function checkPinnedTests(manifestDir) {
 export async function checkPendingGeneration(projectDir) {
   const queuePath = pendingQueuePath(projectDir);
   if (!existsSync(queuePath)) return [];
-  // Through the shared reader. Calling .map() on the parsed value threw on the
-  // `{version, generated_at, items}` envelope the writer actually produces, and
-  // the bare catch reported a perfectly valid queue as "Queue file corrupted".
-  return readPendingIds(queuePath).map(id => ({
-    itemId: id, status: 'warn', message: 'Pending generation',
-  }));
+  // readPendingIds is the one reader of this file's shape — it knows the
+  // `{version, generated_at, items}` envelope sync-tests.js writes as well as
+  // the bare arrays older runs left. Parsing it here independently is how this
+  // check came to report every populated queue as 'corrupted'.
+  return readPendingIds(queuePath).map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
 }
 
 /** Run full pipeline verification. */
@@ -230,6 +231,33 @@ export async function verifyPipeline(projectDir) {
   return { exitCode: hasFailure ? 1 : 0, checks };
 }
 
+/**
+ * Render checks for the CLI, one line per distinct message.
+ *
+ * Checks that share a constant message — every pending item reports
+ * 'Pending generation', every pinned one reports the same — used to print one
+ * indistinguishable line each, because the printer preferred `message` and so
+ * discarded the only field that identified them. A 611-item generation queue
+ * turned the report into 611 identical lines with nothing to act on. Group by
+ * message instead, and carry the subjects on the line.
+ */
+export function formatChecks(checks, maxSubjects = 10) {
+  const groups = new Map();
+  for (const c of checks) {
+    const key = c.message || c.file || c.itemId || 'Unknown check';
+    const subject = c.itemId || c.file;
+    if (!groups.has(key)) groups.set(key, []);
+    if (subject && subject !== key) groups.get(key).push(subject);
+  }
+  return [...groups].map(([message, subjects]) => {
+    if (subjects.length === 0) return message;
+    if (subjects.length === 1) return `${message}: ${subjects[0]}`;
+    const shown = subjects.slice(0, maxSubjects).join(', ');
+    const rest = subjects.length - maxSubjects;
+    return `${message} (${subjects.length}): ${shown}${rest > 0 ? `, +${rest} more` : ''}`;
+  });
+}
+
 // --- CLI entry point ---
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (isMain) {
@@ -248,6 +276,7 @@ Usage: node verify-pipeline.js
   for (const check of result.checks) {
     byStatus[check.status] = (byStatus[check.status] || 0) + 1;
   }
+  console.log(`  ${byStatus.pass} passed, ${byStatus.warn} warned, ${byStatus.fail} failed`);
 
   const failChecks = result.checks.filter(c => c.status === 'fail');
   const warnChecks = result.checks.filter(c => c.status === 'warn');
@@ -255,8 +284,8 @@ Usage: node verify-pipeline.js
   if (failChecks.length === 0 && warnChecks.length === 0) {
     console.log('  \u2713 All checks passed');
   }
-  for (const c of failChecks) console.log(`  \u2717 ${c.message || c.file || c.itemId}`);
-  for (const c of warnChecks) console.log(`  \u26a0 ${c.message || c.file || c.itemId}`);
+  for (const line of formatChecks(failChecks)) console.log(`  \u2717 ${line}`);
+  for (const line of formatChecks(warnChecks)) console.log(`  \u26a0 ${line}`);
 
   process.exit(result.exitCode);
 }

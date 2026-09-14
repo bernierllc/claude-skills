@@ -166,7 +166,11 @@ describe('syncTests (integration)', () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'sync-tests-'));
-    manifestDir = join(tempDir, 'manifest');
+    // Real layout: sync-tests derives repoRoot as manifestDir/../../.., so a
+    // fixture that puts the manifest directly under tempDir makes repoRoot
+    // resolve two levels ABOVE the temp dir and source_doc paths come out
+    // nonsense. Mirror the shape the code actually assumes.
+    manifestDir = join(tempDir, 'tests', 'verification-playwright', 'manifest');
     await mkdir(manifestDir, { recursive: true });
   });
 
@@ -191,7 +195,8 @@ describe('syncTests (integration)', () => {
     expect(result.added).toBe(2);
     expect(result.pendingGeneration).toBe(2);
 
-    const pendingPath = join(tempDir, 'pending-generation.json');
+    // Sibling of the manifest dir, per the real layout.
+    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
     const pending = JSON.parse(await readFile(pendingPath, 'utf-8'));
     // The queue is written in the same {version, generated_at, items} envelope
     // as every other manifest file; readPendingIds still accepts bare arrays.
@@ -210,7 +215,7 @@ describe('syncTests (integration)', () => {
       version: '1.0',
       items: {
         'USC-01': {
-          source_doc: join(tempDir, 'u-scheduling.md'),
+          source_doc: 'u-scheduling.md',
           content_hash: 'abc',
           depth: 'standard',
           status: 'active',
@@ -223,7 +228,55 @@ describe('syncTests (integration)', () => {
 
     // The other doc's ownership must survive the refusal untouched.
     const after = JSON.parse(await readFile(itemsPath, 'utf-8'));
-    expect(after.items['USC-01'].source_doc).toBe(join(tempDir, 'u-scheduling.md'));
+    expect(after.items['USC-01'].source_doc).toBe('u-scheduling.md');
+  });
+
+  it('does not treat another doc\'s same-named file as its own items', async () => {
+    // pages/beta-signup.md and flows/beta-signup.md share a basename. Matching
+    // ownership on the basename made the flows doc consider all 14 of the pages
+    // doc's items removed and delete them from the committed manifest on its
+    // first sync. Ownership compares the full repo-relative path.
+    const pagesDir = join(tempDir, 'docs', 'verification', 'pages');
+    const flowsDir = join(tempDir, 'docs', 'verification', 'flows');
+    await mkdir(pagesDir, { recursive: true });
+    await mkdir(flowsDir, { recursive: true });
+
+    const flowsDoc = join(flowsDir, 'beta-signup.md');
+    await writeFile(flowsDoc, `# Flows\nNo items.`);
+
+    const itemsPath = join(manifestDir, 'items.json');
+    await writeFile(itemsPath, JSON.stringify({
+      version: '1.0',
+      items: {
+        'PAGE-01': {
+          source_doc: 'docs/verification/pages/beta-signup.md',
+          content_hash: 'abc', depth: 'standard', status: 'active',
+        },
+      },
+    }));
+
+    const result = await syncTests(flowsDoc, manifestDir);
+
+    expect(result.removed).toBe(0);
+    const after = JSON.parse(await readFile(itemsPath, 'utf-8'));
+    expect(after.items['PAGE-01']).toBeDefined();
+  });
+
+  it('stores source_doc repo-relative, never absolute', async () => {
+    // An absolute path is machine-specific: it bakes one developer's home
+    // directory into a committed artifact and rewrites every entry the moment
+    // anyone syncs from a different checkout.
+    const docsDir = join(tempDir, 'docs', 'verification', 'pages');
+    await mkdir(docsDir, { recursive: true });
+    const docPath = join(docsDir, 'thing.md');
+    await writeFile(docPath, `# Thing\n\n- [ ] [standard] **THG-01** click it --- it works. *Expected: state change*\n`);
+
+    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({ version: '1.0', items: {} }));
+    await syncTests(docPath, manifestDir);
+
+    const after = JSON.parse(await readFile(join(manifestDir, 'items.json'), 'utf-8'));
+    expect(after.items['THG-01'].source_doc).toBe('docs/verification/pages/thing.md');
+    expect(after.items['THG-01'].source_doc.startsWith('/')).toBe(false);
   });
 
   it('detects removed items from manifest', async () => {
@@ -233,7 +286,7 @@ describe('syncTests (integration)', () => {
     await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
       version: '1.0',
       items: {
-        'OLD-01': { source_doc: docPath, content_hash: 'abc', depth: 'standard', status: 'active' }
+        'OLD-01': { source_doc: 'verification.md', content_hash: 'abc', depth: 'standard', status: 'active' }
       }
     }));
 

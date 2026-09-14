@@ -4,11 +4,11 @@
  * Exports testable functions. CLI entry point at bottom.
  */
 
-import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { basename, join, resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { readManifestFileSync } from './lib/manifest.js';
 import { resolveRepoRoot } from './lib/repo.js';
+import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
 import { fileURLToPath } from 'node:url';
 
 /** Map file list to affected page tags using an import index.
@@ -31,9 +31,10 @@ export async function mapFilesToTags(files, importIndex, projectDir, repoRoot = 
     const pageTags = entries[file];
 
     if (pageTags) {
-      const fullPath = join(repoRoot, file);
-      if (!existsSync(fullPath)) {
-        warnings.push(`Index entry "${file}" is stale (file no longer exists)`);
+      // Warn-only here by design — see lib/index-drift.js for why this tool
+      // degrades and verify-pipeline.js fails on the same condition.
+      if (isIndexEntryStale(file, repoRoot)) {
+        warnings.push(staleIndexMessage(file));
         continue;
       }
       for (const tag of pageTags) {

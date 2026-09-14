@@ -5,19 +5,37 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve, basename, join } from 'node:path';
+import { resolve, relative, basename, join, sep } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
-import { readManifestFileSync, writeManifestFileSync, acquireLockSync, readPendingIds, appendPendingIds } from './lib/manifest.js';
+import {
+  readManifestFileSync, writeManifestFileSync, acquireLockSync,
+  readPendingIds, writePendingIds,
+} from './lib/manifest.js';
 
-// Re-exported: readPendingIds moved to lib/manifest.js so every consumer
-// (this script, readPendingQueue, verify-pipeline) shares one reader. Kept on
-// this module's surface because callers already import it from here.
+// Re-exported: readPendingIds lives in lib/manifest.js so this script, the
+// queue helpers and verify-pipeline.js all share ONE reader. Kept on this
+// module's surface because callers already import it from here.
 export { readPendingIds };
 import { fileURLToPath } from 'node:url';
 
-// Format A: - [ ] [depth] **ITEM-ID** action text --- expected. *Expected: type*
-// ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30)
-const ITEM_PATTERN_A = /^- \[ \] \[(\w+)\] \*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\* (.+?) --- (.+)\. \*Expected: (.+)\*/gm;
+// Format A: - [ ] [depth] **ITEM-ID** action text --- outcome. *Expected: type*
+// ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30).
+// This mirrors verification-writer's FORMAT_A_FULL_REGEX exactly — the two must
+// agree or the writer's integrity pass reports a doc clean while the manifest
+// silently drops its items. Specifically: `[x]` (already-verified) items count,
+// the `[depth]` tag is optional, and the outcome clause need not end in a bare
+// period (a closing quote or backtick after it is normal prose).
+// The body (action + expected) is captured as ONE group and split on ` --- `
+// afterwards. Anchoring on the `Expected: type` trailer rather than requiring a
+// ` --- ` separator and a literal `*` emphasis is deliberate: ~100 items across
+// 27 docs fuse action and expected into one sentence, 37 end the expected clause
+// with a closing quote/paren/backtick, and API items append an annotation after
+// the trailer (the trailer is not consumed, so content hashes stay stable).
+// Requiring the strict shape silently dropped 138 items — they got
+// no manifest entry and therefore no test. This was fixed once (42103db5) and
+// reverted by 5e91242d, which copied the skill's stricter regex over this file;
+// keep the two copies in sync in THIS direction.
+const ITEM_PATTERN_A = /^- \[[ x]\] (?:\[(\w+)\] )?\*\*([A-Za-z0-9][-A-Za-z0-9]*)\*\* ([^\n]+?)\s*[_*]Expected: ([^_*\n]+)[_*]/gm;
 // Format B: - [ ] [depth] **Action text** --- expected. _Expected: type_  (no separate ID)
 const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected: (.+?)[_*]/gm;
 
@@ -25,17 +43,47 @@ const ITEM_PATTERN_B = /^- \[ \] \[(\w+)\] \*\*(.+?)\*\* --- (.+)\. [_*]Expected
  * @param {string} markdown - The verification doc content
  * @param {string} [pageTag=''] - Page tag used to scope auto-generated IDs (prevents cross-doc collisions)
  */
+// Fenced code blocks hold *examples* of the item grammar (docs/verification/README.md
+// documents Format A with a sample line). Parsing them mints phantom items like
+// `ITEM-ID` that no doc owns. scan-versions.py already skips fences; this keeps the
+// two parsers agreed. Masking with equal-length blanks preserves every offset the
+// Format A/B `consumed` ranges depend on.
+function maskFencedBlocks(markdown) {
+  let inFence = false;
+  return markdown
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return ' '.repeat(line.length);
+      }
+      return inFence ? ' '.repeat(line.length) : line;
+    })
+    .join('\n');
+}
+
 export function parseVerificationItems(markdown, pageTag = '') {
+  const scan = maskFencedBlocks(markdown);
   const items = [];
   const seen = new Set();
+  // Character ranges already claimed by Format A. Format B's pattern also
+  // matches a Format A line (its bold group happily swallows `ID** action`),
+  // which would mint a phantom slug-derived duplicate of a real item.
+  const consumed = [];
 
   // Try Format A first (has explicit item IDs)
   const patternA = new RegExp(ITEM_PATTERN_A.source, 'gm');
   let match;
-  while ((match = patternA.exec(markdown)) !== null) {
-    const [fullMatch, depth, id, action, expected, expectedType] = match;
+  while ((match = patternA.exec(scan)) !== null) {
+    const [fullMatch, depthTag, id, body, expectedType] = match;
+    const depth = depthTag || 'standard';
+    const sep = body.indexOf(' --- ');
+    // No separator: the doc fused action and expected into one statement.
+    const action = sep === -1 ? body : body.slice(0, sep);
+    const expected = sep === -1 ? body : body.slice(sep + 5);
     if (seen.has(id)) continue;
     seen.add(id);
+    consumed.push([match.index, match.index + fullMatch.length]);
     const afterMatch = markdown.substring(match.index + fullMatch.length);
     const annotationMatch = afterMatch.match(/\n(<!--[\s\S]*?-->)/);
     const annotation = annotationMatch ? annotationMatch[1] : '';
@@ -49,8 +97,9 @@ export function parseVerificationItems(markdown, pageTag = '') {
 
   // Try Format B for items not caught by Format A (action-as-bold, no ID)
   const patternB = new RegExp(ITEM_PATTERN_B.source, 'gm');
-  while ((match = patternB.exec(markdown)) !== null) {
+  while ((match = patternB.exec(scan)) !== null) {
     const [fullMatch, depth, actionBold, expected, expectedType] = match;
+    if (consumed.some(([start, end]) => match.index >= start && match.index < end)) continue;
     // Generate a stable ID from the action text (slugify)
     const id = slugifyAction(actionBold, pageTag);
     if (seen.has(id)) continue;
@@ -156,15 +205,28 @@ export async function syncTests(docPath, manifestDir) {
     items = { version: '1.0', items: {} };
   }
 
+  // Repo-relative source_doc: an absolute path is machine-specific and
+  // rewrites every entry the moment anyone syncs from a different checkout.
+  // ponytail: manifestDir is always <repo>/tests/verification-playwright/manifest.
+  const repoRoot = join(manifestDir, '..', '..', '..');
+
   const docContent = readFileSync(docPath, 'utf8');
   const pageTag = basename(docPath, '.md');
+  const docFilename = basename(docPath);
   const docItems = parseVerificationItems(docContent, pageTag);
 
-  // Scope: only compare against manifest items belonging to THIS doc
-  const docFilename = basename(docPath);
+  // Scope: only compare against manifest items belonging to THIS doc.
+  // Compare the full repo-relative path, not the basename: pages/ and flows/
+  // both contain beta-signup.md, and matching on the basename alone made the
+  // flows doc treat all 14 of the pages doc's items as removed and delete them
+  // from the committed manifest on its first sync.
+  // POSIX separators always: relative() yields backslashes on Windows, which
+  // would match nothing against the committed manifest, mark every item as
+  // added, and rewrite the paths -- then churn back on the next unix sync.
+  const docRel = relative(repoRoot, docPath).split(sep).join('/');
   const scopedManifestItems = {};
   for (const [id, item] of Object.entries(items.items)) {
-    if (item.source_doc && basename(item.source_doc) === docFilename) {
+    if (item.source_doc === docRel) {
       scopedManifestItems[id] = item;
     }
   }
@@ -197,9 +259,10 @@ export async function syncTests(docPath, manifestDir) {
   const pendingIds = [];
   for (const added of changes.added) {
     items.items[added.id] = {
-      source_doc: docPath,
+      source_doc: docRel,
       content_hash: added.contentHash,
       depth: added.depth,
+      expected_type: added.expectedType,
       status: 'pending',
       pinned: false,
     };
@@ -211,21 +274,45 @@ export async function syncTests(docPath, manifestDir) {
     const existing = items.items[mod.id];
     const classification = classifyModification(mod, existing);
     items.items[mod.id].content_hash = mod.contentHash;
+    items.items[mod.id].source_doc = docRel;
+    items.items[mod.id].expected_type = mod.expectedType;
     if (classification === 'substantial' && !existing.pinned) {
       pendingIds.push(mod.id);
     }
   }
 
-  // Write pending queue through the shared writer — this used to be an inline
-  // copy of the merge, which is how the envelope fix landed here and not in
-  // lib/manifest.js or verify-pipeline.js.
-  if (pendingIds.length > 0) {
-    appendPendingIds(join(manifestDir, '..', 'pending-generation.json'), pendingIds);
+  // Write pending queue. Removals have to be dropped from it as well as from
+  // the manifest -- a queued id whose entry is gone (renamed namespace, deleted
+  // check) sends the generator looking for a manifest entry that no longer
+  // exists, and the id sits in the queue forever because nothing else clears it.
+  const removedIds = new Set(changes.removed.map((r) => r.id));
+  const pendingPath = join(manifestDir, '..', 'pending-generation.json');
+  const queued = readPendingIds(pendingPath);
+  const merged = [...new Set([...queued, ...pendingIds])].filter((id) => !removedIds.has(id));
+  if (merged.length !== queued.length || pendingIds.length > 0) {
+    writePendingIds(pendingPath, merged);
   }
 
-  // Write updated manifest
-  items.generated_at = new Date().toISOString();
-  writeFileSync(itemsPath, JSON.stringify(items, null, 2) + '\n', 'utf8');
+  // Backfill expected_type on entries that predate the field. Without it
+  // classifyModification compares a parsed type against undefined and calls
+  // every wording edit substantial, queueing regeneration that isn't needed.
+  let backfilled = 0;
+  for (const item of changes.unchanged) {
+    const entry = items.items[item.id];
+    if (entry && entry.expected_type === undefined) {
+      entry.expected_type = item.expectedType;
+      backfilled++;
+    }
+  }
+
+  // Write updated manifest. A sync that changed nothing must not rewrite the
+  // file: items.json is committed, and a fresh generated_at on every no-op
+  // sync leaves a dirty tree after every commit that touches a verification
+  // doc, which is how the whole manifest drifted unnoticed in the first place.
+  if (changes.added.length || changes.removed.length || changes.modified.length || backfilled) {
+    items.generated_at = new Date().toISOString();
+    writeFileSync(itemsPath, JSON.stringify(items, null, 2) + '\n', 'utf8');
+  }
 
   return {
     added: changes.added.length,
