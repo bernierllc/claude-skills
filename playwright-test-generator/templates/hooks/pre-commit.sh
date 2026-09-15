@@ -38,22 +38,6 @@ tag_count=$(echo "$affected_tags" | wc -w | tr -d ' ')
 max_tests=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('tests/verification-playwright/manifest/config.json','utf8'));console.log(c.tiers.gate.maxTests||30)}catch(e){console.log(30)}" 2>/dev/null || echo "30")
 timeout_ms=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('tests/verification-playwright/manifest/config.json','utf8'));console.log(c.tiers.gate.timeoutMs||60000)}catch(e){console.log(60000)}" 2>/dev/null || echo "60000")
 
-# Cap handling: timeoutMs is the primary constraint, maxTests is the circuit breaker
-if [ "$tag_count" -gt "$max_tests" ]; then
-  if [ -t 1 ]; then
-    echo "Warning: $tag_count tags affected (cap is $max_tests)."
-    read -r -p "Run [a]ll / [c]apped at $max_tests / [s]kip? " choice
-    case "$choice" in
-      s|S) exit 0 ;;
-      c|C) affected_tags=$(echo "$affected_tags" | tr ' ' '\n' | head -n "$max_tests" | tr '\n' ' ') ;;
-      *) ;; # run all
-    esac
-  else
-    # Non-interactive: run capped at maxTests
-    affected_tags=$(echo "$affected_tags" | tr ' ' '\n' | head -n "$max_tests" | tr '\n' ' ')
-  fi
-fi
-
 # Build grep pattern from affected tags
 grep_pattern=$(echo "$affected_tags" | tr ' ' '|')
 
@@ -111,48 +95,90 @@ done < <(read_browsers)
 APP_PORT="${VERIFICATION_APP_PORT:-3400}"
 APP_URL="http://localhost:${APP_PORT}"
 
-server_up() { curl -sf -o /dev/null --max-time 2 "$APP_URL" 2>/dev/null; }
+# Any HTTP response means something is serving. `curl -f` would call a 401/403
+# root — or a 500 while Next compiles the first request — "down", and the hook
+# would start a second server on an occupied port, time out, and skip silently.
+server_up() { curl -s -o /dev/null --max-time 2 "$APP_URL" >/dev/null 2>&1; }
 
 if ! server_up; then
   if [ -L node_modules ]; then
-    # Common in git worktrees that symlink node_modules to a primary checkout.
-    # Some dev servers refuse to start against it (Next's Turbopack rejects a
-    # node_modules symlink outright), so the gate can never pass here.
-    echo "verification gate: skipped — node_modules is a symlink, so the dev server cannot start in this checkout."
-    echo "  Install dependencies directly here (e.g. npm ci) to enable the gate."
+    echo "verification gate: skipped — node_modules is a symlink, so the dev server cannot start here."
+    echo "  Install deps directly in this worktree to enable the gate: rm node_modules && npm ci"
     exit 0
   fi
+
+  # Same env Playwright's webServer uses. reuseExistingServer means Playwright
+  # adopts whatever is already listening, so a server started here without
+  # SENDGRID_API_BASE_URL would point the suite at the real SendGrid account.
+  # Optional tests/verification-playwright/dev-server-env.json: the same env the
+  # Playwright config passes to its webServer. Keep them in one file and have
+  # the config import it — otherwise the hook starts a differently-configured
+  # server and reuseExistingServer makes the suite adopt it. A suite that points
+  # at a mock API will silently reach the real one.
+  gate_env=()
+  if [ -f tests/verification-playwright/dev-server-env.json ]; then
+    while IFS= read -r kv; do
+      [ -n "$kv" ] && gate_env+=("$kv")
+    done < <(node -e '
+      const e = require("./tests/verification-playwright/dev-server-env.json");
+      for (const [k, v] of Object.entries(e)) process.stdout.write(k + "=" + v + "\n");
+    ' 2>/dev/null || true)
+  fi
+
+  gate_log=$(mktemp -t verification-gate-dev)
   echo "verification gate: app not running on $APP_URL — starting it..."
-  npm run dev >/tmp/verification-gate-dev.log 2>&1 &
+  # Own process group: `npm run dev` forks `next dev`, which forks Turbopack
+  # workers. Killing only npm orphans the server on the port, which poisons
+  # every later run.
+  set -m
+  env ${gate_env[@]+"${gate_env[@]}"} npm run dev >"$gate_log" 2>&1 &
   gate_server_pid=$!
-  # Shut down only what we started; an already-running server is left alone.
-  trap 'kill "$gate_server_pid" 2>/dev/null || true' EXIT
-  for _ in $(seq 1 60); do
+  set +m
+  trap 'kill -TERM -"$gate_server_pid" 2>/dev/null || true' EXIT INT TERM
+
+  deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     server_up && break
     sleep 2
   done
   if ! server_up; then
-    echo "verification gate: skipped — app did not come up within 120s (see /tmp/verification-gate-dev.log)."
+    echo "verification gate: skipped — app did not come up within 120s (see $gate_log)."
     exit 0
   fi
   echo "verification gate: app is up."
 fi
 
-# Ask Playwright what this selection actually resolves to. Counting tags told
+# Ask Playwright what this selection actually resolves to. `|| true` is load
+# bearing: --list exits 1 on an empty selection, and `var=$(cmd)` adopts that
+# status, so set -e would kill the hook before the zero-check below. Counting tags told
 # the operator "2 tests" and then ran 26, and left maxTests comparing against a
-# number that was never tests in the first place.
+# number that was never tests in the first place. Parse the authoritative
+# "Total: N tests" line: `grep -c` prints 0 AND exits 1 on no match, so a
+# `|| echo "?"` fallback would make the count the two-line string "0\n?".
 test_count=$(npx playwright test \
   --config tests/verification-playwright/playwright.config.ts \
   ${project_args[@]+"${project_args[@]}"} \
   --grep "$grep_pattern" \
   ${grep_invert_args[@]+"${grep_invert_args[@]}"} \
-  --list 2>/dev/null | grep -cE "^\s+\S+.*›" || echo "?")
+  --list 2>/dev/null | sed -n 's/^Total: \([0-9][0-9]*\) test.*/\1/p' | tail -1 || true)
+[ -n "${test_count:-}" ] || test_count="?"
+
+# An empty selection is normal once depth filtering is on — a change whose only
+# affected tests are @deep resolves to nothing at gate depth. Playwright exits 1
+# on "no tests found", which would block the commit for no reason.
+if [ "$test_count" = "0" ]; then
+  echo "verification gate: no gate-depth tests for these changes — skipping."
+  exit 0
+fi
 
 if [ "$test_count" != "?" ] && [ "$test_count" -gt "$max_tests" ] 2>/dev/null; then
   echo "verification gate: $test_count tests selected from $tag_count tag(s) — over the $max_tests cap."
   echo "  Tags are suite-level, so a single changed file can pull in a whole suite."
-  if [ -t 1 ]; then
-    read -r -p "Run anyway? [y/N] " run_anyway
+  # stdin is /dev/null under `git commit`, and stdout IS a tty — so testing
+  # `-t 1` and calling `read` means EOF, a non-zero status, and `set -e` killing
+  # the hook. Blocking a commit is the one thing this gate must never do.
+  if [ -r /dev/tty ] && [ -t 1 ]; then
+    read -r -p "  Run anyway? [y/N] " run_anyway </dev/tty || run_anyway=""
     case "$run_anyway" in y|Y) ;; *) echo "  skipped."; exit 0 ;; esac
   else
     echo "  skipped (non-interactive). Raise tiers.gate.maxTests or narrow the tags to run it."
@@ -160,13 +186,18 @@ if [ "$test_count" != "?" ] && [ "$test_count" -gt "$max_tests" ] 2>/dev/null; t
   fi
 fi
 
-echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default})..."
+if [ "$test_count" = "?" ]; then
+  echo "Running verification tests (count unavailable) from $tag_count tag(s) (gate tier: ${browser_names:-default})..."
+else
+  echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default})..."
+fi
 test_exit=0
 npx playwright test \
   --config tests/verification-playwright/playwright.config.ts \
   ${project_args[@]+"${project_args[@]}"} \
   --grep "$grep_pattern" \
   ${grep_invert_args[@]+"${grep_invert_args[@]}"} \
+  --pass-with-no-tests \
   --timeout "$timeout_ms" || test_exit=$?
 
 # Dry-run: report but don't block
