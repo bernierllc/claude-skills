@@ -282,3 +282,7 @@ on the tracker.
 
 Before the first create against a tracker collection in a run, fetch its schema once and
 cache the property names in run-state — never guess field names into a 400.
+
+Resume queries against a tracker are bounded: filter to the repo **and** to a work-mode or
+status subset, `LIMIT` the rows, and select a truncated notes column. An unbounded
+"all non-done rows" query can overflow the tool result and force a re-parse from a saved file.
