@@ -112,20 +112,23 @@ fi
 # 2. Pick a port. Another session usually holds 3400, and with reuse off a
 #    busy port ends the run before a single test — a block unrelated to the
 #    change. The config reads VERIFICATION_PORT; choose the first free one.
+#    The mock SendGrid that globalSetup starts has the same problem on 39876,
+#    so it gets the same treatment (MOCK_SENDGRID_PORT).
 pick_port() {
-  command -v lsof >/dev/null 2>&1 || { echo 3400; return; }
-  local p
-  for p in $(seq 3400 3420); do
+  local from="$1" to="$2" p
+  command -v lsof >/dev/null 2>&1 || { echo "$from"; return; }
+  for p in $(seq "$from" "$to"); do
     lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 || { echo "$p"; return; }
   done
   echo ""
 }
-VERIFICATION_PORT=$(pick_port)
-if [ -z "$VERIFICATION_PORT" ]; then
-  echo "verification gate: skipped — no free port in 3400-3420 for the dev server."
+VERIFICATION_PORT=$(pick_port 3400 3420)
+MOCK_SENDGRID_PORT=$(pick_port 39876 39896)
+if [ -z "$VERIFICATION_PORT" ] || [ -z "$MOCK_SENDGRID_PORT" ]; then
+  echo "verification gate: skipped — no free port for the dev server (3400-3420) or the SendGrid mock (39876-39896)."
   exit 0
 fi
-export VERIFICATION_PORT
+export VERIFICATION_PORT MOCK_SENDGRID_PORT
 
 # Ask Playwright what this selection actually resolves to. `|| true` is load
 # bearing: --list exits 1 on an empty selection, and `var=$(cmd)` adopts that
@@ -167,9 +170,9 @@ if [ "$test_count" != "?" ] && [ "$test_count" -gt "$max_tests" ] 2>/dev/null; t
 fi
 
 if [ "$test_count" = "?" ]; then
-  echo "Running verification tests (count unavailable) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT)..."
+  echo "Running verification tests (count unavailable) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT, mock $MOCK_SENDGRID_PORT)..."
 else
-  echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT)..."
+  echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT, mock $MOCK_SENDGRID_PORT)..."
 fi
 test_exit=0
 npx playwright test \
@@ -179,9 +182,8 @@ npx playwright test \
   --timeout "$timeout_ms" || test_exit=$?
 
 # Ceiling, accepted knowingly: a Playwright failure that is NOT a test failure —
-# a missing browser binary, a config error, globalSetup finding the mock
-# SendGrid port (fixed, 39876) held by another session's run — also exits
-# non-zero and blocks. Distinguishing those from a real failure means
+# a missing browser binary, a config error, a port taken between the check
+# above and Playwright binding it — also exits non-zero and blocks. Distinguishing those from a real failure means
 # parsing reporter output, which is its own source of false confidence. The
 # environmental cases this gate can name (no server, no deps, no env, empty
 # selection, over cap) are all handled above.

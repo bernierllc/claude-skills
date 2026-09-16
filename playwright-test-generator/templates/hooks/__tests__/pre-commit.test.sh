@@ -150,6 +150,7 @@ check "over the cap, no tty"       0 "Total: 9999 tests in 1 file" "over the"
 check "normal run"                 0 "Total: 3 tests in 1 file" "Running 3"
 check "browsers reach playwright"  0 "Total: 3 tests in 1 file" "--project chromium"
 check "port 3400 held elsewhere"   0 "Total: 3 tests in 1 file" "port 3401" STUB_BUSY_PORTS=3400
+check "mock port held elsewhere"   0 "Total: 3 tests in 1 file" "mock 39877" STUB_BUSY_PORTS=39876
 check "no free port"               0 "Total: 3 tests in 1 file" "no free port" STUB_BUSY_PORTS=$(seq -s: 3400 3420)
 check "dry run reports a failure"  0 "Total: 3 tests in 1 file" "[DRY RUN] Tests failed" STUB_RUN_EXIT=1 VERIFICATION_PIPELINE_DRY_RUN=true
 check "failure blocks when live"   1 "Total: 3 tests in 1 file" "" STUB_RUN_EXIT=1 VERIFICATION_PIPELINE_DRY_RUN=false
