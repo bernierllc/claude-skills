@@ -41,7 +41,13 @@ Read before asking, in order:
 
 Baseline before writing code: run the repo's build/typecheck once at intake so a pre-existing
 red baseline is a known punch-list item, not a discovery at first commit (pre-commit hooks
-surface it at the worst moment). And when acceptance for any item requires a live
+surface it at the worst moment).
+
+Shared local test database: sibling worktrees usually share one test DB whose global setup
+drops and re-creates it, so a concurrent full-suite run from another worktree produces
+spurious failures (or kills the other run). Before any full-suite run, check for another
+runner (`pgrep -f node_modules/.bin/vitest`, or the repo's equivalent) and wait or serialize.
+When the repo supports a per-worktree database URL override, set it at worktree creation. And when acceptance for any item requires a live
 authenticated check on a remote environment, confirm credential availability now and
 punch-list the check upfront — never discover the gap at retro.
 
