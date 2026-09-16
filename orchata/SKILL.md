@@ -233,6 +233,9 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality; report
    failures plainly. Specifics:
+   - Diff the PR's new source files against its new test files. A new job, route, or module
+     with no covering test is a punch-list item before ship — a green suite proves existing
+     coverage, not that new code has any.
    - A page load is not verification. Deploy verification asserts deployment **identity**
      (a new deployment id/commit visible in the provider's deployment list) plus a
      response-body match — never a bare HTTP status code, which a stale or placeholder
