@@ -128,7 +128,10 @@ if [ -z "$VERIFICATION_PORT" ] || [ -z "$MOCK_SENDGRID_PORT" ]; then
   echo "verification gate: skipped — no free port for the dev server (3400-3420) or the SendGrid mock (39876-39896)."
   exit 0
 fi
-export VERIFICATION_PORT MOCK_SENDGRID_PORT
+# A dev server, not a build: the config explains why the gate must not run
+# `next build` while a batched run may be serving from the same .next.
+VERIFICATION_SERVER=dev
+export VERIFICATION_PORT MOCK_SENDGRID_PORT VERIFICATION_SERVER
 
 # Ask Playwright what this selection actually resolves to. `|| true` is load
 # bearing: --list exits 1 on an empty selection, and `var=$(cmd)` adopts that
