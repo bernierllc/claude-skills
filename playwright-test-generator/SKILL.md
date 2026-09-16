@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 3.12.1
+version: 3.13.0
 dependencies:
   skills:
     - name: verification-writer
@@ -716,10 +716,11 @@ Tier configuration is fully user-configurable in `manifest/config.json`.
 
 The gate enforces that table rather than describing it:
 
-- **Depth** comes from `tiers.gate.depths`. Depths named by other tiers but not this one are excluded with `--grep-invert`, so a `deep` test never runs at commit time.
+- **Depth** comes from `tiers.gate.depths`, as a **positive allowlist**: a test must carry a gate depth AND an affected suite tag. Deriving exclusions from other tiers' depths leaked anything no tier declared — one consumer had `@error` and `@edge` items running at commit time — so unrecognised depths are out by default.
 - **Browsers** come from `tiers.gate.browsers`, so adding a browser to the config changes the gate rather than silently affecting pre-push alone.
 - **The cap** is compared against the number of tests Playwright actually resolves (`--list`), not the number of tags. Tags are suite-level: a single changed file can pull in a whole suite, so a tag count is not a test count and a cap compared against one never fires.
-- **The app has to be running.** The gate probes it, starts it if it is down, and shuts down only what it started (killing the process group, since `npm run dev` forks). If it cannot come up the gate says why in one line and skips — a wall of connection failures for tests that never ran is worse than no gate, because it teaches people to ignore the output.
+- **Playwright owns the server; the hook does not start one.** `webServer` already starts the app when down and passes the right env, and reimplementing that in the hook produced six Critical review findings in two rounds — process groups, EXIT traps, env parity — none of it the hook's job. The one check Playwright cannot make is kept: a checkout whose `node_modules` is a symlink can never serve the app (Turbopack refuses it), so the gate skips with a one-line reason instead of a wall of connection failures.
+- **Set `reuseExistingServer: false` on the verification config.** With `true`, Playwright adopts whatever is listening on the port — including a dev server started with a different env, which for a suite pointed at a mock API means silently reaching the real one. A busy port failing loudly is the correct outcome; an unauthenticated probe cannot tell the two servers apart, so do not try.
 - **The gate never blocks a commit for an environmental reason.** No server, no dependencies, an empty selection at gate depth, or a selection over the cap all skip with a reason and exit 0. Only a genuine test failure blocks.
 - **Keep the dev-server env in one file.** If `tests/verification-playwright/dev-server-env.json` exists, the hook starts the server with it; import the same file from your Playwright config's `webServer.env`. Playwright's `reuseExistingServer` adopts whatever is already listening, so a hook-started server configured differently from the config's silently changes what the suite talks to — a suite pointed at a mock API will reach the real one.
 

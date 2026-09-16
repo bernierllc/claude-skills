@@ -41,34 +41,10 @@ timeout_ms=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('tests/v
 # Build grep pattern from affected tags
 grep_pattern=$(echo "$affected_tags" | tr ' ' '|')
 
-# Depth filter. `tiers.gate.depths` was declared in config.json and read by
-# nothing, so the commit gate ran every depth including `deep` — which is why a
-# handful of affected tags expanded into a three-figure test count. Tags select
-# WHAT changed; depth selects HOW MUCH of it is worth a commit's wall time.
-read_excluded_depths() {
-  node -e '
-    const fs = require("node:fs");
-    const cfg = JSON.parse(fs.readFileSync("tests/verification-playwright/manifest/config.json", "utf8"));
-    const gate = cfg?.tiers?.gate?.depths ?? [];
-    if (!gate.length) process.exit(0);
-    // Every depth any tier names, minus the ones this tier wants.
-    const all = new Set(
-      Object.values(cfg?.tiers ?? {}).flatMap((t) => t?.depths ?? []),
-    );
-    const excluded = [...all].filter((d) => !gate.includes(d));
-    process.stdout.write(excluded.map((d) => "@" + d).join("|"));
-  ' 2>/dev/null || true
-}
-excluded_depths=$(read_excluded_depths)
-grep_invert_args=()
-if [ -n "$excluded_depths" ]; then
-  grep_invert_args=(--grep-invert "$excluded_depths")
-fi
-
 # Browsers come from tiers.gate.browsers, the same way pre-push.sh reads its
-# tier. This hook used to hardcode `--project chromium`, so adding a browser to
-# the config changed the pre-push run and silently did nothing to the gate —
-# the two hooks disagreed about what the gate tier means.
+# tier. Hardcoding --project chromium here once meant adding a browser to the
+# config changed pre-push and silently did nothing to the gate. (This block was
+# lost in a simplification and project_args expanded empty; restored.)
 read_browsers() {
   node -e '
     const fs = require("node:fs");
@@ -77,7 +53,6 @@ read_browsers() {
     process.stdout.write(list.map((b) => b + "\n").join(""));
   ' 2>/dev/null || true
 }
-
 project_args=()
 browser_names=""
 while IFS= read -r browser; do
@@ -86,66 +61,48 @@ while IFS= read -r browser; do
   browser_names="${browser_names:+$browser_names, }$browser"
 done < <(read_browsers)
 
-# Server gate. Playwright's own webServer block has reuseExistingServer, but when
-# it cannot bring the app up (a worktree whose node_modules is a symlink makes
-# Turbopack refuse to start) every selected test fails on connection, producing a
-# wall of red that says nothing about the commit. Probe first, start if down, and
-# if it still will not come up, say why in one line and skip rather than reporting
-# failures we did not actually test for.
-APP_PORT="${VERIFICATION_APP_PORT:-3400}"
-APP_URL="http://localhost:${APP_PORT}"
+# Depth filter, as a POSITIVE allowlist.
+#
+# `tiers.gate.depths` was declared in config.json and read by nothing, so the
+# commit gate ran every depth including `deep`. The first fix excluded depths
+# that OTHER tiers named — which silently let through any depth no tier
+# declares. This manifest has four `error` items and one `edge`; none were in a
+# tier list, so none were ever excluded.
+#
+# A gate allows, it does not deny: the selection must match a gate depth AND an
+# affected suite tag. Anything wearing an unrecognised depth is out by default,
+# which is the safe direction for a check that runs on every commit.
+read_gate_depths() {
+  node -e '
+    const fs = require("node:fs");
+    const cfg = JSON.parse(fs.readFileSync("tests/verification-playwright/manifest/config.json", "utf8"));
+    process.stdout.write((cfg?.tiers?.gate?.depths ?? []).join("|"));
+  ' 2>/dev/null || true
+}
+gate_depths=$(read_gate_depths)
 
-# Any HTTP response means something is serving. `curl -f` would call a 401/403
-# root — or a 500 while Next compiles the first request — "down", and the hook
-# would start a second server on an occupied port, time out, and skip silently.
-server_up() { curl -s -o /dev/null --max-time 2 "$APP_URL" >/dev/null 2>&1; }
+if [ -n "$gate_depths" ]; then
+  # Two lookaheads against the test title: one gate depth, one affected tag.
+  # affected_tags already carry their "@", so only the depths need one added.
+  grep_pattern="(?=.*@(?:${gate_depths}))(?=.*(?:${grep_pattern}))"
+fi
 
-if ! server_up; then
-  if [ -L node_modules ]; then
-    echo "verification gate: skipped — node_modules is a symlink, so the dev server cannot start here."
-    echo "  Install deps directly in this worktree to enable the gate: rm node_modules && npm ci"
-    exit 0
-  fi
-
-  # Same env Playwright's webServer uses. reuseExistingServer means Playwright
-  # adopts whatever is already listening, so a server started here without
-  # SENDGRID_API_BASE_URL would point the suite at the real SendGrid account.
-  # Optional tests/verification-playwright/dev-server-env.json: the same env the
-  # Playwright config passes to its webServer. Keep them in one file and have
-  # the config import it — otherwise the hook starts a differently-configured
-  # server and reuseExistingServer makes the suite adopt it. A suite that points
-  # at a mock API will silently reach the real one.
-  gate_env=()
-  if [ -f tests/verification-playwright/dev-server-env.json ]; then
-    while IFS= read -r kv; do
-      [ -n "$kv" ] && gate_env+=("$kv")
-    done < <(node -e '
-      const e = require("./tests/verification-playwright/dev-server-env.json");
-      for (const [k, v] of Object.entries(e)) process.stdout.write(k + "=" + v + "\n");
-    ' 2>/dev/null || true)
-  fi
-
-  gate_log=$(mktemp -t verification-gate-dev)
-  echo "verification gate: app not running on $APP_URL — starting it..."
-  # Own process group: `npm run dev` forks `next dev`, which forks Turbopack
-  # workers. Killing only npm orphans the server on the port, which poisons
-  # every later run.
-  set -m
-  env ${gate_env[@]+"${gate_env[@]}"} npm run dev >"$gate_log" 2>&1 &
-  gate_server_pid=$!
-  set +m
-  trap 'kill -TERM -"$gate_server_pid" 2>/dev/null || true' EXIT INT TERM
-
-  deadline=$((SECONDS + 120))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    server_up && break
-    sleep 2
-  done
-  if ! server_up; then
-    echo "verification gate: skipped — app did not come up within 120s (see $gate_log)."
-    exit 0
-  fi
-  echo "verification gate: app is up."
+# The app has to be reachable, but starting it is Playwright's job: its
+# webServer block already has reuseExistingServer and the right env, and
+# duplicating that here is what produced six review findings in two rounds —
+# process groups, traps, temp logs and env parity, none of it this hook's work.
+#
+# The one thing Playwright cannot do is notice that this checkout could never
+# serve the app at all. A worktree that symlinks node_modules makes Turbopack
+# refuse to start, so every selected test would fail on connection and the
+# operator would learn nothing from a screen of red.
+#
+# Adopting a foreign server is guarded in tests/e2e/global-setup.ts, where it
+# protects every run of these suites rather than only the ones behind a commit.
+if [ -L node_modules ] && ! curl -s -o /dev/null --max-time 2 http://localhost:3400; then
+  echo "verification gate: skipped — node_modules is a symlink, so the dev server cannot start here."
+  echo "  Install deps directly in this worktree to enable the gate: rm node_modules && npm ci"
+  exit 0
 fi
 
 # Ask Playwright what this selection actually resolves to. `|| true` is load
@@ -159,7 +116,6 @@ test_count=$(npx playwright test \
   --config tests/verification-playwright/playwright.config.ts \
   ${project_args[@]+"${project_args[@]}"} \
   --grep "$grep_pattern" \
-  ${grep_invert_args[@]+"${grep_invert_args[@]}"} \
   --list 2>/dev/null | sed -n 's/^Total: \([0-9][0-9]*\) test.*/\1/p' | tail -1 || true)
 [ -n "${test_count:-}" ] || test_count="?"
 
@@ -178,7 +134,9 @@ if [ "$test_count" != "?" ] && [ "$test_count" -gt "$max_tests" ] 2>/dev/null; t
   # `-t 1` and calling `read` means EOF, a non-zero status, and `set -e` killing
   # the hook. Blocking a commit is the one thing this gate must never do.
   if [ -r /dev/tty ] && [ -t 1 ]; then
-    read -r -p "  Run anyway? [y/N] " run_anyway </dev/tty || run_anyway=""
+    # -t: a pty-wrapped commit (script, tmux, CI with a tty) would otherwise
+    # hang forever, which costs exactly as much as blocking.
+    read -t 30 -r -p "  Run anyway? [y/N] " run_anyway </dev/tty || run_anyway=""
     case "$run_anyway" in y|Y) ;; *) echo "  skipped."; exit 0 ;; esac
   else
     echo "  skipped (non-interactive). Raise tiers.gate.maxTests or narrow the tags to run it."
@@ -196,10 +154,15 @@ npx playwright test \
   --config tests/verification-playwright/playwright.config.ts \
   ${project_args[@]+"${project_args[@]}"} \
   --grep "$grep_pattern" \
-  ${grep_invert_args[@]+"${grep_invert_args[@]}"} \
   --pass-with-no-tests \
   --timeout "$timeout_ms" || test_exit=$?
 
+# Ceiling, accepted knowingly: a Playwright failure that is NOT a test failure —
+# a missing browser binary, a config error, globalSetup losing a port race —
+# also exits non-zero and blocks. Distinguishing those from a real failure means
+# parsing reporter output, which is its own source of false confidence. The
+# environmental cases this gate can name (no server, no deps, no env, empty
+# selection, over cap) are all handled above.
 # Dry-run: report but don't block
 if [ "$dry_run" = "true" ]; then
   if [ $test_exit -eq 0 ]; then
