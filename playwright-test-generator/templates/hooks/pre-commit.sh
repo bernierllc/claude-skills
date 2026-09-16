@@ -39,7 +39,11 @@ max_tests=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('tests/ve
 timeout_ms=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('tests/verification-playwright/manifest/config.json','utf8'));console.log(c.tiers.gate.timeoutMs||60000)}catch(e){console.log(60000)}" 2>/dev/null || echo "60000")
 
 # Build grep pattern from affected tags
-grep_pattern=$(echo "$affected_tags" | tr ' ' '|')
+# Each tag is followed by whitespace or end-of-title: `@onboarding` must not
+# also select `@onboarding-domains` and thirteen other sibling suites, which
+# blew a one-file change past the cap and — non-interactively — skipped the
+# gate for the tests that were actually affected.
+grep_pattern="(?:$(echo "$affected_tags" | tr ' ' '|'))(?:\\s|$)"
 
 # Browsers come from tiers.gate.browsers, the same way pre-push.sh reads its
 # tier. Hardcoding --project chromium here once meant adding a browser to the
@@ -84,26 +88,44 @@ gate_depths=$(read_gate_depths)
 if [ -n "$gate_depths" ]; then
   # Two lookaheads against the test title: one gate depth, one affected tag.
   # affected_tags already carry their "@", so only the depths need one added.
-  grep_pattern="(?=.*@(?:${gate_depths}))(?=.*(?:${grep_pattern}))"
+  grep_pattern="(?=.*@(?:${gate_depths})(?:\\s|$))(?=.*${grep_pattern})"
 fi
 
-# The app has to be reachable, but starting it is Playwright's job: its
-# webServer block already has reuseExistingServer and the right env, and
-# duplicating that here is what produced six review findings in two rounds —
-# process groups, traps, temp logs and env parity, none of it this hook's work.
+# Starting the app is Playwright's job: its webServer block has the env and the
+# start-if-down logic, and duplicating that here is what produced six review
+# findings in two rounds. It never adopts a server it did not start (the config
+# sets reuseExistingServer:false, because an unauthenticated probe cannot tell
+# a mock-configured server from one pointed at api.sendgrid.com).
 #
-# The one thing Playwright cannot do is notice that this checkout could never
-# serve the app at all. A worktree that symlinks node_modules makes Turbopack
-# refuse to start, so every selected test would fail on connection and the
-# operator would learn nothing from a screen of red.
+# Two things Playwright cannot do for us:
 #
-# Adopting a foreign server is guarded in tests/e2e/global-setup.ts, where it
-# protects every run of these suites rather than only the ones behind a commit.
-if [ -L node_modules ] && ! curl -s -o /dev/null --max-time 2 http://localhost:3400; then
+# 1. Notice that this checkout could never serve the app. A worktree that
+#    symlinks node_modules makes Turbopack refuse to start, so every selected
+#    test would fail on connection and the operator would learn nothing from a
+#    screen of red.
+if [ -L node_modules ]; then
   echo "verification gate: skipped — node_modules is a symlink, so the dev server cannot start here."
   echo "  Install deps directly in this worktree to enable the gate: rm node_modules && npm ci"
   exit 0
 fi
+
+# 2. Pick a port. Another session usually holds 3400, and with reuse off a
+#    busy port ends the run before a single test — a block unrelated to the
+#    change. The config reads VERIFICATION_PORT; choose the first free one.
+pick_port() {
+  command -v lsof >/dev/null 2>&1 || { echo 3400; return; }
+  local p
+  for p in $(seq 3400 3420); do
+    lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 || { echo "$p"; return; }
+  done
+  echo ""
+}
+VERIFICATION_PORT=$(pick_port)
+if [ -z "$VERIFICATION_PORT" ]; then
+  echo "verification gate: skipped — no free port in 3400-3420 for the dev server."
+  exit 0
+fi
+export VERIFICATION_PORT
 
 # Ask Playwright what this selection actually resolves to. `|| true` is load
 # bearing: --list exits 1 on an empty selection, and `var=$(cmd)` adopts that
@@ -145,21 +167,21 @@ if [ "$test_count" != "?" ] && [ "$test_count" -gt "$max_tests" ] 2>/dev/null; t
 fi
 
 if [ "$test_count" = "?" ]; then
-  echo "Running verification tests (count unavailable) from $tag_count tag(s) (gate tier: ${browser_names:-default})..."
+  echo "Running verification tests (count unavailable) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT)..."
 else
-  echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default})..."
+  echo "Running $test_count verification test(s) from $tag_count tag(s) (gate tier: ${browser_names:-default}, port $VERIFICATION_PORT)..."
 fi
 test_exit=0
 npx playwright test \
   --config tests/verification-playwright/playwright.config.ts \
   ${project_args[@]+"${project_args[@]}"} \
   --grep "$grep_pattern" \
-  --pass-with-no-tests \
   --timeout "$timeout_ms" || test_exit=$?
 
 # Ceiling, accepted knowingly: a Playwright failure that is NOT a test failure —
-# a missing browser binary, a config error, globalSetup losing a port race —
-# also exits non-zero and blocks. Distinguishing those from a real failure means
+# a missing browser binary, a config error, globalSetup finding the mock
+# SendGrid port (fixed, 39876) held by another session's run — also exits
+# non-zero and blocks. Distinguishing those from a real failure means
 # parsing reporter output, which is its own source of false confidence. The
 # environmental cases this gate can name (no server, no deps, no env, empty
 # selection, over cap) are all handled above.
