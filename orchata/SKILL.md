@@ -54,10 +54,11 @@ already run there. At creation:
   install per worktree (sharing only the package-manager cache). Install with an explicit
   `NODE_ENV=development` — unattended shells often export `NODE_ENV=production`, which
   silently skips devDependencies and makes the baseline look broken.
-- Ensure `node_modules` is in `$(git rev-parse --git-common-dir)/info/exclude` — append only
-  if absent (`grep -qx node_modules <file> || echo node_modules >> <file>`); the file is
-  shared by every worktree. Gitignore does not match a symlink, and git reads `info/exclude`
-  from the common dir, not the per-worktree `--git-dir`.
+- Ensure `node_modules` is excluded, once, in the file every worktree shares:
+  `x="$(git rev-parse --git-common-dir)/info/exclude"; grep -qx node_modules "$x" || echo
+  node_modules >> "$x"`. A gitignore pattern with a trailing slash (`node_modules/`) matches
+  directories, not a symlink; and git reads `info/exclude` from the common dir, not the
+  per-worktree `--git-dir`.
 - Copy or symlink the primary checkout's gitignored env files (`.env.local` and similar).
 - If sibling worktrees share one local test database whose setup drops and re-creates it,
   give this worktree its own database URL when the repo supports an override. When it
@@ -146,8 +147,8 @@ the actual work as possible:
   adversarial reviewer of it instead — the independent check is never skipped.
 - Cap concurrent fan-out to what the host can hold. On a laptop, run review fan-outs
   serially and never alongside implementation workers. A review whose consolidated result
-  hasn't arrived: wait on the host's completion notification, checking its journal once
-  per bounded interval — not a tight polling loop; if it has died or stalled,
+  hasn't arrived: wait for the host's completion notification (read the journal only on
+  completion or timeout, never in a polling loop); if it has died or stalled,
   confirm it stopped (cancel it) before re-running it at lower parallelism — never
   hand-triage its raw finder output, and never run the replacement alongside it.
 
@@ -225,7 +226,8 @@ Fan-out runs assume workers die. Rules:
 - **A stall is not a failure.** When several workers stall (no progress) at once, that is an
   account or usage limit, not a worker defect: abort the wave, checkpoint, and stop — never
   retry into it (one run burned ~1.6M tokens retrying stalled agents for zero output). Record
-  the Workflow run id in run-state before dispatch so a resume can read its journal first.
+  the Workflow run id in run-state immediately after dispatch so a resume can read its
+  journal first.
 - **Stream results:** append each verdict to `<state-dir>/fleet-results.json` as it
   arrives, not in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
 - **Propose in parallel, merge serially:** workers produce branches/patches concurrently;
@@ -282,9 +284,10 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality; report
    failures plainly. Specifics:
-   - Before opening a PR, run the CI workflow's **exact** lint/typecheck commands (read
-     `.github/workflows`) against the full changed-file set vs the base branch. Per-file spot
-     checks miss files CI lints and cost a full CI round-trip.
+   - Before opening a PR, run the CI workflow's lint/typecheck commands exactly as CI runs
+     them (read `.github/workflows`) — whole-repo if CI is whole-repo, the changed-file set
+     vs base if CI scopes it that way. Per-file spot checks miss files CI lints and cost a
+     full CI round-trip.
    - Map the PR's added behavior (new files *and* new jobs/routes/exports in existing files)
      to new or modified tests. Added behavior with no covering test goes back to
      implementation as a test task before the PR opens — a green suite proves existing
