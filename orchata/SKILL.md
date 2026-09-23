@@ -148,7 +148,8 @@ the actual work as possible:
 - Cap concurrent fan-out to what the host can hold. On a laptop, run review fan-outs
   serially and never alongside implementation workers. A review whose consolidated result
   hasn't arrived: wait for the host's completion notification (read the journal only on
-  completion or timeout, never in a polling loop); if it has died or stalled,
+  completion or timeout, never in a polling loop); if it alone has died or stalled (several
+  stalling at once is a usage limit — see Supervisor resilience),
   confirm it stopped (cancel it) before re-running it at lower parallelism — never
   hand-triage its raw finder output, and never run the replacement alongside it.
 
@@ -166,8 +167,8 @@ Worktree hygiene (either mode):
 - Sequence environment moves **before** dispatching background agents: create the worktree
   and complete any `cd` first, then dispatch with worktree-absolute paths. An agent
   dispatched against a checkout that then moves gets its Bash calls refused.
-- Creation-time setup (deps, `info/exclude`, env files, test DB) is in Phase 1 — do it for
-  every worktree the run creates, including per-worker ones.
+- Creation-time setup (deps, `info/exclude`, env files, test DB) is listed in Phase 1;
+  apply it whenever the run creates a worktree, including per-worker ones created here.
 
 ### Orchestration mechanics
 
@@ -289,7 +290,8 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
      vs base if CI scopes it that way. Per-file spot checks miss files CI lints and cost a
      full CI round-trip.
    - Map the PR's added behavior (new files *and* new jobs/routes/exports in existing files)
-     to new or modified tests. Added behavior with no covering test goes back to
+     to new or modified tests — from the repo's coverage report when it has one, by reading
+     the diff when it doesn't. Added behavior with no covering test goes back to
      implementation as a test task before the PR opens — a green suite proves existing
      coverage, not that new code has any. Punch-list it only when writing the test is
      genuinely blocked on the human.
