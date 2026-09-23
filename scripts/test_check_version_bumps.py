@@ -82,6 +82,31 @@ class CheckVersionBumps(unittest.TestCase):
         r = self.run_check()
         self.assertEqual(r.returncode, 0, r.stdout)  # suite itself untouched
 
+    def test_moved_skill_without_bump_fails(self):
+        self.git("mv", "alpha", "moved-alpha")
+        self.write("moved-alpha/SKILL.md", skill_md("alpha", "1.0.0") + "edited\n")
+        self.commit("move")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("moved-alpha", r.stdout)
+
+    def test_moved_skill_with_bump_passes(self):
+        self.git("mv", "alpha", "moved-alpha")
+        self.write("moved-alpha/SKILL.md", skill_md("alpha", "1.0.1"))
+        self.commit("move")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_path_with_space_is_checked(self):
+        self.write("sk one/SKILL.md", skill_md("skone", "1.0.0"))
+        self.commit("add spaced skill")
+        self.git("branch", "-f", "base")
+        self.write("sk one/SKILL.md", skill_md("skone", "1.0.0") + "edited\n")
+        self.commit("edit")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("sk one", r.stdout)
+
     def test_new_skill_and_non_skill_files_pass(self):
         self.write("fresh/SKILL.md", skill_md("fresh", "0.1.0"))
         self.write("README.md", "changed\n")

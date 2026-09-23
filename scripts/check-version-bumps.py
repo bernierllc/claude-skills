@@ -7,30 +7,22 @@ A skill is the deepest directory containing a SKILL.md. Any change inside it
 counts, not just SKILL.md: `aec` installs the whole directory and upgrades on
 the frontmatter version, so an unbumped change to a reference file or script
 never reaches installed copies. New skills (no SKILL.md at BASE_REF) and
-deleted skills are skipped.
+deleted skills are skipped. A renamed or moved skill is compared against its
+old path, so a move is not mistaken for a new skill.
 
 Runs against the git repo containing the current working directory.
 """
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import PurePosixPath
 
-VERSION_RE = re.compile(r"^version:\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
+from frontmatter import frontmatter_version
 
 
 def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
-
-
-def frontmatter_version(text: str) -> str | None:
-    if not text.startswith("---"):
-        return None
-    end = text.find("\n---", 3)
-    m = VERSION_RE.search(text[3:end] if end != -1 else "")
-    return m.group(1) if m else None
 
 
 def parse(version: str) -> tuple[int, ...]:
@@ -39,9 +31,25 @@ def parse(version: str) -> tuple[int, ...]:
 
 def main() -> int:
     base = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
-    changed = [PurePosixPath(p) for p in git("diff", "--name-only", f"{base}...HEAD").split()]
+    # -z: NUL-separated, so paths with spaces survive. Each entry is a status
+    # followed by one path, or two (old, new) for renames and copies.
+    fields = git("diff", "--name-status", "-M", "-z", f"{base}...HEAD").split("\0")[:-1]
+    changed: list[PurePosixPath] = []
+    renamed_from: dict[str, str] = {}  # new path -> old path
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        if status[0] in "RC":
+            old, new = fields[i + 1], fields[i + 2]
+            renamed_from[new] = old
+            changed.append(PurePosixPath(new))
+            i += 3
+        else:
+            changed.append(PurePosixPath(fields[i + 1]))
+            i += 2
+
     skill_dirs = sorted(
-        (p.parent for p in map(PurePosixPath, git("ls-files", "*SKILL.md").split())
+        (p.parent for p in map(PurePosixPath, git("ls-files", "-z", "*SKILL.md").split("\0"))
          if p.name == "SKILL.md" and p.parent != PurePosixPath(".")),
         key=lambda d: len(d.parts),
         reverse=True,  # deepest first, so nested skills win
@@ -57,7 +65,7 @@ def main() -> int:
     for skill_dir, files in sorted(touched.items()):
         skill_md = f"{skill_dir}/SKILL.md"
         try:
-            base_text = git("show", f"{base}:{skill_md}")
+            base_text = git("show", f"{base}:{renamed_from.get(skill_md, skill_md)}")
         except subprocess.CalledProcessError:
             continue  # new skill
         head_text = git("show", f"HEAD:{skill_md}")

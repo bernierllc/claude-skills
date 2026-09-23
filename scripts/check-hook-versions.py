@@ -7,24 +7,16 @@ hooks.json file disagrees with its SKILL.md frontmatter version.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
+from frontmatter import frontmatter_version
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FRONTMATTER_VERSION_RE = re.compile(r"^version:\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
 
 
 def skill_version(skill_md: Path) -> str | None:
-    text = skill_md.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    frontmatter = text[3:end]
-    m = FRONTMATTER_VERSION_RE.search(frontmatter)
-    return m.group(1) if m else None
+    return frontmatter_version(skill_md.read_text(encoding="utf-8"))
 
 
 def hooks_version(hooks_json: Path) -> str | None:

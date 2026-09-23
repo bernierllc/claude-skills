@@ -78,4 +78,6 @@ jobs:
 
       - name: Changed skills bump their version
         if: github.event_name == 'pull_request'
-        run: python3 scripts/check-version-bumps.py "origin/${{ github.base_ref }}"
+        env:
+          BASE_REF: ${{ github.base_ref }} # via env, never interpolated into the shell
+        run: python3 scripts/check-version-bumps.py "origin/$BASE_REF"
