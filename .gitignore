@@ -9,3 +9,4 @@ AGENTS.md
 /plans/
 __pycache__/
 *.pyc
+.otto/
