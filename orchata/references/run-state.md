@@ -16,6 +16,7 @@ name a different directory — honor theirs (see SKILL.md "State files").
   "branch": "feat/widget-refactor",
   "plan_file": "plans/2026-08-09-widget-refactor.md",
   "tracker_row": "https://tracker.example.com/issue/123",
+  "workflow_run_id": "wf_abc123",
   "steps": [
     {
       "id": "2.1",
@@ -45,7 +46,11 @@ name a different directory — honor theirs (see SKILL.md "State files").
 
 `status` ∈ `pending | in_progress | done | blocked | skipped`. `evidence` is required to
 mark `done` — a commit hash, test output line, or URL; never a bare claim. `tracker_row`
-fields are optional — populate only when an external tracker is configured. `next_action`
+fields are optional — populate only when an external tracker is configured.
+`workflow_run_id` (optional) is the Workflow tool's own id for the in-flight fan-out — not
+`run_id`, which names the orchata run — written immediately after dispatch, cleared when
+the wave completes; on resume it points at the run's `journal.jsonl` and is what
+`resumeFromRunId` takes. `next_action`
 is always populated: it is the single line a fresh session executes first on resume.
 
 ## Triple-redundancy order (after every completed step)

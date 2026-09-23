@@ -1,3 +1,0 @@
-# local-only files stay local; checkpoints are committed
-*.local.*
-cache/
