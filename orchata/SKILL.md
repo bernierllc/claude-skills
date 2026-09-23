@@ -58,9 +58,11 @@ already run there. At creation:
 - Copy or symlink the primary checkout's gitignored env files (`.env.local` and similar).
 - If sibling worktrees share one local test database whose setup drops and re-creates it,
   give this worktree its own database URL when the repo supports an override. Otherwise
-  serialize full-suite runs with an atomic lock held for the whole run
-  (`mkdir /tmp/<db-name>.suite.lock`, removed on exit) — a "is another runner alive?"
-  process check races, and `pgrep -f` matches the invoking shell's own command line.
+  serialize full-suite runs with an atomic lock held for the whole run: `mkdir
+  /tmp/<db-name>.suite.lock`, write the holder's PID into it, remove it on exit. A lock
+  whose PID is dead (`kill -0` fails) is stale — a SIGKILLed run never cleans up — so
+  remove it and retry. A bare "is another runner alive?" process check races, and
+  `pgrep -f` matches the invoking shell's own command line.
 
 Then ask **at most one batched `AskUserQuestion`** covering only genuine unknowns that would
 materially change the plan (e.g., prod posture when no profile exists, a real fork in scope).
@@ -246,8 +248,9 @@ early window is not a clean review.
 After any merge that touched a generated or aggregate file (an index, a manifest, a
 hand-maintained table of contents), resolve by re-running the owning generator — never by
 hand-splicing the conflict — and assert its shape (row count vs sources) before committing.
-Git can auto-merge such a file "cleanly" into garbage. A hand-maintained aggregate counts
-as generated: propose a generator or a guard test for it in the PR.
+Git can auto-merge such a file "cleanly" into garbage. A hand-maintained aggregate with no
+generator: take one side wholesale, re-derive the missing entries from their sources, and
+run the same shape assertion — then propose a generator or guard test for it in the PR.
 
 ## Phase 4 — Escalate
 
@@ -336,7 +339,8 @@ cache the property names in run-state — never guess field names into a 400.
 
 Resume queries against a tracker are bounded: filter to the repo **and** to a work-mode or
 status subset, `LIMIT` the rows, and select a truncated notes column. An unbounded
-"all non-done rows" query can overflow the tool result.
+"all non-done rows" query can overflow the tool result. Bounded is not truncated: page
+through every match (or filter to the branch/run) before concluding a row doesn't exist.
 
 Tracker API down but a human's answer lives in a row: read it through any other surface
 the host offers (e.g. the row's page text in a browser) before punch-listing it as
