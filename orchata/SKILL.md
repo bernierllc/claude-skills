@@ -49,9 +49,11 @@ now and punch-list the check upfront — never discover the gap at retro.
 If the run uses a worktree, create it at intake, before the plan commit — pre-commit hooks
 already run there. At creation:
 
-- Symlink `node_modules` from the primary checkout (or install with an explicit
+- Dependencies: symlink `node_modules` from the primary checkout only while the branch
+  leaves the dependency manifests untouched and no worktree installs into it; otherwise
+  install per worktree (sharing only the package-manager cache). Install with an explicit
   `NODE_ENV=development` — unattended shells often export `NODE_ENV=production`, which
-  silently skips devDependencies and makes the baseline look broken).
+  silently skips devDependencies and makes the baseline look broken.
 - Append `node_modules` to `$(git rev-parse --git-common-dir)/info/exclude`. Gitignore does
   not match a symlink, and git reads `info/exclude` from the common dir — not from the
   per-worktree `--git-dir`.
@@ -143,9 +145,10 @@ the actual work as possible:
   costs more than building it. Build that unit inline and spend the worker budget on an
   adversarial reviewer of it instead — the independent check is never skipped.
 - Cap concurrent fan-out to what the host can hold. On a laptop, run review fan-outs
-  serially and never alongside implementation workers; a review whose consolidated result
-  never arrives after one bounded wait has failed — re-run it at lower parallelism rather
-  than hand-triaging its raw finder output.
+  serially and never alongside implementation workers. A review whose consolidated result
+  hasn't arrived: poll its run or journal in bounded waits; if it has died or stalled,
+  confirm it stopped (cancel it) before re-running it at lower parallelism — never
+  hand-triage its raw finder output, and never run the replacement alongside it.
 
 ### Shared-worktree mode
 
@@ -282,8 +285,10 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
      `.github/workflows`) against the full changed-file set vs the base branch. Per-file spot
      checks miss files CI lints and cost a full CI round-trip.
    - Map the PR's added behavior (new files *and* new jobs/routes/exports in existing files)
-     to new or modified tests. Added behavior with no covering test is a punch-list item
-     before ship — a green suite proves existing coverage, not that new code has any.
+     to new or modified tests. Added behavior with no covering test goes back to
+     implementation as a test task before the PR opens — a green suite proves existing
+     coverage, not that new code has any. Punch-list it only when writing the test is
+     genuinely blocked on the human.
    - Verifying an async trigger (queue enqueue, webhook, cron kick) means observing the
      consumer's completion evidence — a worker log line, a row delta — never just the
      producer's 200. A silent no-op enqueue returns 200 too.
