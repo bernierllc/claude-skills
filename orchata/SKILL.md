@@ -59,12 +59,11 @@ already run there. At creation:
   per-worktree `--git-dir`.
 - Copy or symlink the primary checkout's gitignored env files (`.env.local` and similar).
 - If sibling worktrees share one local test database whose setup drops and re-creates it,
-  give this worktree its own database URL when the repo supports an override. Otherwise
-  serialize full-suite runs with an atomic lock held for the whole run: `mkdir
-  /tmp/<db-name>.suite.lock`, write the holder's PID into it, remove it on exit. A lock
-  whose PID is dead (`kill -0` fails) is stale — a SIGKILLed run never cleans up — so
-  remove it and retry. A bare "is another runner alive?" process check races, and
-  `pgrep -f` matches the invoking shell's own command line.
+  give this worktree its own database URL when the repo supports an override. When it
+  doesn't, never run two full suites from this run at once, treat failures that vanish on a
+  clean rerun as collisions rather than defects, and punch-list per-worktree database
+  support as the fix. Don't hand-roll a cross-session lock or rely on a process check —
+  both race (and `pgrep -f` matches the invoking shell's own command line).
 
 Then ask **at most one batched `AskUserQuestion`** covering only genuine unknowns that would
 materially change the plan (e.g., prod posture when no profile exists, a real fork in scope).
