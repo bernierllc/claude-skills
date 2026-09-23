@@ -1,7 +1,7 @@
 ---
 name: resume
 description: Use at the start of a session in a repo with prior work in flight, or when the user says "resume", "/resume", "where were we", "pick up where we left off". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.
-version: 1.2.3
+version: 1.3.0
 author: Bernier LLC
 ---
 
@@ -27,8 +27,10 @@ re-plan** — a run that is already mapped gets picked up at its first non-done 
   the branch-mismatch rule in step 2.
 - **External tracker:** if the user's instructions configure one, query its open
   (non-done) rows whose source link matches this repo — match on `org/repo` from
-  `git remote get-url origin`, never the repo name alone. Tracker unavailable → proceed
-  on layers 1–2 and say so.
+  `git remote get-url origin`, never the repo name alone. Bound the query: add a
+  work-mode or status subset, `LIMIT` the rows, and select a truncated notes column — an
+  unbounded "all non-done rows" query can overflow the tool result. Tracker unavailable →
+  proceed on layers 1–2 and say so.
 
 ## 2. Reconcile — trust reality over records
 

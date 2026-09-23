@@ -93,3 +93,12 @@ Resolve in order, then cache the answer in `source_repo`:
 PR mechanics: branch from the source repo's default branch, apply the diffs to the skill's
 files there, conventional commit (`feat(orchata): ...` / `fix(orchata): ...`), and open the PR
 with `gh` — all gated on the user's explicit go-ahead per the escalation contract.
+
+- **One PR per review, never one per entry.** Entries cluster in the same sections, so
+  per-entry PRs conflict with each other and each needs its own version bump — eight such
+  PRs once sat unmerged for weeks. Fold every accepted entry into one branch.
+- Bump the skill's frontmatter `version` and follow the source repo's own release rules
+  (e.g. regenerate its manifest) in the same commit.
+- A lesson that also governs a sibling skill (e.g. tracker queries used by `resume`) lands
+  in both, or it is missed on the sibling's path.
+- Record the PR URL on each folded entry as `pr`; prune those entries once the PR merges.

@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.
-version: 1.4.0
+version: 1.5.0
 author: Bernier LLC
 ---
 
@@ -41,9 +41,26 @@ Read before asking, in order:
 
 Baseline before writing code: run the repo's build/typecheck once at intake so a pre-existing
 red baseline is a known punch-list item, not a discovery at first commit (pre-commit hooks
-surface it at the worst moment). And when acceptance for any item requires a live
-authenticated check on a remote environment, confirm credential availability now and
-punch-list the check upfront — never discover the gap at retro.
+surface it at the worst moment). If the baseline build fails on a *different* target each
+run, suspect a missing env file before suspecting the tree. And when acceptance for any item
+requires a live authenticated check on a remote environment, confirm credential availability
+now and punch-list the check upfront — never discover the gap at retro.
+
+If the run uses a worktree, create it at intake, before the plan commit — pre-commit hooks
+already run there. At creation:
+
+- Symlink `node_modules` from the primary checkout (or install with an explicit
+  `NODE_ENV=development` — unattended shells often export `NODE_ENV=production`, which
+  silently skips devDependencies and makes the baseline look broken).
+- Append `node_modules` to `$(git rev-parse --git-common-dir)/info/exclude`. Gitignore does
+  not match a symlink, and git reads `info/exclude` from the common dir — not from the
+  per-worktree `--git-dir`.
+- Copy or symlink the primary checkout's gitignored env files (`.env.local` and similar).
+- If sibling worktrees share one local test database whose setup drops and re-creates it,
+  give this worktree its own database URL when the repo supports an override. Otherwise
+  serialize full-suite runs with an atomic lock held for the whole run
+  (`mkdir /tmp/<db-name>.suite.lock`, removed on exit) — a "is another runner alive?"
+  process check races, and `pgrep -f` matches the invoking shell's own command line.
 
 Then ask **at most one batched `AskUserQuestion`** covering only genuine unknowns that would
 materially change the plan (e.g., prod posture when no profile exists, a real fork in scope).
@@ -119,6 +136,14 @@ the actual work as possible:
 - The orchestrator consumes conclusions and structured returns, never workers' file dumps or
   transcripts.
 - Worker tier and effort are set per the tier table; mechanical batches go low-tier.
+- Exception to "never inline": when one implementation unit's brief *is* the full loaded
+  context (a spec plus a schema that just landed), re-sending that context to a worker
+  costs more than building it. Build that unit inline and spend the worker budget on an
+  adversarial reviewer of it instead — the independent check is never skipped.
+- Cap concurrent fan-out to what the host can hold. On a laptop, run review fan-outs
+  serially and never alongside implementation workers; a review whose consolidated result
+  never arrives after one bounded wait has failed — re-run it at lower parallelism rather
+  than hand-triaging its raw finder output.
 
 ### Shared-worktree mode
 
@@ -134,16 +159,16 @@ Worktree hygiene (either mode):
 - Sequence environment moves **before** dispatching background agents: create the worktree
   and complete any `cd` first, then dispatch with worktree-absolute paths. An agent
   dispatched against a checkout that then moves gets its Bash calls refused.
-- At worktree creation, exclude the `node_modules` symlink from git's view (worktree
-  equivalent of `.git/info/exclude`) — gitignore does not match symlinks, so `git add -A`
-  is otherwise a standing hazard.
+- Creation-time setup (deps, `info/exclude`, env files, test DB) is in Phase 1 — do it for
+  every worktree the run creates, including per-worker ones.
 
 ### Orchestration mechanics
 
 - Use the **Workflow tool** where the host provides it (`agent()` accepts per-call `model`
   and `effort` overrides). If unavailable, fall back to the **Agent tool**: dispatch
   independent workers in parallel, `model` override only (no per-call effort), and note the
-  degradation in the retro.
+  degradation in the retro. The Agent tool is also fine by choice for ≤4 file-disjoint
+  workers that need no per-stage effort tiers; reserve Workflow for larger or pipelined runs.
 - Read `references/workflow-patterns.md` before writing the script.
 - `pipeline()` by default; barriers only when a stage genuinely needs all prior results.
 - Per-stage `model`/`effort` overrides per the tier table; omit when no tier clearly fits.
@@ -158,6 +183,9 @@ Worktree hygiene (either mode):
   JSON string.
 - Prefer absolute paths (or `git -C <path>`) in every Bash call — never rely on the shell's
   persisted cwd, which drifts across calls and environment moves.
+- Never stream logs in a harness (`railway logs` without `-n`, `tail -f`, `kubectl logs -f`):
+  a background task killed mid-stream loses its output, and some hosts lack coreutils
+  `timeout`. Fetch bounded slices (`-n N`, `--since`) instead.
 - Log friction as it happens — a wrong default in these instructions, an unnecessary pause, a
   missed case that caused rework → append to the friction register (see Phase 5).
 
@@ -188,6 +216,10 @@ Fan-out runs assume workers die. Rules:
   `failed`.
 - **Retry budget: 2** per task, then mark `blocked` with the last error as evidence and
   move on — never spin on one worker.
+- **A stall is not a failure.** When several workers stall (no progress) at once, that is an
+  account or usage limit, not a worker defect: abort the wave, checkpoint, and stop — never
+  retry into it (one run burned ~1.6M tokens retrying stalled agents for zero output). Record
+  the Workflow run id in run-state before dispatch so a resume can read its journal first.
 - **Stream results:** append each verdict to `<state-dir>/fleet-results.json` as it
   arrives, not in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
 - **Propose in parallel, merge serially:** workers produce branches/patches concurrently;
@@ -206,6 +238,16 @@ Promotion PRs between long-lived branches (e.g. staging → main) use **merge co
 squash** — a squash leaves the branches' blobs divergent and the next promotion reports
 false conflicts. If a squash promotion already exists in history, back-merge the target
 into the source branch before opening the next promotion.
+
+Re-read bot reviews **immediately before** the merge click, not only after the initial
+wait: a review whose summary still says *Running* has not finished — wait for it. An empty
+early window is not a clean review.
+
+After any merge that touched a generated or aggregate file (an index, a manifest, a
+hand-maintained table of contents), resolve by re-running the owning generator — never by
+hand-splicing the conflict — and assert its shape (row count vs sources) before committing.
+Git can auto-merge such a file "cleanly" into garbage. A hand-maintained aggregate counts
+as generated: propose a generator or a guard test for it in the PR.
 
 ## Phase 4 — Escalate
 
@@ -233,6 +275,15 @@ legitimate mid-run stop. One blocker never stops the run while other work can pr
 
 1. **Verify with evidence.** Tests actually run, outputs shown, claims match reality; report
    failures plainly. Specifics:
+   - Before opening a PR, run the CI workflow's **exact** lint/typecheck commands (read
+     `.github/workflows`) against the full changed-file set vs the base branch. Per-file spot
+     checks miss files CI lints and cost a full CI round-trip.
+   - Map the PR's added behavior (new files *and* new jobs/routes/exports in existing files)
+     to new or modified tests. Added behavior with no covering test is a punch-list item
+     before ship — a green suite proves existing coverage, not that new code has any.
+   - Verifying an async trigger (queue enqueue, webhook, cron kick) means observing the
+     consumer's completion evidence — a worker log line, a row delta — never just the
+     producer's 200. A silent no-op enqueue returns 200 too.
    - A page load is not verification. Deploy verification asserts deployment **identity**
      (a new deployment id/commit visible in the provider's deployment list) plus a
      response-body match — never a bare HTTP status code, which a stale or placeholder
@@ -282,3 +333,11 @@ on the tracker.
 
 Before the first create against a tracker collection in a run, fetch its schema once and
 cache the property names in run-state — never guess field names into a 400.
+
+Resume queries against a tracker are bounded: filter to the repo **and** to a work-mode or
+status subset, `LIMIT` the rows, and select a truncated notes column. An unbounded
+"all non-done rows" query can overflow the tool result.
+
+Tracker API down but a human's answer lives in a row: read it through any other surface
+the host offers (e.g. the row's page text in a browser) before punch-listing it as
+unreadable. Writes fall back per the user's instructions, or to run-state.
