@@ -29,8 +29,9 @@ re-plan** — a run that is already mapped gets picked up at its first non-done 
   (non-done) rows whose source link matches this repo — match on `org/repo` from
   `git remote get-url origin`, never the repo name alone. Bound the query: add a
   work-mode or status subset, `LIMIT` the rows, and select a truncated notes column — an
-  unbounded "all non-done rows" query can overflow the tool result. Page through every
-  match (or filter to the branch/run) before concluding no row exists. Tracker unavailable →
+  unbounded "all non-done rows" query can overflow the tool result. Filter server-side to
+  the branch/run where possible; page through matches only when not, before concluding no
+  row exists. Tracker unavailable →
   proceed on layers 1–2 and say so.
 
 ## 2. Reconcile — trust reality over records

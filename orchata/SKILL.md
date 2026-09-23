@@ -54,9 +54,10 @@ already run there. At creation:
   install per worktree (sharing only the package-manager cache). Install with an explicit
   `NODE_ENV=development` — unattended shells often export `NODE_ENV=production`, which
   silently skips devDependencies and makes the baseline look broken.
-- Append `node_modules` to `$(git rev-parse --git-common-dir)/info/exclude`. Gitignore does
-  not match a symlink, and git reads `info/exclude` from the common dir — not from the
-  per-worktree `--git-dir`.
+- Ensure `node_modules` is in `$(git rev-parse --git-common-dir)/info/exclude` — append only
+  if absent (`grep -qx node_modules <file> || echo node_modules >> <file>`); the file is
+  shared by every worktree. Gitignore does not match a symlink, and git reads `info/exclude`
+  from the common dir, not the per-worktree `--git-dir`.
 - Copy or symlink the primary checkout's gitignored env files (`.env.local` and similar).
 - If sibling worktrees share one local test database whose setup drops and re-creates it,
   give this worktree its own database URL when the repo supports an override. When it
@@ -145,7 +146,8 @@ the actual work as possible:
   adversarial reviewer of it instead — the independent check is never skipped.
 - Cap concurrent fan-out to what the host can hold. On a laptop, run review fan-outs
   serially and never alongside implementation workers. A review whose consolidated result
-  hasn't arrived: poll its run or journal in bounded waits; if it has died or stalled,
+  hasn't arrived: wait on the host's completion notification, checking its journal once
+  per bounded interval — not a tight polling loop; if it has died or stalled,
   confirm it stopped (cancel it) before re-running it at lower parallelism — never
   hand-triage its raw finder output, and never run the replacement alongside it.
 
@@ -343,8 +345,9 @@ cache the property names in run-state — never guess field names into a 400.
 
 Resume queries against a tracker are bounded: filter to the repo **and** to a work-mode or
 status subset, `LIMIT` the rows, and select a truncated notes column. An unbounded
-"all non-done rows" query can overflow the tool result. Bounded is not truncated: page
-through every match (or filter to the branch/run) before concluding a row doesn't exist.
+"all non-done rows" query can overflow the tool result. Bounded is not truncated: filter
+server-side to the branch/run so the row must be in the first page, and page through
+matches only when no such filter exists — before concluding a row doesn't exist.
 
 Tracker API down but a human's answer lives in a row: read it through any other surface
 the host offers (e.g. the row's page text in a browser) before punch-listing it as
