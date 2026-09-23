@@ -76,9 +76,10 @@ harness quirks as "some harnesses" with the portable alternative.
 
 ## Prune on review
 
-The register is a **queue, not an archive**. At each review (Y or N), remove entries that are
-addressed — a fix shipped into the skill's text, or the entry judged not-a-skill-problem. The
-shipped diff/PR is the durable record; keeping addressed entries inflates future threshold
+The register is a **queue, not an archive**. At each review (Y or N), remove entries judged
+not-a-skill-problem. Entries folded into a PR get its URL as `pr` and are removed once that PR
+merges — not at review, since a PR can still be rejected or reworked. The merged diff/PR is
+the durable record; keeping addressed entries inflates future threshold
 counts with noise. Entries deferred without a fix stay in the register.
 
 ## Source-repo resolution (for the PR)
@@ -101,4 +102,4 @@ with `gh` — all gated on the user's explicit go-ahead per the escalation contr
   (e.g. regenerate its manifest) in the same commit.
 - A lesson that also governs a sibling skill (e.g. tracker queries used by `resume`) lands
   in both, or it is missed on the sibling's path.
-- Record the PR URL on each folded entry as `pr`; prune those entries once the PR merges.
+- Record the PR URL on each folded entry as `pr` (pruned on merge — see "Prune on review").

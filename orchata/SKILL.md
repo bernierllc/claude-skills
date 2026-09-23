@@ -227,8 +227,8 @@ Fan-out runs assume workers die. Rules:
 - **A stall is not a failure.** When several workers stall (no progress) at once, that is an
   account or usage limit, not a worker defect: abort the wave, checkpoint, and stop — never
   retry into it (one run burned ~1.6M tokens retrying stalled agents for zero output). Record
-  the Workflow run id in run-state immediately after dispatch so a resume can read its
-  journal first.
+  the Workflow run id as `workflow_run_id` in run-state immediately after dispatch so a
+  resume can read its journal first (see `references/run-state.md`).
 - **Stream results:** append each verdict to `<state-dir>/fleet-results.json` as it
   arrives, not in a final batch. A supervisor cut mid-fleet loses zero completed verdicts.
 - **Propose in parallel, merge serially:** workers produce branches/patches concurrently;
