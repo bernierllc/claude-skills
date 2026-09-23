@@ -97,6 +97,15 @@ class CheckVersionBumps(unittest.TestCase):
         r = self.run_check()
         self.assertEqual(r.returncode, 0, r.stdout)
 
+    def test_moved_and_rewritten_skill_without_bump_fails(self):
+        # Rewritten past git's rename-similarity threshold: diff shows A + D, no R.
+        self.git("mv", "alpha", "moved-alpha")
+        self.write("moved-alpha/SKILL.md", skill_md("alpha", "1.0.0") + "\n".join(f"line {n}" for n in range(40)))
+        self.write("moved-alpha/references/notes.md", "entirely different\n" * 20)
+        self.commit("move and rewrite")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1, r.stdout)
+
     def test_path_with_space_is_checked(self):
         self.write("sk one/SKILL.md", skill_md("skone", "1.0.0"))
         self.commit("add spaced skill")

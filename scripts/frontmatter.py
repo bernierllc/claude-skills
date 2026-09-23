@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import re
 
-VERSION_RE = re.compile(r"^version:\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
 
-
-def frontmatter_version(text: str) -> str | None:
-    """Return the `version:` value from a SKILL.md's leading frontmatter, if any."""
+def frontmatter_field(text: str, field: str) -> str | None:
+    """Return a scalar field from a SKILL.md's leading frontmatter, if present."""
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
     if end == -1:
         return None
-    m = VERSION_RE.search(text[3:end])
+    m = re.search(rf"^{re.escape(field)}:\s*['\"]?([^'\"\n]+?)['\"]?\s*$", text[3:end], re.MULTILINE)
     return m.group(1) if m else None
+
+
+def frontmatter_version(text: str) -> str | None:
+    return frontmatter_field(text, "version")
