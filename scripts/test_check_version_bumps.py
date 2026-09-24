@@ -116,6 +116,31 @@ class CheckVersionBumps(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("sk one", r.stdout)
 
+    def test_duplicate_names_use_own_path(self):
+        # Two skills share a name (gdocs/ and document-skills/gdocs/ do on main).
+        self.write("dup-a/SKILL.md", skill_md("dup", "1.0.0"))
+        self.write("dup-b/SKILL.md", skill_md("dup", "5.0.0"))
+        self.commit("dups")
+        self.git("branch", "-f", "base")
+        self.write("dup-a/SKILL.md", skill_md("dup", "1.0.1"))
+        self.commit("bump a")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 0, r.stdout)  # not compared against dup-b's 5.0.0
+        self.write("dup-b/SKILL.md", skill_md("dup", "5.0.0") + "edited\n")
+        self.commit("edit b, no bump")
+        self.assertEqual(self.run_check().returncode, 1)
+
+    def test_name_change_in_place_without_bump_fails(self):
+        self.write("alpha/SKILL.md", skill_md("renamed-alpha", "1.0.0"))
+        self.commit("rename name field")
+        self.assertEqual(self.run_check().returncode, 1)
+
+    def test_new_dir_reusing_existing_name_is_new(self):
+        self.write("other/SKILL.md", skill_md("alpha", "0.1.0"))
+        self.commit("add")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 0, r.stdout)  # alpha/ still exists, so not a move
+
     def test_new_skill_and_non_skill_files_pass(self):
         self.write("fresh/SKILL.md", skill_md("fresh", "0.1.0"))
         self.write("README.md", "changed\n")
