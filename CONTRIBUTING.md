@@ -113,6 +113,12 @@ scripts/install-hooks.sh
 
 That sets `core.hooksPath` to `.githooks/`, which runs `scripts/check-hook-versions.py` before each commit and blocks any mismatch.
 
+CI enforces the rest on every PR (`.github/workflows/ci.yml`):
+
+- **Version bump** — `scripts/check-version-bumps.py` fails if any file inside a skill directory changed (not just `SKILL.md`: `aec` installs the whole directory and upgrades on the version) while its `SKILL.md` version did not go up. Run it locally with `python3 scripts/check-version-bumps.py origin/main`.
+- **Manifest** — after bumping, run `python3 scripts/generate-manifest.py` and commit `skills-manifest.json`; CI runs it with `--check`.
+- **Script tests** — `python3 -m unittest discover -s scripts -p 'test_*.py'` and the `playwright-test-generator/scripts` vitest suite.
+
 ### 5. Test Your Skill
 
 Before submitting:

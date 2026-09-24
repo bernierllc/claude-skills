@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-09-23T00:35:53.168480+00:00",
+  "generatedAt": "2026-09-23T16:45:50.656982+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -74,7 +74,7 @@
     },
     "orchata": {
       "version": "1.5.0",
-      "description": "Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration \u2014 \"orchestrate this\", \"/orchata\", \"plan and build this\", \"run this with subagents\", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.",
+      "description": "Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — \"orchestrate this\", \"/orchata\", \"plan and build this\", \"run this with subagents\", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.",
       "author": "Bernier LLC"
     },
     "plan-review": {
@@ -97,12 +97,12 @@
     },
     "seed-data": {
       "version": "1.0.0",
-      "description": "Use when creating, modifying, or auditing application data that must exist in databases across environments \u2014 classifies data as reference/seed/fixture, picks the right framework workflow, and enforces idempotency and environment targeting.",
+      "description": "Use when creating, modifying, or auditing application data that must exist in databases across environments — classifies data as reference/seed/fixture, picks the right framework workflow, and enforces idempotency and environment targeting.",
       "author": "Bernier LLC"
     },
     "ship": {
       "version": "1.1.4",
-      "description": "Use when work on the current branch is ready to land \u2014 \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.",
+      "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.",
       "author": "Bernier LLC"
     },
     "skill-creator": {
