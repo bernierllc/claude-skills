@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-09-24T02:45:37.175776+00:00",
+  "generatedAt": "2026-09-24T19:02:34.035585+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -81,8 +81,8 @@
       "author": "Bernier LLC"
     },
     "ship": {
-      "version": "1.1.4",
-      "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.",
+      "version": "1.2.0",
+      "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, PR (ready for review unless drafts are configured), external-tracker sync, and a five-line report.",
       "author": "Bernier LLC"
     },
     "skill-creator": {

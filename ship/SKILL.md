@@ -1,7 +1,7 @@
 ---
 name: ship
-description: 'Use when work on the current branch is ready to land — "ship this", "/ship", "wrap this up and open the PR", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, draft PR, external-tracker sync, and a five-line report.'
-version: 1.1.4
+description: 'Use when work on the current branch is ready to land — "ship this", "/ship", "wrap this up and open the PR", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, PR (ready for review unless drafts are configured), external-tracker sync, and a five-line report.'
+version: 1.2.0
 author: Bernier LLC
 ---
 
@@ -45,14 +45,17 @@ fails, stop there, report plainly, and fix or hand back — never ship red.
 - Pre-commit hooks run; never bypass them (`--no-verify` is forbidden). Hook failure
   unrelated to your files → report it, don't work around it.
 
-## 3. Push + draft PR
+## 3. Push + PR
 
 - `git push -u origin <branch>`.
-- If `gh` is available and the remote is a GitHub repo: open a **draft** PR against the
+- If `gh` is available and the remote is a GitHub repo: open a PR against the
   repo's integration branch (an existing `staging`/`develop` branch, else the default
   branch). Body: what changed, why, test evidence (suite name + pass count), and any
   follow-ups. Respect user/project rules that gate PRs into the default branch — when
   gated, push only and put "open PR" in the report's next step.
+- Open it **ready for review** by default. Open it as a draft (`gh pr create --draft`)
+  only when the user asks, or their rules say to — e.g. AEC's git workflow rule when
+  `pr_open_mode` is `draft`. Never default to drafts on your own.
 - PR already open for this branch → push updates it; skip creation.
 
 ## 4. Tracker sync
