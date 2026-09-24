@@ -4,7 +4,7 @@
 
 **Type:** Skill definitions (markdown) plus a few deterministic scripts
 **Content:** Claude Code skill definitions (SKILL.md files) organized by category
-**Categories:** Algorithmic art, artifacts/webapp builders, brand guidelines, canvas design, document formats (docx, xlsx, pdf, pptx), frontend design, internal comms, MCP builder, Slack GIF creator, webapp testing, theme factory
+**Categories:** Algorithmic art, artifacts/webapp builders, brand guidelines, canvas design, Google Workspace documents (gdocs, gslides), frontend design, internal comms, MCP builder, Slack GIF creator, webapp testing, theme factory
 **Mostly markdown.** Deterministic scripts live in `scripts/` (repo gates) and `playwright-test-generator/scripts/` (vitest). CI (`.github/workflows/ci.yml`) runs both test suites plus the version and manifest gates on every PR.
 
 ## Versioning

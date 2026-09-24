@@ -19,7 +19,7 @@
 
 ### Code Location
 ```
-/Users/mattbernier/projects/claude-skills/document-skills/gdocs/
+/Users/mattbernier/projects/claude-skills/gdocs/
 ├── scripts/
 │   ├── auth_manager.py         # OAuth (266 lines)
 │   ├── gdocs_editor.py         # Main API (254 lines)
@@ -108,7 +108,7 @@ planning discussions. (from: Q4 2025 financial planning discussion)
 ### 📋 User Authentication
 If tokens expire or for new machines:
 ```bash
-cd /Users/mattbernier/projects/claude-skills/document-skills/gdocs
+cd /Users/mattbernier/projects/claude-skills/gdocs
 python examples/test_auth.py
 ```
 
@@ -151,9 +151,9 @@ All working perfectly with:
 - `QUICKSTART.md` - Quick reference for usage
 
 ### Deep Dives
-- `/Users/mattbernier/projects/claude-skills/document-skills/gdocs/MASTER_PLAN.md`
-- `/Users/mattbernier/projects/claude-skills/document-skills/gdocs/SKILL_DESIGN.md`
-- `/Users/mattbernier/projects/claude-skills/document-skills/gdocs/CONTEXTUAL_COMMENTS_UPDATE.md`
+- `/Users/mattbernier/projects/claude-skills/gdocs/MASTER_PLAN.md`
+- `/Users/mattbernier/projects/claude-skills/gdocs/SKILL_DESIGN.md`
+- `/Users/mattbernier/projects/claude-skills/gdocs/CONTEXTUAL_COMMENTS_UPDATE.md`
 
 ### Examples
 - `real_meeting_notes.txt` - Actual customer feedback example
