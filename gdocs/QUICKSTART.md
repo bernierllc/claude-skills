@@ -9,7 +9,7 @@ The skill is now installed at: `~/.claude/skills/gdocs/`
 ### 1. OAuth Credentials Setup (~5-10 minutes)
 
 ```bash
-cd /Users/mattbernier/projects/claude-skills/document-skills/gdocs
+cd path/to/gdocs  # this skill's directory
 cat auth/oauth_setup.md
 ```
 
@@ -21,7 +21,7 @@ Follow the guide to:
 ### 2. Authenticate
 
 ```bash
-cd /Users/mattbernier/projects/claude-skills/document-skills/gdocs
+cd path/to/gdocs  # this skill's directory
 python examples/test_auth.py
 ```
 
@@ -144,14 +144,14 @@ Style:  Factual, milestone-focused
 
 ## Examples
 
-See `/Users/mattbernier/projects/claude-skills/document-skills/gdocs/`:
+See `/Users/mattbernier/projects/claude-skills/gdocs/`:
 - `real_meeting_notes.txt` - Real customer feedback example
 - `PHASE_5_PLAN.md` - Detailed synthesis documentation
 - `SKILL_DESIGN.md` - Synthesis principles
 
 ## Support
 
-Full documentation: `/Users/mattbernier/projects/claude-skills/document-skills/gdocs/README.md`
+Full documentation: `/Users/mattbernier/projects/claude-skills/gdocs/README.md`
 
 ---
 

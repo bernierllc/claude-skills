@@ -13,7 +13,7 @@ This repository contains example skills that demonstrate what's possible with Cl
 
 Each skill is self-contained in its own directory with a `SKILL.md` file containing the instructions and metadata that Claude uses. Browse through these examples to get inspiration for your own skills or to understand different patterns and approaches.
 
-The example skills in this repo are open source (Apache 2.0). We've also included the document creation & editing skills that power [Claude's document capabilities](https://www.anthropic.com/news/create-files) under the hood in the [`document-skills/`](./document-skills/) folder. These are source-available, not open source, but we wanted to share these with developers as a reference for more complex skills that are actively used in a production AI application.
+The example skills in this repo are open source (Apache 2.0). Anthropic's document skills (docx, pdf, pptx, xlsx) are not carried here: they ship with Claude, so use those built-in versions.
 
 **Note:** These are reference examples for inspiration and learning. They showcase general-purpose capabilities rather than organization-specific workflows or sensitive content.
 
@@ -61,16 +61,10 @@ This repository includes a diverse collection of example skills demonstrating di
 
 # Document Skills
 
-The `document-skills/` subdirectory contains skills for working with various document file formats. These skills demonstrate advanced patterns for working with complex file formats and binary data:
+Google Workspace document skills. For Word, PDF, PowerPoint, and Excel files, use the docx/pdf/pptx/xlsx skills that ship with Claude.
 
-- 🅰️ **docx** - Create, edit, and analyze Word documents with support for tracked changes, comments, formatting preservation, and text extraction
 - ![Bernier LLC](assets/bernier-emoji-16.png) **gdocs** - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
 - ![Bernier LLC](assets/bernier-emoji-16.png) **gslides** - Complete Google Slides solution with 6 phases: Foundation, Creation, Visual Design (WCAG compliance, brand guidelines), Data Visualization (11 chart types), AI-Powered Content Generation (FREE - no API key!), and Quality Assurance. Transform raw notes into beautiful, brand-compliant presentations in seconds
-- 🅰️ **pdf** - Comprehensive PDF manipulation toolkit for extracting text and tables, creating new PDFs, merging/splitting documents, and handling forms
-- 🅰️ **pptx** - Create, edit, and analyze PowerPoint presentations with support for layouts, templates, charts, and automated slide generation
-- 🅰️ **xlsx** - Create, edit, and analyze Excel spreadsheets with support for formulas, formatting, data analysis, and visualization
-
-**Important Disclaimer:** These document skills are point-in-time snapshots and are not actively maintained or updated. Versions of these skills ship pre-included with Claude. They are primarily intended as reference examples to illustrate how Anthropic approaches developing more complex skills that work with binary file formats and document structures.
 
 # Try in Claude Code, Claude.ai, and the API
 
@@ -92,7 +86,7 @@ Alternatively, directly install either Plugin via:
 /plugin install example-skills@anthropic-agent-skills
 ```
 
-After installing the plugin, you can use the skill by just mentioning it. For instance, if you install the `document-skills` plugin from the marketplace, you can ask Claude Code to do something like: "Use the PDF skill to extract the form fields from path/to/some-file.pdf"
+After installing the plugin, you can use the skill by just mentioning it. For instance, if you install the `document-skills` plugin from the marketplace, you can ask Claude Code to do something like: "Use the gdocs skill to add these meeting notes to my project doc"
 
 ## Claude.ai
 

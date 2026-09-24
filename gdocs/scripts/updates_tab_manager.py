@@ -131,6 +131,9 @@ class UpdatesTabManager:
         if not text:
             return None
 
+        # Strip markdown emphasis first: fuzzy parsing skips a "2025**" token,
+        # silently dropping the year and defaulting to the current one.
+        text = re.sub(r"[*_`]", " ", text)
         try:
             # Use dateutil parser for flexible date parsing
             return date_parser.parse(text, fuzzy=True)

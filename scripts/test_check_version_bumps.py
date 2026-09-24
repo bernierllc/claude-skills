@@ -117,7 +117,7 @@ class CheckVersionBumps(unittest.TestCase):
         self.assertIn("sk one", r.stdout)
 
     def test_duplicate_names_use_own_path(self):
-        # Two skills share a name (gdocs/ and document-skills/gdocs/ do on main).
+        # Two skills share a name (as gdocs/ and document-skills/gdocs/ once did).
         self.write("dup-a/SKILL.md", skill_md("dup", "1.0.0"))
         self.write("dup-b/SKILL.md", skill_md("dup", "5.0.0"))
         self.commit("dups")

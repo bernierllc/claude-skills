@@ -11,17 +11,13 @@
   "plugins": [
     {
       "name": "document-skills",
-      "description": "Document processing suite including Excel, Word, PowerPoint, PDF, Google Docs, and Google Slides",
+      "description": "Google Workspace document skills: Google Docs and Google Slides (Word, PDF, PowerPoint and Excel skills ship with Claude)",
       "source": "./",
       "strict": false,
       "category": "documents",
       "skills": [
-        "./document-skills/docx",
-        "./document-skills/gdocs",
-        "./document-skills/gslides",
-        "./document-skills/pdf",
-        "./document-skills/pptx",
-        "./document-skills/xlsx"
+        "./gdocs",
+        "./document-skills/gslides"
       ]
     },
     {

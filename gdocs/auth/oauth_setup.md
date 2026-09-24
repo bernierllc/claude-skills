@@ -59,7 +59,7 @@ This guide will walk you through setting up OAuth 2.0 authentication for the Goo
 7. Rename the downloaded file to `credentials.json`
 8. Move `credentials.json` to the `auth/` directory:
    ```bash
-   mv ~/Downloads/credentials.json document-skills/gdocs/auth/credentials.json
+   mv ~/Downloads/credentials.json gdocs/auth/credentials.json
    ```
 
 ## Step 5: Install Python Dependencies
@@ -73,7 +73,7 @@ pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-pyt
 Run the test script to verify everything is set up correctly:
 
 ```bash
-cd document-skills/gdocs
+cd gdocs
 python examples/test_auth.py
 ```
 
