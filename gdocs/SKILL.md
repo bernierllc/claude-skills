@@ -1,7 +1,7 @@
 ---
 name: gdocs
 description: "Writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents, structure-aware insertion (tables, lists, paragraphs), and automatic style matching."
-version: 1.0.0
+version: 1.1.0
 author: Bernier LLC
 ---
 

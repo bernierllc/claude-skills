@@ -17,7 +17,7 @@
       "category": "documents",
       "skills": [
         "./document-skills/docx",
-        "./document-skills/gdocs",
+        "./gdocs",
         "./document-skills/gslides",
         "./document-skills/pdf",
         "./document-skills/pptx",

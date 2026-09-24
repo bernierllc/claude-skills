@@ -36,13 +36,25 @@ def parse_frontmatter(filepath: Path) -> dict | None:
     return frontmatter
 
 
+class DuplicateSkillName(Exception):
+    pass
+
+
 def build_skills(repo_root: Path) -> dict:
     """Derive the manifest's `skills` block from every SKILL.md on disk."""
     skills = {}
+    paths: dict[str, Path] = {}
 
     for skill_md in sorted(repo_root.rglob("SKILL.md")):
         fm = parse_frontmatter(skill_md)
         if fm and "name" in fm:
+            # The manifest (and aec) key on name: a duplicate silently shadows one skill.
+            if fm["name"] in paths:
+                raise DuplicateSkillName(
+                    f"two skills are named {fm['name']!r}: "
+                    f"{paths[fm['name']].relative_to(repo_root)} and {skill_md.relative_to(repo_root)}"
+                )
+            paths[fm["name"]] = skill_md
             entry = {
                 "version": fm.get("version", "0.0.0"),
                 "description": fm.get("description", ""),
@@ -80,6 +92,14 @@ def check(repo_root: Path, output_path: Path) -> int:
 
 
 def main() -> int:
+    try:
+        return run()
+    except DuplicateSkillName as e:
+        print(f"error: {e}. Rename or remove one; `name:` must be unique.")
+        return 1
+
+
+def run() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     output_path = repo_root / "skills-manifest.json"
 
