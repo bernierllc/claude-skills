@@ -9,7 +9,7 @@ The skill is now installed at: `~/.claude/skills/gdocs/`
 ### 1. OAuth Credentials Setup (~5-10 minutes)
 
 ```bash
-cd /Users/mattbernier/projects/claude-skills/gdocs
+cd path/to/gdocs  # this skill's directory
 cat auth/oauth_setup.md
 ```
 
@@ -21,7 +21,7 @@ Follow the guide to:
 ### 2. Authenticate
 
 ```bash
-cd /Users/mattbernier/projects/claude-skills/gdocs
+cd path/to/gdocs  # this skill's directory
 python examples/test_auth.py
 ```
 
