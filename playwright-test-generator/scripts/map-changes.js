@@ -5,6 +5,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { readManifestFileSync } from './lib/manifest.js';
 import { resolveRepoRoot } from './lib/repo.js';
@@ -71,7 +72,11 @@ export async function main(args, projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+// Compare real paths: import.meta.url is already symlink-resolved, argv[1] is
+// not, so a hook invoked through a symlinked scripts/ directory used to see
+// isMain=false and print nothing — no tags, no gate, no message.
+const isMain =
+  process.argv[1] && realpathSync(resolve(process.argv[1])) === resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`map-changes.js - Map changed files to affected test tags
