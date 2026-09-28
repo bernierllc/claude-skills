@@ -10,6 +10,9 @@ text is what the agent sees.
    put `sync-base: <reason>` in the command (e.g. a trailing `# sync-base: ...`).
 2. PRs open ready for review, never as drafts (`gh pr create --draft`,
    `gh pr ready --undo`).
+3. In a fork with no `gh repo set-default`, `gh pr create` without `-R/--repo`
+   targets the UPSTREAM repo (a claude-skills PR landed on anthropics/skills
+   this way, 2026-09-28). Blocked until the target is explicit.
 
 Every tool call passes through here, so non-Bash input exits at once.
 """
@@ -116,11 +119,42 @@ def draft_violation(cmd):
     return False
 
 
+def creates_pr_without_repo(cmd):
+    for argv in segments(cmd):
+        if argv[:3] == ["gh", "pr", "create"] and not any(
+                a in ("-R", "--repo") or a.startswith("--repo=") for a in argv[3:]):
+            return True
+    return False
+
+
+def unpinned_fork(cwd):
+    """Return 'owner/repo (fork of parent)' when cwd is a fork with no gh default repo."""
+    try:
+        if subprocess.run(["gh", "repo", "set-default", "--view"], cwd=cwd,
+                          capture_output=True, text=True, timeout=8).stdout.strip():
+            return None
+        out = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner,isFork,parent"],
+                             cwd=cwd, capture_output=True, text=True, timeout=8)
+        r = json.loads(out.stdout) if out.returncode == 0 else {}
+        if r.get("isFork") and r.get("parent"):
+            p = r["parent"]
+            return f"{r['nameWithOwner']} (fork of {p['owner']['login']}/{p['name']})"
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return None
+    return None
+
+
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
     if draft_violation(cmd):
         return ("Blocked: PRs open ready for review, never as drafts. Drop --draft / --undo. "
                 "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`.")
+    if creates_pr_without_repo(cmd):
+        fork = unpinned_fork(cwd)
+        if fork:
+            return (f"Blocked: {fork} has no `gh repo set-default`, so `gh pr create` would open the "
+                    "PR on the upstream repo. Pass `-R <owner>/<repo>` or run "
+                    "`gh repo set-default <owner>/<repo>` first.")
     if "sync-base:" in cmd:
         return None
     for d, sub, refs in sync_calls(cmd, cwd):
