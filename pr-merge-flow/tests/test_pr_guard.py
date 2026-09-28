@@ -38,4 +38,19 @@ assert not g.draft_violation("gh pr create --title 'no draft here'")
 assert g.creates_pr_without_repo("git push && gh pr create --title x")
 assert not g.creates_pr_without_repo("gh pr create -R me/r --title x")
 assert not g.creates_pr_without_repo("gh pr create --repo=me/r")
+# Codex P2s on #37: quoting, continuation, other ref spellings, gh aliases/inherited -R.
+assert calls('git merge -m "sync; base" origin/main') == [("/r", "merge", ["origin/main"])]
+assert calls("git merge \\\n  origin/staging") == [("/r", "merge", ["origin/staging"])]
+assert calls("git merge origin/staging # sync; not a command") == [("/r", "merge", ["origin/staging"])]
+assert calls('git commit -m "" && git merge origin/staging') == [("/r", "merge", ["origin/staging"])]
+assert calls("if true; then git -C wt rebase origin/main; fi") == [("/r/wt", "rebase", ["origin/main"])]
+for ref in ["refs/heads/main", "refs/remotes/upstream/main", "company/main", "refs/remotes/origin/main"]:
+    assert g.names_base([ref], "main"), ref
+assert not g.names_base(["refs/heads/feat/main-fix", "a/b/main"], "main")
+assert g.draft_violation("gh pr create \\\n  --draft --title x")
+assert g.draft_violation("gh pr new --draft")
+assert g.draft_violation("gh -R owner/repo pr create --draft")
+assert not g.draft_violation('gh pr create --title "no --draft; here"')
+assert not g.creates_pr_without_repo("gh -R me/r pr create --title x")
+assert g.creates_pr_without_repo("gh pr new --title x")
 print("ok")
