@@ -30,6 +30,7 @@
         "./commit",
         "./mcp-builder",
         "./playwright-test-generator",
+        "./pr-merge-flow",
         "./skill-creator",
         "./template-skill",
         "./webapp-testing"
