@@ -7,7 +7,7 @@
 import { resolve } from 'node:path';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { isEntryPoint } from './lib/repo.js';
 
 /** Match a branch name against a pattern (string or array). */
 export function matchBranch(branch, pattern) {
@@ -58,7 +58,7 @@ export async function selectTier(branch, projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`select-tier.js - Select test execution tier based on target branch

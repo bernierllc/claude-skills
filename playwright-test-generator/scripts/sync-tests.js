@@ -8,7 +8,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, relative, basename, join, sep } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
 import { acquireLockSync, loadManifest, saveManifest, manifestDirFor } from './lib/manifest.js';
-import { fileURLToPath } from 'node:url';
+import { isEntryPoint } from './lib/repo.js';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- outcome. *Expected: type*
 // ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30).
@@ -317,7 +317,7 @@ export function resolveDocArg(argv, readStdin) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   const docArg = process.argv.includes('--help')
     ? null

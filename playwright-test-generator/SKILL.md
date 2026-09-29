@@ -731,6 +731,17 @@ Read `references/hook-templates.md` for the complete hook configuration. Summary
 
 Tier configuration is fully user-configurable in `manifest/config.json`.
 
+The gate enforces that table rather than describing it:
+
+- **Depth** comes from `tiers.gate.depths`, as a **positive allowlist**: a test must carry a gate depth AND an affected suite tag. Deriving exclusions from other tiers' depths leaked anything no tier declared — one consumer had `@error` and `@edge` items running at commit time — so unrecognised depths are out by default.
+- **Browsers** come from `tiers.gate.browsers`, so adding a browser to the config changes the gate rather than silently affecting pre-push alone.
+- **The cap** is compared against the number of tests Playwright actually resolves (`--list`), not the number of tags. Tags are suite-level: a single changed file can pull in a whole suite, so a tag count is not a test count and a cap compared against one never fires.
+- **Playwright owns the server; the hook does not start one.** `webServer` already starts the app when down and passes the right env, and reimplementing that in the hook produced six Critical review findings in two rounds — process groups, EXIT traps, env parity — none of it the hook's job. The one check Playwright cannot make is kept: a checkout whose `node_modules` is a symlink can never serve the app (Turbopack refuses it), so the gate skips with a one-line reason instead of a wall of connection failures.
+- **Set `reuseExistingServer: false` on the verification config, and take the port from `VERIFICATION_PORT`.** With reuse on, Playwright adopts whatever is listening — including a dev server started with a different env, which for a suite pointed at a mock API means silently reaching the real one; an unauthenticated probe cannot tell the two apart, so do not try. With reuse off, a busy port ends the run before a single test, and on a shared machine the default port is usually busy. So the hook picks the first free port in a small range and exports `VERIFICATION_PORT`; the config reads it for `baseURL`, `webServer.port` and the dev command. Any fixed port a globalSetup binds (a mock API, say) needs the same treatment — the template exports `MOCK_SENDGRID_PORT` as the worked example; rename to taste. No free port is an environmental skip with a reason, never a block.
+- **Suite tags need a terminator in the grep.** `@onboarding` also matches `@onboarding-domains`; one consumer selected 195 tests for a one-file change instead of 38, tripped the cap, and skipped the gate for the tests that were affected. The template follows each tag and depth with `(?:\s|$)`.
+- **The gate runs a dev server, never a build.** If the verification config builds and serves a production bundle for the batched runner (paying the build once per suite run), the hook exports `VERIFICATION_SERVER=dev` and the config swaps the command for `next dev` on the chosen port: a `next build` per commit takes minutes and writes into the same `.next` a running batched server may be serving from. `next dev` writes under `.next/dev` and its first-hit compile is bounded by the gate's own `--timeout`.
+- **The gate never blocks a commit for an environmental reason.** No server, no dependencies, an empty selection at gate depth, or a selection over the cap all skip with a reason and exit 0. Only a genuine test failure blocks.
+
 ## Cross-Skill Integration
 
 ### When invoked by verification-writer
@@ -799,3 +810,25 @@ Browser-verification findings feed back to verification-writer, which updates do
 - `check-versions.js` reports `stamp-missing` on a verification doc — tell the user to re-run verification-writer so it stamps the doc; do not invent a `source_generated_by` value
 - `manifest/items/*.json` or `manifest/import-index/*.json` contain absolute paths (including worktree paths like `.claude/worktrees/...`) — these paths break on any machine other than where they were written; rebuild the manifest with project-relative paths
 - Multiple parallel agents were used to generate tests and their work has been merged — run `verify-pipeline.js` before declaring done; parallel worktree merges silently discard all-but-last for shared files
+
+## Changelog
+
+### 4.0.0
+
+Combines the per-doc manifest layout (was PR #39) with the running-app commit gate (was PR #32), so they land in one release.
+
+**Breaking: on-disk manifest layout 1.0 → 2.0.**
+- `manifest/items.json` and `manifest/import-index.json` are split into `manifest/items/<doc-slug>.json` and `manifest/import-index/<page>.json`, each `"version": "2.0"`. Two PRs touching different verification docs now touch different files, so they no longer conflict on a repo-wide `-merge` file.
+- `pending-generation.json` is gone. An item is queued when its entry carries `pending_generation: true`.
+- Every script loads and saves through `scripts/lib/manifest.js`, which migrates older layouts on first load. The migration is ordered by `LAYOUT_STEPS`, lossless (it refuses rather than drop data), and idempotent. It also folds a layout-1 file that an old branch brings back, and it refuses to read a newer layout or to downgrade.
+- Consumers: commit the new directories, `git rm` the old aggregate files, and change `.gitattributes` `-merge` lines to the per-doc globs (see the "Upgrading from 3.x" paragraph under Execution Model).
+
+**Commit gate (`templates/hooks/pre-commit.sh`).** See "Tiered Test Execution" for details.
+- Selects tests by `tiers.gate.depths` as a positive allowlist and by `tiers.gate.browsers`.
+- Terminates each tag in the grep, so `@onboarding` no longer also matches `@onboarding-domains`.
+- Counts resolved tests with `--list` rather than counting tags.
+- Picks a free port and exports `VERIFICATION_PORT` and `VERIFICATION_SERVER=dev`. Playwright's `webServer` starts the app.
+- Never blocks a commit for an environmental reason. Only a genuine test failure blocks.
+- Has a bash harness in `templates/hooks/__tests__/pre-commit.test.sh`.
+
+**CLI entry points resolve symlinks.** Every script compares real paths through `isEntryPoint()` in `lib/repo.js`. Before this, a script run through a symlinked `scripts/` directory exited silently.

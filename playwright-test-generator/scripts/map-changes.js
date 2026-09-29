@@ -7,9 +7,8 @@
 import { execSync } from 'node:child_process';
 import { basename, resolve } from 'node:path';
 import { loadManifest, manifestDirFor } from './lib/manifest.js';
-import { resolveRepoRoot } from './lib/repo.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
-import { fileURLToPath } from 'node:url';
 
 /** Map file list to affected page tags using an import index.
  * `files` (from `git diff --name-only`) and import-index keys are both
@@ -74,7 +73,7 @@ export async function main(args, projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`map-changes.js - Map changed files to affected test tags

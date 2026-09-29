@@ -6,8 +6,7 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolveRepoRoot } from './lib/repo.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
 import {
   loadManifest, manifestDirFor, pendingIds, LEGACY_MANIFEST_FILES, MANIFEST_VERSION,
@@ -272,7 +271,7 @@ export function formatChecks(checks, maxSubjects = 10) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`verify-pipeline.js - Pipeline health diagnostic

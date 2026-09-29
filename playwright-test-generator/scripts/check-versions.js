@@ -12,8 +12,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolveRepoRoot } from './lib/repo.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { acquireLockSync, migrateManifest, manifestDirFor } from './lib/manifest.js';
 
 const VERIFICATION_ROOT = join('docs', 'verification');
@@ -195,7 +194,7 @@ export function checkVersions(projectDir, repoRoot = projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`check-versions.js - Report staleness across verification doc -> metadata -> spec

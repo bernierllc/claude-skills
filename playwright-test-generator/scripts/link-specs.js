@@ -20,7 +20,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import {
   acquireLockSync, releaseLockSync, loadManifest, saveManifest, manifestDirFor, pendingIds,
 } from './lib/manifest.js';
-import { fileURLToPath } from 'node:url';
+import { isEntryPoint } from './lib/repo.js';
 
 const SPEC_DIR = join('tests', 'verification-playwright');
 
@@ -119,7 +119,7 @@ export function linkSpecs(projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`link-specs.js - Link generated specs back into manifest/items/*.json

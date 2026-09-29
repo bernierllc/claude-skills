@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveRepoRoot } from '../../lib/repo.js';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { realpathSync, symlinkSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -30,4 +30,28 @@ describe('resolveRepoRoot', () => {
     const bogus = join(tempDir, 'does-not-exist');
     expect(resolveRepoRoot(bogus)).toBe(bogus);
   });
+});
+
+describe('isEntryPoint', () => {
+  let tempDir;
+  const scriptsDir = realpathSync(join(import.meta.dirname, '..', '..'));
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'entry-point-'));
+  });
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  // Consumers vendor scripts/ as a symlink. Every CLI used to compare argv[1]
+  // (unresolved) with import.meta.url (resolved), see false, and exit silently.
+  it.each(['map-changes', 'sync-tests', 'link-specs', 'select-tier', 'check-versions', 'verify-pipeline'])(
+    '%s.js runs its CLI when invoked through a symlinked scripts/ directory',
+    (name) => {
+      const link = join(tempDir, 'scripts');
+      symlinkSync(scriptsDir, link);
+      const out = execSync(`node ${join(link, `${name}.js`)} --help`, { encoding: 'utf8' });
+      expect(out).toContain(`${name}.js`);
+    },
+  );
 });

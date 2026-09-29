@@ -14,6 +14,9 @@
  */
 
 import { execSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Resolve the git repository root for a given project directory.
@@ -30,5 +33,21 @@ export function resolveRepoRoot(projectDir) {
     }).trim() || projectDir;
   } catch {
     return projectDir;
+  }
+}
+
+/**
+ * True when the module at `metaUrl` is the CLI entry point. Compares real
+ * paths: import.meta.url is already symlink-resolved and argv[1] is not, so a
+ * script run through a symlinked scripts/ directory used to see false and
+ * exit silently — no tags, no gate, no message.
+ * @param {string} metaUrl - the caller's import.meta.url
+ */
+export function isEntryPoint(metaUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(resolve(process.argv[1])) === fileURLToPath(metaUrl);
+  } catch {
+    return false;
   }
 }
