@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Only workflow actions. npm/pip manifests live inside skill directories, and
+  # any change there must bump the skill's SKILL.md version (check-version-bumps),
+  # so an unattended Dependabot PR against them could never pass CI.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
