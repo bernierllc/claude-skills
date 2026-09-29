@@ -227,6 +227,8 @@ function readItemDocs(dir) {
     if (!doc?.source_doc || typeof doc.items !== 'object') {
       throw new Error(`Manifest file ${ITEMS_DIR}/${f} has no source_doc/items — not a per-doc item file`);
     }
+    // Two shards for one doc (a stale copy, a rename) would silently drop one.
+    if (docs.has(doc.source_doc)) throw new Error(`${ITEMS_DIR}/${docs.get(doc.source_doc).file} and ${ITEMS_DIR}/${f} both declare source_doc ${doc.source_doc} — delete the stale one`);
     docs.set(doc.source_doc, { file: f, doc });
   }
   return docs;
@@ -355,24 +357,29 @@ function migrateV1ToV2(dir) {
   for (const [rel, data] of writes) {
     const path = join(dir, rel);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(`${path}.tmp`, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    writeFileSync(`${path}${MIGRATE_TMP}`, JSON.stringify(data, null, 2) + '\n', 'utf8');
   }
   const lost = verifyV1Carried(dir, writes, v1Entries, v1Map, report);
   if (lost.length) {
-    for (const [rel] of writes) { try { unlinkSync(join(dir, `${rel}.tmp`)); } catch { /* gone */ } }
+    for (const [rel] of writes) { try { unlinkSync(join(dir, `${rel}${MIGRATE_TMP}`)); } catch { /* gone */ } }
     throw new Error(`migration would lose data, refusing: ${lost.slice(0, 10).join('; ')}`);
   }
-  for (const [rel] of writes) renameSync(join(dir, `${rel}.tmp`), join(dir, rel));
+  for (const [rel] of writes) renameSync(join(dir, `${rel}${MIGRATE_TMP}`), join(dir, rel));
   for (const f of LEGACY_MANIFEST_FILES) { try { unlinkSync(join(dir, f)); } catch { /* not present */ } }
 
   report.items = Object.values(v1Entries).length;
   return report;
 }
 
+// Migration runs from read-only callers without the lock, so two first loads
+// can race; a per-process tmp name keeps one from renaming the other's file
+// away. Both publish identical content from the same legacy input.
+const MIGRATE_TMP = `.${process.pid}.tmp`;
+
 /** Read the .tmp files back and check every taken layout-1 fact survived. */
 function verifyV1Carried(dir, writes, v1Entries, v1Map, report) {
   const lost = [];
-  const written = new Map(writes.map(([rel]) => [rel, JSON.parse(readFileSync(join(dir, `${rel}.tmp`), 'utf8'))]));
+  const written = new Map(writes.map(([rel]) => [rel, JSON.parse(readFileSync(join(dir, `${rel}${MIGRATE_TMP}`), 'utf8'))]));
   const docs = new Map([...written.values()].filter((d) => d.source_doc).map((d) => [d.source_doc, d]));
   const pages = new Map([...written.values()].filter((p) => p.page).map((p) => [p.page, p]));
   const taken = new Set(report.docsTaken);

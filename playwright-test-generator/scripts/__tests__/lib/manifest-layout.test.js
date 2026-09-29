@@ -189,6 +189,12 @@ describe('per-doc files', () => {
     expect(() => loadManifest(dir)).toThrow(/collision.*A-01/);
   });
 
+  it('refuses two shards that declare the same source_doc', () => {
+    writeItems(dir, { 'A-01': { source_doc: 'docs/verification/a.md' } });
+    writeFileSync(join(dir, 'items', 'a-copy.json'), readFileSync(join(dir, 'items', 'a.json')));
+    expect(() => loadManifest(dir)).toThrow(/a-copy\.json and items\/a\.json both declare source_doc/);
+  });
+
   it('saves only the doc files whose items changed', () => {
     writeItems(dir, {
       'A-01': { source_doc: 'docs/verification/a.md', content_hash: 'h' },

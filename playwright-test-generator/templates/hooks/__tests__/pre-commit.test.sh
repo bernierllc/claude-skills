@@ -63,7 +63,14 @@ case ":${STUB_BUSY_PORTS:-}:" in
 esac
 EOF
 
-  chmod +x "$dir/npx" "$dir/lsof"
+  # xargs: real one, unless STUB_MAP_FAIL makes map-changes.js "throw".
+  cat > "$dir/xargs" <<'EOF2'
+#!/usr/bin/env bash
+if [ -n "${STUB_MAP_FAIL:-}" ]; then echo "manifest migration refused: stub" >&2; exit 1; fi
+exec /usr/bin/xargs "$@"
+EOF2
+
+  chmod +x "$dir/npx" "$dir/lsof" "$dir/xargs"
 }
 
 # $1 name, $2 expected exit, $3 --list output,
@@ -148,6 +155,7 @@ if ! git -C "$REPO_ROOT" diff --staged --name-only \
   exit 1
 fi
 
+check "map-changes failure is loud" 0 "Total: 3 tests in 1 file" "map-changes.js failed" STUB_MAP_FAIL=1
 check "empty selection at depth"   0 "" "no gate-depth tests"
 check "over the cap, no tty"       0 "Total: 9999 tests in 1 file" "over the"
 check "normal run"                 0 "Total: 3 tests in 1 file" "Running 3"

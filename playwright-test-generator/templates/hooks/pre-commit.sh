@@ -25,7 +25,21 @@ if [ -z "$staged_files" ]; then
 fi
 
 # Map to affected test tags
-affected_tags=$(echo "$staged_files" | xargs node scripts/verification-playwright/map-changes.js 2>/dev/null || echo "")
+# A map-changes failure is not "no tags": since 4.0.0 it loads the manifest
+# through the loader, which refuses a lossy layout migration by throwing.
+# Swallowing that turned the gate off on every commit with no message. Say so
+# (never block — the manifest is not this commit's fault) and name the fix.
+map_err=$(mktemp "${TMPDIR:-/tmp}/map-changes-err.XXXXXX")
+map_exit=0
+affected_tags=$(echo "$staged_files" | xargs node scripts/verification-playwright/map-changes.js 2>"$map_err") || map_exit=$?
+if [ "$map_exit" -ne 0 ]; then
+  echo "verification gate: skipped — map-changes.js failed (exit $map_exit):"
+  sed 's/^/  /' "$map_err" | head -5
+  echo "  Run: node scripts/verification-playwright/verify-pipeline.js"
+  rm -f "$map_err"
+  exit 0
+fi
+rm -f "$map_err"
 if [ -z "$affected_tags" ]; then
   exit 0
 fi
@@ -116,7 +130,12 @@ fi
 #    so it gets the same treatment (MOCK_SENDGRID_PORT).
 pick_port() {
   local from="$1" to="$2" p
-  command -v lsof >/dev/null 2>&1 || { echo "$from"; return; }
+  # No lsof (slim Linux images): probe with node, which the hook needs anyway.
+  # Guessing "$from" here meant a busy port and a blocked commit.
+  command -v lsof >/dev/null 2>&1 || {
+    node -e 'const net=require("net");const[a,b]=process.argv.slice(1).map(Number);(function t(p){if(p>b)return;const s=net.createServer().once("error",()=>t(p+1)).once("listening",()=>s.close(()=>console.log(p))).listen(p)})(a)' "$from" "$to" 2>/dev/null || true
+    return
+  }
   for p in $(seq "$from" "$to"); do
     lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 || { echo "$p"; return; }
   done

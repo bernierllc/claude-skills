@@ -820,15 +820,16 @@ Combines the per-doc manifest layout (was PR #39) with the running-app commit ga
 **Breaking: on-disk manifest layout 1.0 → 2.0.**
 - `manifest/items.json` and `manifest/import-index.json` are split into `manifest/items/<doc-slug>.json` and `manifest/import-index/<page>.json`, each `"version": "2.0"`. Two PRs touching different verification docs now touch different files, so they no longer conflict on a repo-wide `-merge` file.
 - `pending-generation.json` is gone. An item is queued when its entry carries `pending_generation: true`.
-- Every script loads and saves through `scripts/lib/manifest.js`, which migrates older layouts on first load. The migration is ordered by `LAYOUT_STEPS`, lossless (it refuses rather than drop data), and idempotent. It also folds a layout-1 file that an old branch brings back, and it refuses to read a newer layout or to downgrade.
+- Every script loads and saves through `scripts/lib/manifest.js`, which migrates older layouts on first load. The migration is ordered by `LAYOUT_STEPS`, lossless (it refuses rather than drop data), and idempotent. It also folds a layout-1 file that an old branch brings back, and it refuses to read a newer layout or to downgrade. Two item files that declare the same `source_doc` are refused, and concurrent first loads use per-process temp files.
 - Consumers: commit the new directories, `git rm` the old aggregate files, and change `.gitattributes` `-merge` lines to the per-doc globs (see the "Upgrading from 3.x" paragraph under Execution Model).
 
 **Commit gate (`templates/hooks/pre-commit.sh`).** See "Tiered Test Execution" for details.
 - Selects tests by `tiers.gate.depths` as a positive allowlist and by `tiers.gate.browsers`.
 - Terminates each tag in the grep, so `@onboarding` no longer also matches `@onboarding-domains`.
 - Counts resolved tests with `--list` rather than counting tags.
-- Picks a free port and exports `VERIFICATION_PORT` and `VERIFICATION_SERVER=dev`. Playwright's `webServer` starts the app.
+- Picks a free port and exports `VERIFICATION_PORT` and `VERIFICATION_SERVER=dev`. It uses `lsof` when present and falls back to a node `net` probe, never to guessing. Playwright's `webServer` starts the app.
 - Never blocks a commit for an environmental reason. Only a genuine test failure blocks.
+- Reports a `map-changes.js` failure (for example, a refused manifest migration) and skips, rather than reading it as "no affected tags" and going silent.
 - Has a bash harness in `templates/hooks/__tests__/pre-commit.test.sh`.
 
 **CLI entry points resolve symlinks.** Every script compares real paths through `isEntryPoint()` in `lib/repo.js`. Before this, a script run through a symlinked `scripts/` directory exited silently.

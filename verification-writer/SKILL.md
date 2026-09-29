@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.4.4
+version: 3.4.5
 author: Bernier LLC
 ---
 
@@ -599,7 +599,7 @@ When this flag is passed:
 2. For each doc with a stamp older than the current skill version, look up the migration table row(s) for that version gap.
 3. Apply ONLY the ID renames listed in those rows. For each renamed item:
    - Update the verification doc item
-   - Update every downstream reference: playwright-test-generator's `manifest/items.json`, test file `@tag` annotations, `@begin:ID` / `@end:ID` markers, findings reports, run logs
+   - Update every downstream reference: playwright-test-generator's `manifest/items/<doc-slug>.json`, test file `@tag` annotations, `@begin:ID` / `@end:ID` markers, findings reports, run logs
 4. Bump each touched doc's `version` (patch — structural re-sync, no content change).
 5. Re-stamp `generated_by` with the current skill version.
 6. Report every ID that changed with old → new mapping, and every downstream file touched.
