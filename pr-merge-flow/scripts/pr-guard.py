@@ -32,15 +32,99 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
                     "--strategy-option", "--exec", "-x", "--cleanup"}
 
 
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
+OPERATORS = set(";&|\n()")
+
+
+def strip_comments_and_heredocs(cmd):
+    """Drop `#` comments and heredoc bodies, keeping the newlines that end them.
+
+    shlex gets both wrong: its comments swallow the newline (and start mid-word),
+    and it parses heredoc bodies as shell, so one stray quote hides every later
+    command. Bash rules: `#` starts a comment only at the start of an unquoted word.
+
+    ponytail: `$(...)`/backtick nesting isn't tracked; a `#` or `<<` inside one is
+    treated as top-level. Worst case is a missed or extra block, never a crash.
+    """
+    out, i, n, quote, pending = [], 0, len(cmd), None, []
+    while i < n:
+        c = cmd[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 1
+            elif c == quote:
+                quote = None
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+            i += 1
+        elif c == "#" and (not out or out[-1][-1] in " \t\r\n;&|()"):
+            while i < n and cmd[i] != "\n":
+                i += 1
+        elif cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            m = re.match(r"""<<(-?)[ \t]*((?:\\.|'[^']*'|"[^"]*"|[^\s;&|()<>'"\\])+)""", cmd[i:])
+            if m:
+                try:  # the delimiter is the word after quote removal: <<'E'OF and <<E\OF end at EOF
+                    delim = "".join(shlex.split(m.group(2)))
+                except ValueError:
+                    delim = m.group(2)
+                pending.append((delim, bool(m.group(1))))
+                out.append(m.group(0))
+                i += m.end()
+            else:
+                out.append(c)
+                i += 1
+        elif c == "\n" and pending:
+            out.append(c)
+            lines, j = cmd[i + 1:].split("\n"), i + 1
+            for delim, dash in pending:
+                for k, line in enumerate(lines):
+                    if (line.lstrip("\t") if dash else line) == delim:
+                        j += sum(len(x) + 1 for x in lines[:k + 1])
+                        lines = lines[k + 1:]
+                        break
+                else:  # no terminator: keep the rest, so nothing after it goes unchecked
+                    break
+            pending = []
+            i = min(j, n)
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def segments(cmd):
-    """Split a shell command into argv lists, one per simple command."""
-    for part in re.split(r"&&|\|\||;|\n|\||\bdo\b|\bthen\b", cmd):
-        try:
-            argv = shlex.split(part, comments=True)
-        except ValueError:
-            argv = part.split()
-        if argv:
-            yield argv
+    """Split a shell command into argv lists, one per simple command.
+
+    Tokenizes first, so operators inside quotes stay in their argument and
+    backslash-newline continues the command, as in Bash.
+    """
+    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", " "))
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=";&|\n()")
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    lex.commenters = ""
+    try:
+        tokens = list(lex)
+    except ValueError:
+        # Unbalanced quotes: fall back to words, but keep each line its own command.
+        tokens = [t for line in cmd.split("\n") for t in line.split() + ["\n"]]
+    argv = []
+    for t in tokens + [";"]:
+        if t and set(t) <= OPERATORS:
+            while argv and argv[0] in KEYWORDS:
+                argv.pop(0)
+            if argv:
+                yield argv
+            argv = []
+        else:
+            argv.append(t)
 
 
 def sync_calls(cmd, cwd):
@@ -81,8 +165,18 @@ def sync_calls(cmd, cwd):
 
 
 def names_base(refs, base):
-    wanted = {base, f"origin/{base}", f"upstream/{base}", f"refs/remotes/origin/{base}"}
-    return any(r in wanted for r in refs)
+    """True when a ref spells the PR base: bare, refs/heads/, <remote>/ or refs/remotes/<remote>/.
+
+    ponytail: string match, not commit resolution; a local branch named `x/<base>`
+    also matches (the block is overridable). Resolve with rev-parse if that bites.
+    """
+    for r in refs:
+        r = r.removeprefix("refs/heads/")
+        if r.startswith("refs/remotes/"):
+            r = r.removeprefix("refs/remotes/")
+        if r == base or (r.endswith("/" + base) and "/" not in r[:-len(base) - 1]):
+            return True
+    return False
 
 
 def pr_state(d):
@@ -109,22 +203,45 @@ def pr_state(d):
         return None
 
 
+GH_ALIASES = {"new": "create"}
+
+
+def gh_pr(argv):
+    """Return (subcommand, has_repo_flag) for a `gh pr <sub>` call, else None.
+
+    `-R/--repo` is inherited, so it may come before `pr`; `new` is an alias of `create`.
+    """
+    if argv[0] != "gh":
+        return None
+    pos, has_repo, skip = [], False, False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+        elif a in ("-R", "--repo"):
+            has_repo = skip = True
+        elif a.startswith("--repo=") or (a.startswith("-R") and len(a) > 2):
+            has_repo = True
+        elif not a.startswith("-"):
+            pos.append(a)
+    if len(pos) < 2 or pos[0] != "pr":
+        return None
+    return GH_ALIASES.get(pos[1], pos[1]), has_repo
+
+
 def draft_violation(cmd):
     for argv in segments(cmd):
-        if argv[:3] == ["gh", "pr", "create"] and any(
-                a in ("--draft", "-d") or a.startswith("--draft=") for a in argv[3:]):
+        pr = gh_pr(argv)
+        if not pr:
+            continue
+        if pr[0] == "create" and any(a in ("--draft", "-d") or a.startswith("--draft=") for a in argv):
             return True
-        if argv[:3] == ["gh", "pr", "ready"] and "--undo" in argv[3:]:
+        if pr[0] == "ready" and "--undo" in argv:
             return True
     return False
 
 
 def creates_pr_without_repo(cmd):
-    for argv in segments(cmd):
-        if argv[:3] == ["gh", "pr", "create"] and not any(
-                a in ("-R", "--repo") or a.startswith("--repo=") for a in argv[3:]):
-            return True
-    return False
+    return any((pr := gh_pr(argv)) and pr == ("create", False) for argv in segments(cmd))
 
 
 def unpinned_fork(cwd):
