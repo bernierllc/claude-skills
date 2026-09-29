@@ -79,13 +79,28 @@ EOF2
 # The substring matters more than the exit code for the safety cases: a hook
 # that wrongly starts an unconfigured server also exits 0. Only the message
 # proves it refused.
+# The cases below exercise the hook past its symlinked-node_modules skip. In a
+# worktree that symlinks node_modules (the usual agent setup) running them from
+# REPO_ROOT would only ever test the skip, so they run from a sandbox that
+# mirrors the checkout with a real, empty node_modules instead. Playwright is
+# stubbed and node resolves scripts by realpath, so nothing reads it.
+RUN_DIR="$REPO_ROOT"; RUN_GIT=()
+if [ -L "$REPO_ROOT/node_modules" ]; then
+  RUN_DIR=$(mktemp -d)
+  for entry in "$REPO_ROOT"/* "$REPO_ROOT"/.[!.]*; do
+    [ -e "$entry" ] && [ "$(basename "$entry")" != node_modules ] && ln -s "$entry" "$RUN_DIR/$(basename "$entry")"
+  done
+  mkdir "$RUN_DIR/node_modules"
+  RUN_GIT=(GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)" GIT_WORK_TREE="$RUN_DIR")
+fi
+
 check() {
   local name="$1" want="$2" list="$3" expect="$4"; shift 4
   local stubs; stubs="$(mktemp -d)"
   make_stubs "$stubs" "$list"
 
   local out status
-  out=$(cd "$REPO_ROOT" && PATH="$stubs:$PATH" env "$@" bash "$HOOK" </dev/null 2>&1)
+  out=$(cd "$RUN_DIR" && PATH="$stubs:$PATH" env ${RUN_GIT[@]+"${RUN_GIT[@]}"} "$@" bash "$HOOK" </dev/null 2>&1)
   status=$?
   rm -rf "$stubs"
 
@@ -145,7 +160,7 @@ git -C "$REPO_ROOT" read-tree HEAD        # seed it from HEAD
 # on EXIT, and a killed run left a `// probe` line that reached a commit.
 blob=$(printf '// pre-commit harness fixture\n' | git -C "$REPO_ROOT" hash-object -w --stdin)
 git -C "$REPO_ROOT" update-index --add --cacheinfo "100644,$blob,$MAPPED_FILE"
-trap 'rm -f "$GIT_INDEX_FILE"' EXIT
+trap 'rm -f "$GIT_INDEX_FILE"; [ "$RUN_DIR" = "$REPO_ROOT" ] || rm -rf "$RUN_DIR"' EXIT
 
 # Sanity: the fixture must actually produce tags, or everything below is vacuous.
 if ! git -C "$REPO_ROOT" diff --staged --name-only \

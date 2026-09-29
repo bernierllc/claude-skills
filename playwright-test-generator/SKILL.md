@@ -817,6 +817,8 @@ Browser-verification findings feed back to verification-writer, which updates do
 
 **Fix: tier validation checks the order tiers are selected in, not config key order.** `selectTier()` always checks `full`, `thorough`, `gate` in that order (`TIER_ORDER`, now exported), but `validateTierOrder()` walked the keys of `config.json` as `JSON.parse` returned them. A config listing `gate: "*"` first is valid, yet it threw on every branch, so no tier ever ran. Validation now rejects only a catch-all that really shadows a tier checked after it.
 
+**Fix: the pre-commit harness tests the gate in a worktree that symlinks `node_modules`.** From such a checkout every `check()` case hit the hook's symlink skip, so 9 of 12 failed while testing nothing. When `node_modules` is a symlink, the cases now run from a sandbox mirror of the checkout that has a real, empty `node_modules`.
+
 ### 4.0.0
 
 Combines the per-doc manifest layout (was PR #39) with the running-app commit gate (was PR #32), so they land in one release.
