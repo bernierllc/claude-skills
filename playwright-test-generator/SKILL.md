@@ -821,6 +821,10 @@ Browser-verification findings feed back to verification-writer, which updates do
 
 **Fix: the mixed-state fold never lets a layout-1 file overwrite an existing per-doc file.** A branch cut before 4.0.0 re-saves `items.json` with a fresh repo-wide `generated_at`, so under the old "newer timestamp wins" rule its stale entries overwrote every newer per-doc file on merge. An existing 2.0 file now always wins; layout-1 entries only fill docs and pages that have no 2.0 file. A kept doc the stale branch really did change is re-flagged by `sync-tests` on its next run, since its `content_hash` no longer matches.
 
+**Fix: `verify-pipeline.js` fails on a bootstrapped manifest with no item files.** If `manifest/items/` was deleted or emptied, the loader returned an empty map and every check passed over nothing. It now fails and names the restore, and it warns when `manifest/import-index/` is empty while items exist.
+
+**Fix: the pre-push template passes the tier's browsers as `--project` flags.** It read no browser list, so a `playwright.config.ts` with more projects than `tiers.<tier>.browsers` ran all of them.
+
 ### 4.0.0
 
 Combines the per-doc manifest layout (was PR #39) with the running-app commit gate (was PR #32), so they land in one release.

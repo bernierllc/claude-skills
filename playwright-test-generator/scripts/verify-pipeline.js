@@ -68,8 +68,17 @@ export async function checkManifestIntegrity(manifestDir) {
  */
 export async function checkManifestLayout(manifestDir) {
   const legacy = LEGACY_MANIFEST_FILES.filter((f) => existsSync(join(manifestDir, f)));
-  const hadCurrent = LAYOUT_DIRS.some((sub) => existsSync(join(manifestDir, sub)) &&
-    readdirSync(join(manifestDir, sub)).some((f) => f.endsWith('.json')));
+  const shardCount = (sub) => existsSync(join(manifestDir, sub))
+    ? readdirSync(join(manifestDir, sub)).filter((f) => f.endsWith('.json')).length : 0;
+  const hadCurrent = LAYOUT_DIRS.some((sub) => shardCount(sub) > 0);
+  // A bootstrapped pipeline (config.json present) with no item files at all
+  // means manifest/items/ was deleted or emptied: loadManifest would return an
+  // empty map and every later check would pass over nothing.
+  if (existsSync(join(manifestDir, 'config.json')) && !legacy.length && shardCount('items') === 0) {
+    return { manifest: null, checks: [{ file: 'items/', status: 'fail', message:
+      'Manifest has config.json but no per-doc item files under manifest/items/. Fix: restore them ' +
+      '(git checkout -- manifest/items) or regenerate with --force' }] };
+  }
   let manifest;
   try {
     manifest = loadManifest(manifestDir);
@@ -89,6 +98,11 @@ export async function checkManifestLayout(manifestDir) {
   if (legacy.length) {
     return { manifest, checks: [{ file: legacy.join(', '), status: 'warn', message:
       `Manifest migrated from layout 1 to ${MANIFEST_VERSION} in the working tree. Fix: ${commit}` }] };
+  }
+  if (shardCount('import-index') === 0 && Object.keys(manifest.items).length) {
+    return { manifest, checks: [{ file: 'import-index/', status: 'warn', message:
+      'No import-index pages under manifest/import-index/, so no source change maps to a test. ' +
+      'Fix: restore them (git checkout -- manifest/import-index) or regenerate with --force' }] };
   }
   return { manifest, checks: [] };
 }

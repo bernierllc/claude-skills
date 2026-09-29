@@ -347,6 +347,7 @@ describe('checkManifestLayout', () => {
 
   it('passes silently on the current layout', async () => {
     writeItems(tempDir, { 'A-01': {} });
+    writeIndex(tempDir, { 'src/a.ts': ['a'] });
     const { checks, manifest } = await checkManifestLayout(tempDir);
     expect(checks).toEqual([]);
     expect(Object.keys(manifest.items)).toEqual(['A-01']);
@@ -368,6 +369,21 @@ describe('checkManifestLayout', () => {
     expect(checks[0].status).toBe('fail');
     expect(checks[0].message).toMatch(/committed alongside.*Fix: commit manifest\/items\/.*git rm items\.json/s);
     expect(Object.keys(manifest.items).sort()).toEqual(['A-01', 'B-01']);
+  });
+
+  it('fails when a bootstrapped manifest has no item files (items/ deleted or emptied)', async () => {
+    await writeFile(join(tempDir, 'config.json'), '{}');
+    await mkdir(join(tempDir, 'items'));
+    const { checks, manifest } = await checkManifestLayout(tempDir);
+    expect(manifest).toBeNull();
+    expect(checks[0]).toMatchObject({ file: 'items/', status: 'fail' });
+    expect(checks[0].message).toMatch(/no per-doc item files.*Fix: restore/s);
+  });
+
+  it('warns when items exist but import-index/ is empty', async () => {
+    writeItems(tempDir, { 'A-01': {} });
+    const { checks } = await checkManifestLayout(tempDir);
+    expect(checks).toEqual([expect.objectContaining({ file: 'import-index/', status: 'warn' })]);
   });
 
   it('fails loudly and leaves the old files when layout 1 cannot be migrated', async () => {
