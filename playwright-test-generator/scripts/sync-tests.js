@@ -327,7 +327,8 @@ export function resolveDocArg(argv, readStdin) {
  * terminal (run by hand) or an inherited pipe that stays open without writing
  * (run by an agent). A blocking read hangs forever in both. `ms` is an idle
  * bound, reset by every chunk, so a slow writer is never cut off; if a writer
- * goes quiet without closing, whatever it sent is still returned.
+ * goes quiet without closing, whatever it sent is still returned. Closed with
+ * nothing sent (`</dev/null`) is "nothing coming" too.
  */
 export function readStdinWithin(stream, ms) {
   if (stream.isTTY) return Promise.resolve(undefined);
@@ -341,7 +342,7 @@ export function readStdinWithin(stream, ms) {
       clearTimeout(timer);
       timer = setTimeout(idle, ms);
     });
-    stream.on('end', () => { clearTimeout(timer); done(text); });
+    stream.on('end', () => { clearTimeout(timer); done(text || undefined); });
     stream.on('error', () => { clearTimeout(timer); done(''); });
   });
 }

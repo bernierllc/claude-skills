@@ -387,6 +387,12 @@ describe('readStdinWithin', () => {
     expect(await readStdinWithin(new PassThrough(), 50)).toBeUndefined();
   });
 
+  it('treats stdin closed with nothing sent as no payload', async () => {
+    const stream = new PassThrough();
+    stream.end();
+    expect(await readStdinWithin(stream, 1000)).toBeUndefined();
+  });
+
   it('never reads a terminal', async () => {
     const stream = Object.assign(new PassThrough(), { isTTY: true });
     expect(await readStdinWithin(stream, 10_000)).toBeUndefined();

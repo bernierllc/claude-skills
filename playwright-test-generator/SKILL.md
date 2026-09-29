@@ -815,7 +815,7 @@ Browser-verification findings feed back to verification-writer, which updates do
 
 ### 4.0.2
 
-**Fix: `sync-tests.js` with no argument no longer hangs.** With no doc path it read stdin for the hook's `{"tool_input":{"file_path":…}}` payload using a blocking read, which never returns when stdin is a terminal (run by hand) or a pipe that stays open without writing (run by an agent). It now reads stdin with a 2 s idle bound, reset by each chunk, so a slow hook writer is never cut off and a writer that goes quiet without closing still has its payload used. If stdin is a terminal or sends nothing, it prints usage to stderr and exits 2. The hook still writes its payload and closes at once, so it is unaffected. The docs' "re-run `sync-tests.js` for that doc" steps now show the path form.
+**Fix: `sync-tests.js` with no argument no longer hangs.** With no doc path it read stdin for the hook's `{"tool_input":{"file_path":…}}` payload using a blocking read, which never returns when stdin is a terminal (run by hand) or a pipe that stays open without writing (run by an agent). It now reads stdin with a 2 s idle bound, reset by each chunk, so a slow hook writer is never cut off and a writer that goes quiet without closing still has its payload used. If stdin is a terminal, sends nothing, or is already closed (`</dev/null`), it prints usage to stderr and exits 2. The hook still writes its payload and closes at once, so it is unaffected. The docs' "re-run `sync-tests.js` for that doc" steps now show the path form.
 
 ### 4.0.1
 
