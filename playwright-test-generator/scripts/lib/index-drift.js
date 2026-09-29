@@ -23,7 +23,7 @@ import { join } from 'node:path';
 
 /** The one remedy both tools point at. */
 export const STALE_INDEX_REMEDY =
-  'run playwright-test-generator to refresh import-index.json';
+  'run playwright-test-generator to refresh manifest/import-index/';
 
 /**
  * True when an import-index key names a file that is no longer on disk.
