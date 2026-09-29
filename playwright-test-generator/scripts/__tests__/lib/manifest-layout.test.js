@@ -106,14 +106,16 @@ describe('v1 -> 2.0 migration', () => {
 });
 
 describe('mixed-state fold (layout-1 file next to 2.0 files)', () => {
-  it('per doc: newer layout 1 wins, older layout 1 keeps 2.0, missing 2.0 is taken; flags union', () => {
+  it('per doc: an existing 2.0 file always wins, a missing one is taken; queue unions', () => {
+    // Codex P1 on email_demo#552: a pre-migration branch re-saves items.json with a
+    // fresh generated_at, which must not let stale entries overwrite newer shards.
     writeItems(dir, {
       'A-01': { source_doc: 'docs/verification/a.md', content_hash: 'v2-a', pending_generation: true },
       'C-01': { source_doc: 'docs/verification/c.md', content_hash: 'v2-c' },
     }, { updatedAt: OLDER });
     writeItems(dir, { 'D-01': { source_doc: 'docs/verification/d.md', content_hash: 'v2-d' } }, { updatedAt: NEWER });
     writeV1(dir, {
-      generatedAt: '2026-01-01T00:00:00.000Z',
+      generatedAt: '2099-01-01T00:00:00.000Z',
       items: {
         'A-01': { source_doc: 'docs/verification/a.md', content_hash: 'v1-a' },
         'D-01': { source_doc: 'docs/verification/d.md', content_hash: 'v1-d' },
@@ -123,14 +125,14 @@ describe('mixed-state fold (layout-1 file next to 2.0 files)', () => {
     });
 
     const [step] = migrateManifest(dir);
-    expect(step.docsTaken.sort()).toEqual(['docs/verification/a.md', 'docs/verification/e.md']);
-    expect(step.docsKept).toEqual(['docs/verification/d.md']);
+    expect(step.docsTaken).toEqual(['docs/verification/e.md']);
+    expect(step.docsKept.sort()).toEqual(['docs/verification/a.md', 'docs/verification/d.md']);
 
     const items = readItems(dir);
-    expect(items['A-01']).toMatchObject({ content_hash: 'v1-a', pending_generation: true }); // v1 newer, v2 flag kept
+    expect(items['A-01']).toMatchObject({ content_hash: 'v2-a', pending_generation: true }); // older 2.0 still wins
     expect(items['C-01'].content_hash).toBe('v2-c'); // untouched: no v1 counterpart
-    expect(items['D-01']).toMatchObject({ content_hash: 'v2-d', pending_generation: true }); // v2 newer, v1 queue unioned
-    expect(items['E-01'].content_hash).toBe('v1-e'); // no v2 file: taken
+    expect(items['D-01']).toMatchObject({ content_hash: 'v2-d', pending_generation: true }); // v1 queue unioned
+    expect(items['E-01'].content_hash).toBe('v1-e'); // no 2.0 file: taken
     expect(existsSync(join(dir, 'items.json'))).toBe(false);
   });
 

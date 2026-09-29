@@ -36,12 +36,27 @@ describe('validateTierOrder', () => {
     expect(() => validateTierOrder(tiers)).not.toThrow();
   });
 
-  it('errors if catch-all tier is not last', () => {
+  it('errors if a catch-all tier is checked before another tier', () => {
     const tiers = {
-      gate: { branches: '*' },
-      full: { branches: ['main'] }
+      full: { branches: '*' },
+      gate: { branches: ['feat/*'] }
     };
     expect(() => validateTierOrder(tiers)).toThrow(/catch-all/i);
+  });
+
+  it('treats an array containing "*" as a catch-all', () => {
+    const tiers = { full: { branches: ['*'] }, gate: { branches: ['feat/*'] } };
+    expect(() => validateTierOrder(tiers)).toThrow(/catch-all/i);
+  });
+
+  it('validates by check order, not config key order', () => {
+    // `gate` listed first is fine: selectTier checks full and thorough before it.
+    const tiers = {
+      gate: { branches: '*' },
+      full: { branches: ['main'] },
+      thorough: { branches: ['staging'] }
+    };
+    expect(() => validateTierOrder(tiers)).not.toThrow();
   });
 
   it('allows tiers with no catch-all', () => {

@@ -116,8 +116,8 @@ Template at `templates/hooks/pre-push.sh`. Branch-aware tiered test execution.
 2. Parse target branch from stdin refspecs (reliable) with `@{push}` fallback
 3. Select tier via `select-tier.js` based on target branch
 4. Execute:
-   - **thorough:** 3 browsers, all depths, changes-only (`--grep`)
-   - **full:** all browsers, all tests (no `--grep`)
+   - **thorough:** `tiers.thorough.browsers` (as `--project` flags), all depths, changes-only (`--grep`)
+   - **full:** `tiers.full.browsers` (as `--project` flags), all tests (no `--grep`)
    - **no match:** exit 0 (feature branch push, skip)
 
 ### Branch-to-tier mapping (from config.json)

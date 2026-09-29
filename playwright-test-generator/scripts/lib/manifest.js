@@ -213,7 +213,6 @@ function jsonFiles(dir) {
 }
 
 const sortKeys = (obj) => Object.fromEntries(Object.entries(obj).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-const time = (iso) => Date.parse(iso ?? '') || -Infinity;
 /** File content minus its own timestamp — what "changed" is judged on. */
 const body = ({ updated_at, ...rest }) => JSON.stringify(rest);
 
@@ -262,9 +261,11 @@ function readLegacyQueue(path) {
 /**
  * Layout 1 -> 2. Also the mixed-state fold: a branch cut before the migration
  * and merged after brings a layout-1 file back next to layout-2 files. Rule:
- *   - per doc (items) / per page (index): if the layout-2 file is missing, or
- *     the layout-1 file's generated_at is strictly newer than the layout-2
- *     file's updated_at, the layout-1 entries win; otherwise layout 2 is kept.
+ *   - per doc (items) / per page (index): an existing layout-2 file always
+ *     wins; layout-1 entries fill only docs/pages with no layout-2 file.
+ *     Layout 1 has one repo-wide generated_at, so it cannot say which doc is
+ *     newer. A kept doc that the stale branch really did change is re-flagged
+ *     by sync-tests on its next run, since its content_hash no longer matches.
  *   - queue: union. Every queued id that still has an entry gets
  *     pending_generation: true. Ids with no entry anywhere are dropped and
  *     reported — every reader already ignored them (link-specs dropped them).
@@ -294,15 +295,12 @@ function migrateV1ToV2(dir) {
   }
   const finalDocs = new Map([...v2Docs].map(([d, { file, doc }]) => [d, { file, doc, changed: false }]));
   for (const [sourceDoc, entries] of byDoc) {
-    const existing = v2Docs.get(sourceDoc);
-    if (existing && !(time(v1ItemsAt) > time(existing.doc.updated_at))) { report.docsKept.push(sourceDoc); continue; }
+    // A 2.0 file always wins: layout 1 has one repo-wide timestamp, so a stale
+    // branch re-saving it would look newer than every doc it never touched.
+    if (v2Docs.has(sourceDoc)) { report.docsKept.push(sourceDoc); continue; }
     report.docsTaken.push(sourceDoc);
     const doc = { ...itemsMeta, version: MANIFEST_VERSION, source_doc: sourceDoc, updated_at: v1ItemsAt ?? now, items: sortKeys(structuredClone(entries)) };
-    // Union with any flags the layout-2 copy already carried.
-    for (const id of Object.keys(doc.items)) {
-      if (existing?.doc.items[id]?.pending_generation) doc.items[id].pending_generation = true;
-    }
-    finalDocs.set(sourceDoc, { file: existing?.file ?? `${docSlug(sourceDoc)}.json`, doc, changed: true });
+    finalDocs.set(sourceDoc, { file: `${docSlug(sourceDoc)}.json`, doc, changed: true });
   }
   const owner = new Map();
   const collisions = [];
@@ -347,10 +345,9 @@ function migrateV1ToV2(dir) {
     }
   }
   for (const [tag, files] of byPage) {
-    const existing = v2Pages.get(tag);
-    if (existing && !(time(v1IndexAt) > time(existing.page.updated_at))) { report.pagesKept.push(tag); continue; }
+    if (v2Pages.has(tag)) { report.pagesKept.push(tag); continue; }
     report.pagesTaken.push(tag);
-    writes.push([join(INDEX_DIR, existing?.file ?? `${tag}.json`),
+    writes.push([join(INDEX_DIR, `${tag}.json`),
       { ...indexMeta, version: MANIFEST_VERSION, page: tag, updated_at: v1IndexAt ?? now, files: [...files].sort() }]);
   }
 

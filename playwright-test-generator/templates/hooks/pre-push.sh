@@ -32,9 +32,30 @@ fi
 # Select tier based on target branch
 tier=$(node scripts/verification-playwright/select-tier.js "$target_branch" 2>/dev/null || echo "")
 
+# The tier's browser list is config, not prose: read tiers.<tier>.browsers from
+# config.json and pass each as --project, so a playwright.config.ts with more
+# projects than the tier names does not run them all.
+config_json="tests/verification-playwright/manifest/config.json"
+read_browsers() {
+  node -e '
+    const fs = require("node:fs");
+    const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const list = cfg?.tiers?.[process.argv[2]]?.browsers ?? [];
+    process.stdout.write(list.map((b) => b + "\n").join(""));
+  ' "$config_json" "$1" 2>/dev/null || true
+}
+
+project_args=()
+browser_names=""
+while IFS= read -r browser; do
+  [ -n "$browser" ] || continue
+  project_args+=(--project "$browser")
+  browser_names="${browser_names:+$browser_names, }$browser"
+done < <(read_browsers "$tier")
+
 case "$tier" in
   "thorough")
-    echo "Running verification tests (thorough tier: 3 browsers, all depths, changes only)..."
+    echo "Running verification tests (thorough tier: ${browser_names:-default}, all depths, changes only)..."
     affected=$(node scripts/verification-playwright/map-changes.js --since-main 2>/dev/null || echo "")
     if [ -z "$affected" ]; then
       echo "No affected tests. Push allowed."
@@ -43,12 +64,14 @@ case "$tier" in
     grep_pattern=$(echo "$affected" | tr ' ' '|')
     npx playwright test \
       --config tests/verification-playwright/playwright.config.ts \
+      ${project_args[@]+"${project_args[@]}"} \
       --grep "$grep_pattern"
     ;;
   "full")
-    echo "Running verification tests (full tier: all browsers, all tests)..."
+    echo "Running verification tests (full tier: ${browser_names:-default}, all tests)..."
     npx playwright test \
-      --config tests/verification-playwright/playwright.config.ts
+      --config tests/verification-playwright/playwright.config.ts \
+      ${project_args[@]+"${project_args[@]}"}
     ;;
   *)
     exit 0 # Feature branch or no match, skip

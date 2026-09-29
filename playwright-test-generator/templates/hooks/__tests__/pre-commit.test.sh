@@ -79,26 +79,45 @@ EOF2
 # The substring matters more than the exit code for the safety cases: a hook
 # that wrongly starts an unconfigured server also exits 0. Only the message
 # proves it refused.
+# The cases below exercise the hook past its symlinked-node_modules skip. In a
+# worktree that symlinks node_modules (the usual agent setup) running them from
+# REPO_ROOT would only ever test the skip, so they run from a sandbox that
+# mirrors the checkout with a real, empty node_modules instead. Playwright is
+# stubbed and node resolves scripts by realpath, so nothing reads it.
+RUN_DIR="$REPO_ROOT"; RUN_GIT=()
+if [ -L "$REPO_ROOT/node_modules" ]; then
+  RUN_DIR=$(mktemp -d)
+  for entry in "$REPO_ROOT"/* "$REPO_ROOT"/.[!.]*; do
+    [ -e "$entry" ] && [ "$(basename "$entry")" != node_modules ] && ln -s "$entry" "$RUN_DIR/$(basename "$entry")"
+  done
+  mkdir "$RUN_DIR/node_modules"
+  RUN_GIT=(GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)" GIT_WORK_TREE="$RUN_DIR")
+fi
+# Set before any early exit below, so the sandbox never leaks. harness_index,
+# not GIT_INDEX_FILE: the latter may be inherited from a real git hook.
+harness_index=""
+trap 'rm -f "$harness_index"; [ "$RUN_DIR" = "$REPO_ROOT" ] || rm -rf "$RUN_DIR"' EXIT
+
 check() {
   local name="$1" want="$2" list="$3" expect="$4"; shift 4
   local stubs; stubs="$(mktemp -d)"
   make_stubs "$stubs" "$list"
 
   local out status
-  out=$(cd "$REPO_ROOT" && PATH="$stubs:$PATH" env "$@" bash "$HOOK" </dev/null 2>&1)
+  out=$(cd "$RUN_DIR" && PATH="$stubs:$PATH" env ${RUN_GIT[@]+"${RUN_GIT[@]}"} "$@" bash "$HOOK" </dev/null 2>&1)
   status=$?
   rm -rf "$stubs"
 
   if [ -n "$expect" ] && [[ "$out" != *"$expect"* ]]; then
     printf '  FAIL %s — output missing %q\n' "$name" "$expect"
-    printf '%s\n' "$out" | sed 's/^/         /' | head -6
+    head -6 <<<"$out" | sed 's/^/         /'
     fail=$((fail + 1))
   elif [ "$status" -eq "$want" ]; then
     printf '  ok   %s (exit %s)\n' "$name" "$status"
     pass=$((pass + 1))
   else
     printf '  FAIL %s — wanted exit %s, got %s\n' "$name" "$want" "$status"
-    printf '%s\n' "$out" | sed 's/^/         /' | head -6
+    head -6 <<<"$out" | sed 's/^/         /'
     fail=$((fail + 1))
   fi
 }
@@ -135,7 +154,7 @@ export GIT_INDEX_FILE
 # Portable template: GNU mktemp requires at least three X's and treats -t as
 # deprecated, so `-t name` fails there and leaves GIT_INDEX_FILE empty — after
 # which `git diff --staged` reads an empty index as "every file deleted".
-GIT_INDEX_FILE=$(mktemp "${TMPDIR:-/tmp}/pre-commit-harness-index.XXXXXX")
+GIT_INDEX_FILE=$(mktemp "${TMPDIR:-/tmp}/pre-commit-harness-index.XXXXXX"); harness_index=$GIT_INDEX_FILE
 [ -n "$GIT_INDEX_FILE" ] || { echo "  FAIL could not create a temp index"; exit 1; }
 rm -f "$GIT_INDEX_FILE"                   # git wants to create it itself
 git -C "$REPO_ROOT" read-tree HEAD        # seed it from HEAD
@@ -145,7 +164,6 @@ git -C "$REPO_ROOT" read-tree HEAD        # seed it from HEAD
 # on EXIT, and a killed run left a `// probe` line that reached a commit.
 blob=$(printf '// pre-commit harness fixture\n' | git -C "$REPO_ROOT" hash-object -w --stdin)
 git -C "$REPO_ROOT" update-index --add --cacheinfo "100644,$blob,$MAPPED_FILE"
-trap 'rm -f "$GIT_INDEX_FILE"' EXIT
 
 # Sanity: the fixture must actually produce tags, or everything below is vacuous.
 if ! git -C "$REPO_ROOT" diff --staged --name-only \
@@ -180,7 +198,7 @@ rm -rf "$stubs" "$sandbox"
 if [ "$status" -eq 0 ] && [[ "$out" == *"node_modules is a symlink"* ]]; then
   echo "  ok   symlinked node_modules skips (exit 0)"; pass=$((pass + 1))
 else
-  echo "  FAIL symlinked node_modules skips — exit $status"; printf '%s\n' "$out" | sed 's/^/         /' | head -6; fail=$((fail + 1))
+  echo "  FAIL symlinked node_modules skips — exit $status"; head -6 <<<"$out" | sed 's/^/         /'; fail=$((fail + 1))
 fi
 
 

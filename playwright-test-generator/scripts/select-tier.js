@@ -22,13 +22,27 @@ export function matchBranch(branch, pattern) {
   });
 }
 
-/** Validate that catch-all tiers are last in the order. */
-export function validateTierOrder(tiers) {
-  const entries = Object.entries(tiers);
-  for (let i = 0; i < entries.length - 1; i++) {
-    const [name, tier] = entries[i];
-    if (tier.branches === '*') {
-      throw new Error(`Tier "${name}" has branches: "*" (catch-all) but is not the last tier. Catch-all must be checked last.`);
+/**
+ * The order tiers are checked in. The first tier whose `branches` matches wins,
+ * so the most specific tier has to come first and the catch-all last.
+ */
+export const TIER_ORDER = ['full', 'thorough', 'gate'];
+
+/**
+ * Validate that no catch-all tier shadows a tier checked after it.
+ *
+ * This walks TIER_ORDER, not the key order of the config object. Key order is
+ * whatever JSON.parse preserved and has no bearing on which tier selectTier()
+ * picks; validating it rejects a config that lists `gate` first and throws on
+ * every branch name, so no tier ever runs.
+ */
+export function validateTierOrder(tiers, order = TIER_ORDER) {
+  const present = order.filter(name => tiers[name]);
+  for (let i = 0; i < present.length - 1; i++) {
+    const name = present[i];
+    const b = tiers[name].branches;
+    if (b === '*' || (Array.isArray(b) && b.includes('*'))) {
+      throw new Error(`Tier "${name}" has branches: "*" (catch-all) but is checked before ${present.slice(i + 1).map(n => `"${n}"`).join(', ')}, which can therefore never be selected.`);
     }
   }
 }
@@ -47,8 +61,7 @@ export async function selectTier(branch, projectDir) {
 
   validateTierOrder(config.tiers);
 
-  const tierOrder = ['full', 'thorough', 'gate'];
-  for (const tierName of tierOrder) {
+  for (const tierName of TIER_ORDER) {
     const tier = config.tiers[tierName];
     if (!tier) continue;
     if (matchBranch(branch, tier.branches)) return tierName;
