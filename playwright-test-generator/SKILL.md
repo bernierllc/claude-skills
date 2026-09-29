@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 4.0.2
+version: 4.0.3
 dependencies:
   skills:
     - name: verification-writer
@@ -812,6 +812,10 @@ Browser-verification findings feed back to verification-writer, which updates do
 - Multiple parallel agents were used to generate tests and their work has been merged — run `verify-pipeline.js` before declaring done; parallel worktree merges silently discard all-but-last for shared files
 
 ## Changelog
+
+### 4.0.3
+
+**Fix: a truncated hook payload on stdin fails loudly.** If the writer sent part of the JSON and went quiet past the idle bound, the partial text failed to parse, `sync-tests.js` printed usage and exited 0, and the manifest sync was skipped with no error. A non-empty payload that doesn't parse now exits 2 like no payload at all. A complete payload for a file that isn't a verification doc still exits 0.
 
 ### 4.0.2
 

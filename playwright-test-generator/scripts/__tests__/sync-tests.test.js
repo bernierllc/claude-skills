@@ -353,8 +353,12 @@ describe('resolveDocArg', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], stdin(payload))).toBeNull();
   });
 
-  it('returns null when stdin is empty or unparseable', () => {
+  it('returns null when stdin is empty', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => '')).toBeNull();
+  });
+
+  it('returns undefined for a truncated payload so the CLI fails loudly', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => '{"tool_input":')).toBeUndefined();
   });
   it('returns undefined when no stdin payload is coming', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => undefined)).toBeUndefined();

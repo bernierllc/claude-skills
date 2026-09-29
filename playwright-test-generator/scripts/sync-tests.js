@@ -306,6 +306,8 @@ export async function syncTests(docPath, manifestDir) {
  * readStdin() returning undefined means no payload is coming (see
  * readStdinWithin); that returns undefined too, vs null for "hook payload,
  * nothing to sync", so the CLI can fail with usage instead of exiting clean.
+ * A non-empty payload that isn't JSON (a writer cut off mid-payload) is
+ * undefined as well: skipping the sync there must not look like success.
  */
 export function resolveDocArg(argv, readStdin) {
   if (argv[2] && !argv[2].startsWith('-')) return argv[2];
@@ -315,7 +317,7 @@ export function resolveDocArg(argv, readStdin) {
   try {
     edited = JSON.parse(text)?.tool_input?.file_path;
   } catch {
-    return null;
+    return text.trim() ? undefined : null;
   }
   // The hook fires on every Edit/Write, not just verification docs — ignore
   // anything that isn't one rather than rewriting the manifest for a stray file.
