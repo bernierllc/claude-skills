@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * link-specs.js - Reconcile items.json against the generated specs on disk.
+ * link-specs.js - Reconcile the manifest items against the generated specs on disk.
  *
  * Specs are written by the playwright-test-generator skill, not by
  * sync-tests.js, and nothing else writes `spec_file` back onto the manifest.
@@ -10,16 +10,15 @@
  * after any generation pass, then run verify-pipeline.js.
  *
  * Reads:  tests/verification-playwright/*.spec.ts  (// @begin:<ID> markers)
- * Writes: manifest/items.json      — spec_file + status on every matched item
- *         pending-generation.json  — the items that still have no spec
+ * Writes: manifest/items/<doc>.json — spec_file + status on every matched item,
+ *         and pending_generation: true on every item that still has no spec
+ *         (only the per-doc files whose content changed are rewritten)
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import {
-  readManifestFileSync, writeManifestFileSync,
-  acquireLockSync, releaseLockSync,
-  pendingQueuePath, readPendingIds, writePendingIds,
+  acquireLockSync, releaseLockSync, loadManifest, saveManifest, manifestDirFor, pendingIds,
 } from './lib/manifest.js';
 import { fileURLToPath } from 'node:url';
 
@@ -73,21 +72,21 @@ export function collectMarkers(projectDir) {
 }
 
 export function linkSpecs(projectDir) {
-  const queuePath = pendingQueuePath(projectDir);
   const { markers, duplicates } = collectMarkers(projectDir);
 
-  // Lock across the whole read-modify-write. sync-tests.js writes items.json
+  // Lock across the whole read-modify-write. sync-tests.js writes the manifest
   // under this same lock, so without it a concurrent sync lands between our
   // read and our write and this stale snapshot erases its new entries.
   acquireLockSync(projectDir);
   try {
-    const items = readManifestFileSync(projectDir, 'items.json');
-    if (!items) throw new Error(`No manifest at ${join(projectDir, SPEC_DIR, 'manifest', 'items.json')}`);
+    const manifestDir = manifestDirFor(projectDir);
+    const manifest = loadManifest(manifestDir);
+    if (Object.keys(manifest.items).length === 0) throw new Error(`No manifest items under ${join(manifestDir, 'items')}`);
 
     const orphans = [];
     let linked = 0;
     for (const [id, info] of markers) {
-      const item = items.items[id];
+      const item = manifest.items[id];
       // A marker with no manifest entry is a spec for an item the docs no longer
       // describe. Report it; never mint a manifest entry from a spec, or the
       // docs stop being the source of truth.
@@ -101,22 +100,19 @@ export function linkSpecs(projectDir) {
     // spec left over from before". An item sync-tests queued as SUBSTANTIALLY
     // MODIFIED already has a marker, so deriving the queue from markers alone
     // drops it and the outdated test is never regenerated — silently.
-    // So: union the ids already queued with the ids that have no spec at all,
-    // and only drop an id when it has left the manifest entirely. This can
-    // leave an id queued after it was regenerated, which surfaces as a
-    // "Pending generation" warning; the alternative loses a stale test with no
-    // signal at all. Prefer the loud failure.
-    const stillInManifest = (id) => Boolean(items.items[id]);
-    const unmarked = Object.keys(items.items).filter((id) => !markers.has(id));
-    const pending = [...new Set([...readPendingIds(queuePath), ...unmarked])]
-      .filter(stillInManifest)
-      .sort();
+    // So: keep every flag already set and add one to each item with no spec
+    // at all; an id leaves the queue only when its entry leaves the manifest
+    // (or the generator clears the flag). This can leave an id queued after it
+    // was regenerated, which surfaces as a "Pending generation" warning; the
+    // alternative loses a stale test with no signal at all. Prefer the loud
+    // failure.
+    for (const [id, entry] of Object.entries(manifest.items)) {
+      if (!markers.has(id)) entry.pending_generation = true;
+    }
 
-    items.generated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-    writeManifestFileSync(projectDir, 'items.json', items);
-    writePendingIds(queuePath, pending);
+    saveManifest(manifest);
 
-    return { linked, pending: pending.length, orphans, duplicates };
+    return { linked, pending: pendingIds(manifest).length, orphans, duplicates };
   } finally {
     releaseLockSync(projectDir);
   }
@@ -126,7 +122,7 @@ export function linkSpecs(projectDir) {
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   if (process.argv.includes('--help')) {
-    console.log(`link-specs.js - Link generated specs back into manifest/items.json
+    console.log(`link-specs.js - Link generated specs back into manifest/items/*.json
 
 Usage: node <skill>/scripts/link-specs.js [projectDir]
        node <skill>/scripts/link-specs.js --help

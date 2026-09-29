@@ -6,7 +6,7 @@
 
 import { execSync } from 'node:child_process';
 import { basename, resolve } from 'node:path';
-import { readManifestFileSync } from './lib/manifest.js';
+import { loadManifest, manifestDirFor } from './lib/manifest.js';
 import { resolveRepoRoot } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
 import { fileURLToPath } from 'node:url';
@@ -50,8 +50,11 @@ export async function mapFilesToTags(files, importIndex, projectDir, repoRoot = 
 
 /** Main entry for CLI and testing. */
 export async function main(args, projectDir) {
-  const importIndex = readManifestFileSync(projectDir, 'import-index.json');
-  if (!importIndex) return { tags: [], warnings: [] };
+  // The one loader: migrates an older layout, then inverts the per-page index
+  // shards into {sourceFile: [pageTags]} in memory.
+  const manifest = loadManifest(manifestDirFor(projectDir));
+  if (Object.keys(manifest.pages).length === 0) return { tags: [], warnings: [] };
+  const importIndex = { entries: manifest.entries };
 
   const repoRoot = resolveRepoRoot(projectDir);
   let files;

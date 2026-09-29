@@ -5,8 +5,6 @@
  */
 
 import { resolve } from 'node:path';
-import { readManifestFile as readManifestFileAsync } from './lib/manifest.js';
-import { readManifestFileSync } from './lib/manifest.js';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

@@ -6,13 +6,14 @@ import {
   removeTestBlock,
   detectPinning,
   syncTests,
-  readPendingIds,
   resolveDocArg
 } from '../sync-tests.js';
 import { hashItem } from '../lib/hash.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { writeItems, readItems, readItemFiles, writeV1 } from './helpers/manifest-fixtures.js';
 
 describe('parseVerificationItems', () => {
   it('parses verification items from markdown', () => {
@@ -178,30 +179,23 @@ describe('syncTests (integration)', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('writes substantial changes to pending-generation.json', async () => {
+  it('queues new items with a pending_generation flag in the doc\'s own file', async () => {
     const docPath = join(tempDir, 'verification.md');
     await writeFile(docPath, `# Test
 - [ ] [standard] **EVT-01** Do action --- Expected. *Expected: success*
 - [ ] [deep] **EVT-02** Another action --- Result. *Expected: validation error*
 `);
 
-    // Empty manifest initially
-    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
-      version: '1.0',
-      items: {}
-    }));
-
     const result = await syncTests(docPath, manifestDir);
     expect(result.added).toBe(2);
     expect(result.pendingGeneration).toBe(2);
 
-    // Sibling of the manifest dir, per the real layout.
-    const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-    const pending = JSON.parse(await readFile(pendingPath, 'utf-8'));
-    // The queue is written in the same {version, generated_at, items} envelope
-    // as every other manifest file; readPendingIds still accepts bare arrays.
-    expect(pending.items).toContain('EVT-01');
-    expect(pending.items).toContain('EVT-02');
+    expect(readItemFiles(manifestDir)).toEqual(['verification.json']);
+    const after = readItems(manifestDir);
+    expect(after['EVT-01'].pending_generation).toBe(true);
+    expect(after['EVT-02'].pending_generation).toBe(true);
+    // No shared queue file any more.
+    expect(existsSync(join(manifestDir, '..', 'pending-generation.json'))).toBe(false);
   });
 
   it('refuses to write when an item ID is already owned by another doc', async () => {
@@ -209,26 +203,17 @@ describe('syncTests (integration)', () => {
     await writeFile(docPath, `# Use Cases
 - [ ] [standard] **USC-01** Do action --- Expected. *Expected: success*
 `);
+    writeItems(manifestDir, {
+      'USC-01': { source_doc: 'u-scheduling.md', content_hash: 'abc', depth: 'standard', status: 'active' },
+    });
+    const before = await readFile(join(manifestDir, 'items', 'u-scheduling.json'), 'utf-8');
 
-    const itemsPath = join(manifestDir, 'items.json');
-    const original = {
-      version: '1.0',
-      items: {
-        'USC-01': {
-          source_doc: 'u-scheduling.md',
-          content_hash: 'abc',
-          depth: 'standard',
-          status: 'active',
-        },
-      },
-    };
-    await writeFile(itemsPath, JSON.stringify(original));
+    // The owner lives in a different per-doc file; the guard still sees it.
+    await expect(syncTests(docPath, manifestDir)).rejects.toThrow(/USC-01 — already owned by u-scheduling\.md/);
 
-    await expect(syncTests(docPath, manifestDir)).rejects.toThrow(/USC-01/);
-
-    // The other doc's ownership must survive the refusal untouched.
-    const after = JSON.parse(await readFile(itemsPath, 'utf-8'));
-    expect(after.items['USC-01'].source_doc).toBe('u-scheduling.md');
+    // The other doc's file survives untouched and no file is minted for ours.
+    expect(await readFile(join(manifestDir, 'items', 'u-scheduling.json'), 'utf-8')).toBe(before);
+    expect(readItemFiles(manifestDir)).toEqual(['u-scheduling.json']);
   });
 
   it('does not treat another doc\'s same-named file as its own items', async () => {
@@ -243,23 +228,14 @@ describe('syncTests (integration)', () => {
 
     const flowsDoc = join(flowsDir, 'beta-signup.md');
     await writeFile(flowsDoc, `# Flows\nNo items.`);
-
-    const itemsPath = join(manifestDir, 'items.json');
-    await writeFile(itemsPath, JSON.stringify({
-      version: '1.0',
-      items: {
-        'PAGE-01': {
-          source_doc: 'docs/verification/pages/beta-signup.md',
-          content_hash: 'abc', depth: 'standard', status: 'active',
-        },
-      },
-    }));
+    writeItems(manifestDir, {
+      'PAGE-01': { source_doc: 'docs/verification/pages/beta-signup.md', content_hash: 'abc', depth: 'standard', status: 'active' },
+    });
 
     const result = await syncTests(flowsDoc, manifestDir);
 
     expect(result.removed).toBe(0);
-    const after = JSON.parse(await readFile(itemsPath, 'utf-8'));
-    expect(after.items['PAGE-01']).toBeDefined();
+    expect(readItems(manifestDir)['PAGE-01']).toBeDefined();
   });
 
   it('stores source_doc repo-relative, never absolute', async () => {
@@ -271,55 +247,86 @@ describe('syncTests (integration)', () => {
     const docPath = join(docsDir, 'thing.md');
     await writeFile(docPath, `# Thing\n\n- [ ] [standard] **THG-01** click it --- it works. *Expected: state change*\n`);
 
-    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({ version: '1.0', items: {} }));
     await syncTests(docPath, manifestDir);
 
-    const after = JSON.parse(await readFile(join(manifestDir, 'items.json'), 'utf-8'));
-    expect(after.items['THG-01'].source_doc).toBe('docs/verification/pages/thing.md');
-    expect(after.items['THG-01'].source_doc.startsWith('/')).toBe(false);
+    expect(readItemFiles(manifestDir)).toEqual(['pages--thing.json']);
+    const after = readItems(manifestDir);
+    expect(after['THG-01'].source_doc).toBe('docs/verification/pages/thing.md');
+    expect(after['THG-01'].source_doc.startsWith('/')).toBe(false);
   });
 
-  it('detects removed items from manifest', async () => {
+  it('removes a removed item, its queue flag, and a doc file left empty', async () => {
     const docPath = join(tempDir, 'verification.md');
     await writeFile(docPath, `# Empty\nNo items.`);
-
-    await writeFile(join(manifestDir, 'items.json'), JSON.stringify({
-      version: '1.0',
-      items: {
-        'OLD-01': { source_doc: 'verification.md', content_hash: 'abc', depth: 'standard', status: 'active' }
-      }
-    }));
+    writeItems(manifestDir, {
+      'OLD-01': { source_doc: 'verification.md', content_hash: 'abc', depth: 'standard', status: 'active', pending_generation: true },
+    });
 
     const result = await syncTests(docPath, manifestDir);
     expect(result.removed).toBe(1);
 
-    const updatedManifest = JSON.parse(await readFile(join(manifestDir, 'items.json'), 'utf-8'));
-    expect(updatedManifest.items['OLD-01']).toBeUndefined();
-  });
-});
-
-describe('readPendingIds', () => {
-  let tempDir;
-  beforeEach(async () => { tempDir = await mkdtemp(join(tmpdir(), 'pending-')); });
-  afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
-
-  it('reads the envelope form', async () => {
-    const p = join(tempDir, 'q.json');
-    await writeFile(p, JSON.stringify({ version: '1.0', items: ['A-01'] }));
-    expect(readPendingIds(p)).toEqual(['A-01']);
+    expect(readItems(manifestDir)['OLD-01']).toBeUndefined();
+    expect(readItemFiles(manifestDir)).toEqual([]);
   });
 
-  it('still reads bare arrays written by older runs', async () => {
-    const p = join(tempDir, 'q.json');
-    await writeFile(p, JSON.stringify(['A-01']));
-    expect(readPendingIds(p)).toEqual(['A-01']);
+  it('a no-op sync rewrites nothing', async () => {
+    const docPath = join(tempDir, 'verification.md');
+    await writeFile(docPath, `# T\n- [ ] [standard] **EVT-01** Do action --- Expected. *Expected: success*\n`);
+    await syncTests(docPath, manifestDir);
+    const before = await readFile(join(manifestDir, 'items', 'verification.json'), 'utf-8');
+
+    await syncTests(docPath, manifestDir);
+
+    expect(await readFile(join(manifestDir, 'items', 'verification.json'), 'utf-8')).toBe(before);
   });
 
-  it('returns empty for a missing or corrupt queue', async () => {
-    expect(readPendingIds(join(tempDir, 'nope.json'))).toEqual([]);
-    const p = join(tempDir, 'bad.json');
-    await writeFile(p, 'not json');
-    expect(readPendingIds(p)).toEqual([]);
+  it('edits to two different docs touch disjoint manifest files', async () => {
+    // The point of the per-doc layout: two PRs that edit different docs must
+    // not both rewrite a shared file, or every such pair conflicts on merge.
+    const docs = join(tempDir, 'docs', 'verification');
+    await mkdir(docs, { recursive: true });
+    const a = join(docs, 'a.md');
+    const b = join(docs, 'b.md');
+    await writeFile(a, `# A\n- [ ] [standard] **A-01** act --- ok. *Expected: success*\n`);
+    await writeFile(b, `# B\n- [ ] [standard] **B-01** act --- ok. *Expected: success*\n`);
+    await syncTests(a, manifestDir);
+    await syncTests(b, manifestDir);
+    const snapshot = () => Object.fromEntries(
+      readItemFiles(manifestDir).map((f) => [f, readFileSync(join(manifestDir, 'items', f), 'utf-8')]));
+    const base = snapshot();
+
+    const changed = (after) => Object.keys({ ...base, ...after }).filter((f) => base[f] !== after[f]);
+
+    await writeFile(a, `# A\n- [ ] [deep] **A-01** act --- ok. *Expected: success*\n- [ ] [standard] **A-02** more --- ok. *Expected: success*\n`);
+    await syncTests(a, manifestDir);
+    const afterA = snapshot();
+    expect(changed(afterA)).toEqual(['a.json']);
+
+    // Reset to base and make the other branch's edit.
+    for (const [f, body] of Object.entries(base)) writeFileSync(join(manifestDir, 'items', f), body);
+    await writeFile(a, `# A\n- [ ] [standard] **A-01** act --- ok. *Expected: success*\n`);
+    await writeFile(b, `# B\n- [ ] [deep] **B-01** act --- ok. *Expected: success*\n`);
+    await syncTests(b, manifestDir);
+    expect(changed(snapshot())).toEqual(['b.json']);
+
+    // No repo-wide file exists for either edit to collide on.
+    expect(readdirSync(manifestDir).sort()).toEqual(['items']);
+  });
+
+  it('migrates a layout-1 manifest on first sync', async () => {
+    const docPath = join(tempDir, 'verification.md');
+    await writeFile(docPath, `# T\n- [ ] [standard] **EVT-01** Do action --- Expected. *Expected: success*\n`);
+    writeV1(manifestDir, { items: {
+      'KEEP-01': { source_doc: 'other.md', content_hash: 'x', depth: 'standard', status: 'active' },
+    }, queue: ['KEEP-01'] });
+
+    await syncTests(docPath, manifestDir);
+
+    expect(existsSync(join(manifestDir, 'items.json'))).toBe(false);
+    const after = readItems(manifestDir);
+    expect(after['KEEP-01'].pending_generation).toBe(true);
+    expect(after['EVT-01']).toBeDefined();
+    expect(readItemFiles(manifestDir)).toEqual(['other.json', 'verification.json']);
   });
 });
 
