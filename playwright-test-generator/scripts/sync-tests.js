@@ -325,16 +325,22 @@ export function resolveDocArg(argv, readStdin) {
 /**
  * Read all of stdin, or resolve undefined when nothing is coming: stdin is a
  * terminal (run by hand) or an inherited pipe that stays open without writing
- * (run by an agent). A blocking read hangs forever in both. The hook writes its
- * payload and closes stdin at once, so a short bound never cuts it off.
+ * (run by an agent). A blocking read hangs forever in both. `ms` is an idle
+ * bound, reset by every chunk, so a slow writer is never cut off; if a writer
+ * goes quiet without closing, whatever it sent is still returned.
  */
 export function readStdinWithin(stream, ms) {
   if (stream.isTTY) return Promise.resolve(undefined);
   return new Promise(done => {
     let text = '';
-    const timer = setTimeout(() => { stream.destroy(); done(undefined); }, ms);
+    const idle = () => { stream.destroy(); done(text || undefined); };
+    let timer = setTimeout(idle, ms);
     stream.setEncoding('utf8');
-    stream.on('data', chunk => { text += chunk; });
+    stream.on('data', chunk => {
+      text += chunk;
+      clearTimeout(timer);
+      timer = setTimeout(idle, ms);
+    });
     stream.on('end', () => { clearTimeout(timer); done(text); });
     stream.on('error', () => { clearTimeout(timer); done(''); });
   });

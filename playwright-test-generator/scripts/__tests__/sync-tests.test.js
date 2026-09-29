@@ -368,6 +368,21 @@ describe('readStdinWithin', () => {
     expect(await readStdinWithin(stream, 1000)).toBe('{"tool_input":{}}');
   });
 
+  it('keeps waiting while a slow writer is still sending', async () => {
+    const stream = new PassThrough();
+    // Each gap (30ms) is inside the 50ms idle bound; the total (120ms) is not.
+    const chunks = ['{"tool', '_input"', ':{', '}}'];
+    chunks.forEach((c, i) => setTimeout(() => stream.write(c), 30 * i));
+    setTimeout(() => stream.end(), 30 * chunks.length);
+    expect(await readStdinWithin(stream, 50)).toBe('{"tool_input":{}}');
+  });
+
+  it('returns what was sent when the writer goes quiet without closing', async () => {
+    const stream = new PassThrough();
+    stream.write('{"tool_input":{}}');
+    expect(await readStdinWithin(stream, 50)).toBe('{"tool_input":{}}');
+  });
+
   it('gives up on a pipe that stays open without writing', async () => {
     expect(await readStdinWithin(new PassThrough(), 50)).toBeUndefined();
   });
@@ -380,10 +395,14 @@ describe('readStdinWithin', () => {
   it('CLI with no argument and a never-closing stdin exits 2 with usage instead of hanging', async () => {
     const script = fileURLToPath(new URL('../sync-tests.js', import.meta.url));
     const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', d => { stderr += d; });
-    const code = await new Promise(res => child.on('exit', res));
-    expect(code).toBe(2);
-    expect(stderr).toMatch(/Usage: node sync-tests\.js <verification-doc-path>/);
+    try {
+      let stderr = '';
+      child.stderr.on('data', d => { stderr += d; });
+      const code = await new Promise(res => child.on('exit', res));
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/Usage: node sync-tests\.js <verification-doc-path>/);
+    } finally {
+      child.kill();
+    }
   }, 10_000);
 });
