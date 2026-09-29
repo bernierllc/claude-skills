@@ -71,7 +71,7 @@ def strip_comments_and_heredocs(cmd):
             m = re.match(r"""<<(-?)[ \t]*((?:\\.|'[^']*'|"[^"]*"|[^\s;&|()<>'"\\])+)""", cmd[i:])
             if m:
                 try:  # the delimiter is the word after quote removal: <<'E'OF and <<E\OF end at EOF
-                    delim = "".join(shlex.split(m.group(2)))
+                    delim = "".join(shlex.split(re.sub(r"\$(?=['\"])", "", m.group(2))))
                 except ValueError:
                     delim = m.group(2)
                 pending.append((delim, bool(m.group(1))))
@@ -113,8 +113,10 @@ def segments(cmd):
     try:
         tokens = list(lex)
     except ValueError:
-        # Unbalanced quotes: fall back to words, but keep each line its own command.
-        tokens = [t for line in cmd.split("\n") for t in line.split() + ["\n"]]
+        # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
+        # character, quoted or not. Over-splitting only means more gets checked.
+        tokens = [t for part in re.split(r"([;&|()\n])", cmd)
+                  for t in ([part] if part in OPERATORS else part.split())]
     argv = []
     for t in tokens + [";"]:
         if t and set(t) <= OPERATORS:
@@ -123,6 +125,8 @@ def segments(cmd):
             if argv:
                 yield argv
             argv = []
+            # Subshell bounds go through as their own segments so callers can scope `cd`.
+            yield from ([c] for c in t if c in "()")
         else:
             argv.append(t)
 
@@ -133,7 +137,14 @@ def sync_calls(cmd, cwd):
     Tracks `cd DIR` and `git -C DIR`. A dir containing `$` or a backtick can't be
     resolved statically; it is yielded as-is so the caller can refuse it.
     """
+    stack = []
     for argv in segments(cmd):
+        if argv == ["("]:
+            stack.append(cwd)
+            continue
+        if argv == [")"]:
+            cwd = stack.pop() if stack else cwd
+            continue
         if argv[0] == "cd" and len(argv) > 1:
             cwd = argv[1] if "$" in argv[1] else os.path.join(cwd, os.path.expanduser(argv[1]))
             continue

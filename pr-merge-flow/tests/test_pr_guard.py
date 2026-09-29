@@ -76,6 +76,13 @@ assert g.draft_violation('cat <<"EOF"\nx\nEOF\ngh pr create --draft')
 assert g.draft_violation("cat <<EOF\nx\ngh pr create --draft")
 assert not g.creates_pr_without_repo("gh -Rme/r pr create --title x")
 assert not g.creates_pr_without_repo("gh pr create -Rme/r")
+# Codex round 3 (post-merge on #38): subshell cd scope, fail-closed fallback, $'..' delimiters.
+assert calls("(cd /tmp; :); git merge origin/main") == [("/r", "merge", ["origin/main"])]
+assert calls("(cd /tmp && git merge origin/main)") == [("/tmp", "merge", ["origin/main"])]
+assert calls("cd a && (cd b; git merge origin/x); git merge origin/y") == \
+    [("/r/a/b", "merge", ["origin/x"]), ("/r/a", "merge", ["origin/y"])]
+assert g.draft_violation("printf $'\\''; gh pr create --draft")
+assert g.draft_violation("cat <<$'EOF'\nx\nEOF\ngh pr create --draft\n$EOF")
 # Unparseable input still keeps line boundaries.
 assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")

@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to GitHub auto-merge, wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.0.1
+version: 1.0.2
 author: Bernier LLC
 ---
 
@@ -49,6 +49,12 @@ hooks dormant). It blocks:
   the PR on the upstream repo).
 
 It fails open when there's no open PR, `gh` is unavailable, or GitHub reports `UNKNOWN`.
+
+**Scope:** the guard catches the commands agents habitually run, not a determined
+evasion; it is a speed bump, not a Bash sandbox. Parsing errs toward checking more:
+comments and heredoc bodies are dropped, `( … )` scopes `cd`, and input `shlex` can't
+parse is split on every operator character. Exotic Bash that still slips past is out of
+scope unless an agent actually ran it.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.
