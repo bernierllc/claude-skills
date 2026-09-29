@@ -40,7 +40,8 @@ export function validateTierOrder(tiers, order = TIER_ORDER) {
   const present = order.filter(name => tiers[name]);
   for (let i = 0; i < present.length - 1; i++) {
     const name = present[i];
-    if (tiers[name].branches === '*') {
+    const b = tiers[name].branches;
+    if (b === '*' || (Array.isArray(b) && b.includes('*'))) {
       throw new Error(`Tier "${name}" has branches: "*" (catch-all) but is checked before ${present.slice(i + 1).map(n => `"${n}"`).join(', ')}, which can therefore never be selected.`);
     }
   }

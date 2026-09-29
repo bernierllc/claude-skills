@@ -44,6 +44,11 @@ describe('validateTierOrder', () => {
     expect(() => validateTierOrder(tiers)).toThrow(/catch-all/i);
   });
 
+  it('treats an array containing "*" as a catch-all', () => {
+    const tiers = { full: { branches: ['*'] }, gate: { branches: ['feat/*'] } };
+    expect(() => validateTierOrder(tiers)).toThrow(/catch-all/i);
+  });
+
   it('validates by check order, not config key order', () => {
     // `gate` listed first is fine: selectTier checks full and thorough before it.
     const tiers = {
