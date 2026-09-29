@@ -233,13 +233,14 @@ unreadable queue, or a read-back mismatch. Fix the file named in the error and
 re-run. Running it again after success is a no-op.
 
 **Mixed state** — a branch cut before the migration merges back a layout-1 file
-next to 2.0 files. The same step folds it in, **per doc and per page**: the
-layout-1 entries win only when the 2.0 file is missing or the layout-1
-`generated_at` is strictly newer than that file's `updated_at`; otherwise the
-2.0 file is kept. Queued IDs are unioned (flags are only ever added). Layout 1
-has one repo-wide timestamp, so every doc in it looks equally new: a stale
-branch that touched one doc but was regenerated after another doc's 2.0 file
-will also win for that other doc. `verify-pipeline.js` fails in this state,
+next to 2.0 files. The same step folds it in, **per doc and per page**: an
+existing 2.0 file always wins, and layout-1 entries fill only docs and pages
+that have no 2.0 file. Layout 1 has one repo-wide timestamp, so it cannot say
+which doc is newer; a stale branch re-saving it would otherwise overwrite every
+doc it never touched. A kept doc the stale branch really did change is
+re-flagged by `sync-tests` on its next run (its `content_hash` no longer
+matches). Queued IDs are unioned (flags are only ever added).
+`verify-pipeline.js` fails in this state,
 because the layout-1 file is still committed: commit `manifest/items/` and
 `manifest/import-index/`, then `git rm` the layout-1 files it names.
 
