@@ -364,6 +364,7 @@ describe('resolveDocArg', () => {
 
   it('returns undefined for a truncated payload so the CLI fails loudly', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => '{"tool_input":')).toBeUndefined();
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => ' \n')).toBeUndefined();
   });
   it('returns undefined when no stdin payload is coming', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => undefined)).toBeUndefined();

@@ -317,7 +317,7 @@ export function resolveDocArg(argv, readStdin) {
   try {
     edited = JSON.parse(text.replace(/^\uFEFF/, ''))?.tool_input?.file_path;
   } catch {
-    return text.trim() ? undefined : null;
+    return text ? undefined : null;
   }
   // The hook fires on every Edit/Write, not just verification docs — ignore
   // anything that isn't one rather than rewriting the manifest for a stray file.
