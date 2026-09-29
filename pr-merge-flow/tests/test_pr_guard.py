@@ -38,4 +38,44 @@ assert not g.draft_violation("gh pr create --title 'no draft here'")
 assert g.creates_pr_without_repo("git push && gh pr create --title x")
 assert not g.creates_pr_without_repo("gh pr create -R me/r --title x")
 assert not g.creates_pr_without_repo("gh pr create --repo=me/r")
+# Codex P2s on #37: quoting, continuation, other ref spellings, gh aliases/inherited -R.
+assert calls('git merge -m "sync; base" origin/main') == [("/r", "merge", ["origin/main"])]
+assert calls("git merge \\\n  origin/staging") == [("/r", "merge", ["origin/staging"])]
+assert calls("git merge origin/staging # sync; not a command") == [("/r", "merge", ["origin/staging"])]
+assert calls('git commit -m "" && git merge origin/staging') == [("/r", "merge", ["origin/staging"])]
+assert calls("if true; then git -C wt rebase origin/main; fi") == [("/r/wt", "rebase", ["origin/main"])]
+for ref in ["refs/heads/main", "refs/remotes/upstream/main", "company/main", "refs/remotes/origin/main"]:
+    assert g.names_base([ref], "main"), ref
+assert not g.names_base(["refs/heads/feat/main-fix", "a/b/main"], "main")
+assert g.draft_violation("gh pr create \\\n  --draft --title x")
+assert g.draft_violation("gh pr new --draft")
+assert g.draft_violation("gh -R owner/repo pr create --draft")
+assert not g.draft_violation('gh pr create --title "no --draft; here"')
+assert not g.creates_pr_without_repo("gh -R me/r pr create --title x")
+assert g.creates_pr_without_repo("gh pr new --title x")
+# Codex on #38: a comment ends at the newline, and `#` inside a word or quotes isn't one.
+assert g.draft_violation("echo ok # note\ngh pr create --draft")
+assert g.draft_violation("echo x#not-a-comment; gh pr create --draft")
+assert g.draft_violation('gh pr create --title "#12 fix" --draft')
+assert g.draft_violation("gh pr create --title '# heading' --draft")
+assert not g.draft_violation("gh pr create --title x  # later: --draft")
+assert calls("git status # merge origin/main later\ngit merge origin/staging") == \
+    [("/r", "merge", ["origin/staging"])]
+# Heredoc bodies are data, not commands, and must not hide what follows.
+assert g.draft_violation("cat <<'EOF'\n\"\nEOF\ngh pr create --draft")
+assert g.draft_violation("cat <<-EOF > f\n\tit's\n\tEOF\ngh pr create --draft")
+assert not g.draft_violation("cat <<EOF\ngh pr create --draft\nEOF")
+# Codex round 2 on #38: slashed base names, quoted heredoc delimiters, attached -R.
+for ref in ["release/v1", "origin/release/v1", "refs/remotes/origin/release/v1", "refs/heads/release/v1"]:
+    assert g.names_base([ref], "release/v1"), ref
+assert not g.names_base(["a/b/release/v1", "origin/release/v10"], "release/v1")
+assert g.draft_violation("cat <<E\\OF\nx\nEOF\ngh pr create --draft")
+assert g.draft_violation("cat <<'E'OF\nx\nEOF\ngh pr create --draft")
+assert g.draft_violation('cat <<"EOF"\nx\nEOF\ngh pr create --draft')
+# A heredoc whose terminator never appears drops nothing (fails toward checking).
+assert g.draft_violation("cat <<EOF\nx\ngh pr create --draft")
+assert not g.creates_pr_without_repo("gh -Rme/r pr create --title x")
+assert not g.creates_pr_without_repo("gh pr create -Rme/r")
+# Unparseable input still keeps line boundaries.
+assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")
