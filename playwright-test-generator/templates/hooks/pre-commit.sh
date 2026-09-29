@@ -29,17 +29,16 @@ fi
 # through the loader, which refuses a lossy layout migration by throwing.
 # Swallowing that turned the gate off on every commit with no message. Say so
 # (never block — the manifest is not this commit's fault) and name the fix.
-map_err=$(mktemp "${TMPDIR:-/tmp}/map-changes-err.XXXXXX")
+# No temp file for stderr: a failed mktemp would itself kill the hook under -e.
+# The failure path re-runs once to show the error; the happy path runs once.
 map_exit=0
-affected_tags=$(echo "$staged_files" | xargs node scripts/verification-playwright/map-changes.js 2>"$map_err") || map_exit=$?
+affected_tags=$(echo "$staged_files" | xargs node scripts/verification-playwright/map-changes.js 2>/dev/null) || map_exit=$?
 if [ "$map_exit" -ne 0 ]; then
   echo "verification gate: skipped — map-changes.js failed (exit $map_exit):"
-  sed 's/^/  /' "$map_err" | head -5
+  { echo "$staged_files" | xargs node scripts/verification-playwright/map-changes.js 2>&1 >/dev/null || true; } | head -5 | sed 's/^/  /'
   echo "  Run: node scripts/verification-playwright/verify-pipeline.js"
-  rm -f "$map_err"
   exit 0
 fi
-rm -f "$map_err"
 if [ -z "$affected_tags" ]; then
   exit 0
 fi

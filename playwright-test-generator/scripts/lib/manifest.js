@@ -244,6 +244,7 @@ function readIndexPages(dir) {
     if (!page?.page || !Array.isArray(page.files)) {
       throw new Error(`Manifest file ${INDEX_DIR}/${f} has no page/files — not a per-page index file`);
     }
+    if (pages.has(page.page)) throw new Error(`${INDEX_DIR}/${pages.get(page.page).file} and ${INDEX_DIR}/${f} both declare page ${page.page} — delete the stale one`);
     pages.set(page.page, { file: f, page });
   }
   return pages;

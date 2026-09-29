@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSy
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { migrateManifest, loadManifest, saveManifest, docSlug, MANIFEST_VERSION } from '../../lib/manifest.js';
-import { writeItems, writeV1, readItems, FIXED_AT } from '../helpers/manifest-fixtures.js';
+import { writeItems, writeIndex, writeV1, readItems, FIXED_AT } from '../helpers/manifest-fixtures.js';
 
 const OLDER = '2025-06-01T00:00:00.000Z';
 const NEWER = '2026-06-01T00:00:00.000Z';
@@ -193,6 +193,13 @@ describe('per-doc files', () => {
     writeItems(dir, { 'A-01': { source_doc: 'docs/verification/a.md' } });
     writeFileSync(join(dir, 'items', 'a-copy.json'), readFileSync(join(dir, 'items', 'a.json')));
     expect(() => loadManifest(dir)).toThrow(/a-copy\.json and items\/a\.json both declare source_doc/);
+  });
+
+  it('refuses two index shards that declare the same page', () => {
+    writeItems(dir, { 'A-01': { source_doc: 'docs/verification/a.md' } });
+    writeIndex(dir, { 'src/a.ts': ['page-a'] });
+    writeFileSync(join(dir, 'import-index', 'page-a-copy.json'), readFileSync(join(dir, 'import-index', 'page-a.json')));
+    expect(() => loadManifest(dir)).toThrow(/both declare page page-a/);
   });
 
   it('saves only the doc files whose items changed', () => {
