@@ -315,7 +315,7 @@ export function resolveDocArg(argv, readStdin) {
   if (text === undefined) return undefined;
   let edited;
   try {
-    edited = JSON.parse(text)?.tool_input?.file_path;
+    edited = JSON.parse(text.replace(/^\uFEFF/, ''))?.tool_input?.file_path;
   } catch {
     return text.trim() ? undefined : null;
   }

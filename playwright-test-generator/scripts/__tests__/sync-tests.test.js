@@ -357,6 +357,11 @@ describe('resolveDocArg', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => '')).toBeNull();
   });
 
+  it('tolerates a leading BOM on the hook payload', () => {
+    const payload = '\uFEFF' + JSON.stringify({ tool_input: { file_path: '/r/docs/verification/a.md' } });
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => payload)).toBe('/r/docs/verification/a.md');
+  });
+
   it('returns undefined for a truncated payload so the CLI fails loudly', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => '{"tool_input":')).toBeUndefined();
   });
