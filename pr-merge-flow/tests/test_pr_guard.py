@@ -53,4 +53,18 @@ assert g.draft_violation("gh -R owner/repo pr create --draft")
 assert not g.draft_violation('gh pr create --title "no --draft; here"')
 assert not g.creates_pr_without_repo("gh -R me/r pr create --title x")
 assert g.creates_pr_without_repo("gh pr new --title x")
+# Codex on #38: a comment ends at the newline, and `#` inside a word or quotes isn't one.
+assert g.draft_violation("echo ok # note\ngh pr create --draft")
+assert g.draft_violation("echo x#not-a-comment; gh pr create --draft")
+assert g.draft_violation('gh pr create --title "#12 fix" --draft')
+assert g.draft_violation("gh pr create --title '# heading' --draft")
+assert not g.draft_violation("gh pr create --title x  # later: --draft")
+assert calls("git status # merge origin/main later\ngit merge origin/staging") == \
+    [("/r", "merge", ["origin/staging"])]
+# Heredoc bodies are data, not commands, and must not hide what follows.
+assert g.draft_violation("cat <<'EOF'\n\"\nEOF\ngh pr create --draft")
+assert g.draft_violation("cat <<-EOF > f\n\tit's\n\tEOF\ngh pr create --draft")
+assert not g.draft_violation("cat <<EOF\ngh pr create --draft\nEOF")
+# Unparseable input still keeps line boundaries.
+assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")

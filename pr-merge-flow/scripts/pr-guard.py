@@ -36,19 +36,79 @@ KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
 
 
+def strip_comments_and_heredocs(cmd):
+    """Drop `#` comments and heredoc bodies, keeping the newlines that end them.
+
+    shlex gets both wrong: its comments swallow the newline (and start mid-word),
+    and it parses heredoc bodies as shell, so one stray quote hides every later
+    command. Bash rules: `#` starts a comment only at the start of an unquoted word.
+
+    ponytail: `$(...)`/backtick nesting isn't tracked; a `#` or `<<` inside one is
+    treated as top-level. Worst case is a missed or extra block, never a crash.
+    """
+    out, i, n, quote, pending = [], 0, len(cmd), None, []
+    while i < n:
+        c = cmd[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 1
+            elif c == quote:
+                quote = None
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+            i += 1
+        elif c == "#" and (not out or out[-1][-1] in " \t\r\n;&|()"):
+            while i < n and cmd[i] != "\n":
+                i += 1
+        elif cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            m = re.match(r"<<(-?)[ \t]*(['\"]?)([^\s'\";&|()<>]+)\2", cmd[i:])
+            if m:
+                pending.append((m.group(3), bool(m.group(1))))
+                out.append(m.group(0))
+                i += m.end()
+            else:
+                out.append(c)
+                i += 1
+        elif c == "\n" and pending:
+            out.append(c)
+            lines, i = cmd[i + 1:].split("\n"), i + 1
+            for delim, dash in pending:
+                while lines:
+                    line = lines.pop(0)
+                    i += len(line) + 1
+                    if (line.lstrip("\t") if dash else line) == delim:
+                        break
+            pending = []
+            i = min(i, n)
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def segments(cmd):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
     backslash-newline continues the command, as in Bash.
     """
-    lex = shlex.shlex(cmd.replace("\\\n", " "), posix=True, punctuation_chars=";&|\n()")
+    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", " "))
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=";&|\n()")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
+    lex.commenters = ""
     try:
         tokens = list(lex)
     except ValueError:
-        tokens = cmd.split()
+        # Unbalanced quotes: fall back to words, but keep each line its own command.
+        tokens = [t for line in cmd.split("\n") for t in line.split() + ["\n"]]
     argv = []
     for t in tokens + [";"]:
         if t and set(t) <= OPERATORS:
