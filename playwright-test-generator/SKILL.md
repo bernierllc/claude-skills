@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 4.0.0
+version: 4.0.1
 dependencies:
   skills:
     - name: verification-writer
@@ -812,6 +812,10 @@ Browser-verification findings feed back to verification-writer, which updates do
 - Multiple parallel agents were used to generate tests and their work has been merged — run `verify-pipeline.js` before declaring done; parallel worktree merges silently discard all-but-last for shared files
 
 ## Changelog
+
+### 4.0.1
+
+**Fix: tier validation checks the order tiers are selected in, not config key order.** `selectTier()` always checks `full`, `thorough`, `gate` in that order (`TIER_ORDER`, now exported), but `validateTierOrder()` walked the keys of `config.json` as `JSON.parse` returned them. A config listing `gate: "*"` first is valid, yet it threw on every branch, so no tier ever ran. Validation now rejects only a catch-all that really shadows a tier checked after it.
 
 ### 4.0.0
 
