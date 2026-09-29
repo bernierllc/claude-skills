@@ -68,9 +68,13 @@ def strip_comments_and_heredocs(cmd):
             while i < n and cmd[i] != "\n":
                 i += 1
         elif cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
-            m = re.match(r"<<(-?)[ \t]*(['\"]?)([^\s'\";&|()<>]+)\2", cmd[i:])
+            m = re.match(r"""<<(-?)[ \t]*((?:\\.|'[^']*'|"[^"]*"|[^\s;&|()<>'"\\])+)""", cmd[i:])
             if m:
-                pending.append((m.group(3), bool(m.group(1))))
+                try:  # the delimiter is the word after quote removal: <<'E'OF and <<E\OF end at EOF
+                    delim = "".join(shlex.split(m.group(2)))
+                except ValueError:
+                    delim = m.group(2)
+                pending.append((delim, bool(m.group(1))))
                 out.append(m.group(0))
                 i += m.end()
             else:
@@ -78,15 +82,17 @@ def strip_comments_and_heredocs(cmd):
                 i += 1
         elif c == "\n" and pending:
             out.append(c)
-            lines, i = cmd[i + 1:].split("\n"), i + 1
+            lines, j = cmd[i + 1:].split("\n"), i + 1
             for delim, dash in pending:
-                while lines:
-                    line = lines.pop(0)
-                    i += len(line) + 1
+                for k, line in enumerate(lines):
                     if (line.lstrip("\t") if dash else line) == delim:
+                        j += sum(len(x) + 1 for x in lines[:k + 1])
+                        lines = lines[k + 1:]
                         break
+                else:  # no terminator: keep the rest, so nothing after it goes unchecked
+                    break
             pending = []
-            i = min(i, n)
+            i = min(j, n)
         else:
             out.append(c)
             i += 1
@@ -168,7 +174,7 @@ def names_base(refs, base):
         r = r.removeprefix("refs/heads/")
         if r.startswith("refs/remotes/"):
             r = r.removeprefix("refs/remotes/")
-        if r == base or (r.endswith("/" + base) and r.count("/") == 1):
+        if r == base or (r.endswith("/" + base) and "/" not in r[:-len(base) - 1]):
             return True
     return False
 
@@ -213,7 +219,7 @@ def gh_pr(argv):
             skip = False
         elif a in ("-R", "--repo"):
             has_repo = skip = True
-        elif a.startswith("--repo="):
+        elif a.startswith("--repo=") or (a.startswith("-R") and len(a) > 2):
             has_repo = True
         elif not a.startswith("-"):
             pos.append(a)

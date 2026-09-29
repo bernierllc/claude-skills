@@ -65,6 +65,17 @@ assert calls("git status # merge origin/main later\ngit merge origin/staging") =
 assert g.draft_violation("cat <<'EOF'\n\"\nEOF\ngh pr create --draft")
 assert g.draft_violation("cat <<-EOF > f\n\tit's\n\tEOF\ngh pr create --draft")
 assert not g.draft_violation("cat <<EOF\ngh pr create --draft\nEOF")
+# Codex round 2 on #38: slashed base names, quoted heredoc delimiters, attached -R.
+for ref in ["release/v1", "origin/release/v1", "refs/remotes/origin/release/v1", "refs/heads/release/v1"]:
+    assert g.names_base([ref], "release/v1"), ref
+assert not g.names_base(["a/b/release/v1", "origin/release/v10"], "release/v1")
+assert g.draft_violation("cat <<E\\OF\nx\nEOF\ngh pr create --draft")
+assert g.draft_violation("cat <<'E'OF\nx\nEOF\ngh pr create --draft")
+assert g.draft_violation('cat <<"EOF"\nx\nEOF\ngh pr create --draft')
+# A heredoc whose terminator never appears drops nothing (fails toward checking).
+assert g.draft_violation("cat <<EOF\nx\ngh pr create --draft")
+assert not g.creates_pr_without_repo("gh -Rme/r pr create --title x")
+assert not g.creates_pr_without_repo("gh pr create -Rme/r")
 # Unparseable input still keeps line boundaries.
 assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")
