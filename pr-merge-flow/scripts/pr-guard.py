@@ -34,6 +34,10 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
+# Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
+# which drops quoting, so `printf '('` stays an argument; swapped back after.
+HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()")}
+UNHIDE = {v: k for k, v in HIDE.items()}
 
 
 def strip_comments_and_heredocs(cmd):
@@ -50,7 +54,7 @@ def strip_comments_and_heredocs(cmd):
     while i < n:
         c = cmd[i]
         if quote:
-            out.append(c)
+            out.append(c.translate(HIDE))
             if c == "\\" and quote == '"' and i + 1 < n:
                 out.append(cmd[i + 1])
                 i += 1
@@ -58,8 +62,19 @@ def strip_comments_and_heredocs(cmd):
                 quote = None
             i += 1
         elif c == "\\" and i + 1 < n:
-            out.append(cmd[i:i + 2])
+            out.append("\\" + cmd[i + 1].translate(HIDE))
             i += 2
+        elif cmd.startswith("$'", i):
+            # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
+            # so re-emit it double-quoted. ponytail: escapes like \n become the letter.
+            m = re.match(r"\$'((?:\\.|[^'\\])*)'", cmd[i:], re.S)
+            if not m:
+                out.append(c)
+                i += 1
+                continue
+            body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
+            out.append('"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
+            i += m.end()
         elif c in "'\"":
             quote = c
             out.append(c)
@@ -128,7 +143,7 @@ def segments(cmd):
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")
         else:
-            argv.append(t)
+            argv.append(t.translate(UNHIDE))
 
 
 def sync_calls(cmd, cwd):

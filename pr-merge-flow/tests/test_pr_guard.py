@@ -83,6 +83,12 @@ assert calls("cd a && (cd b; git merge origin/x); git merge origin/y") == \
     [("/r/a/b", "merge", ["origin/x"]), ("/r/a", "merge", ["origin/y"])]
 assert g.draft_violation("printf $'\\''; gh pr create --draft")
 assert g.draft_violation("cat <<$'EOF'\nx\nEOF\ngh pr create --draft\n$EOF")
+# Quoted or escaped operator characters are arguments, not shell syntax.
+assert calls("printf '('; cd /tmp/repo; printf ')'; git merge origin/main") == \
+    [("/tmp/repo", "merge", ["origin/main"])]
+assert calls("echo \\( ; cd /x; echo \\) ; git merge origin/main") == [("/x", "merge", ["origin/main"])]
+assert g.draft_violation("echo ';' && gh pr create --draft")
+assert list(g.segments("echo ';' '|'")) == [["echo", ";", "|"]]
 # Unparseable input still keeps line boundaries.
 assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")
