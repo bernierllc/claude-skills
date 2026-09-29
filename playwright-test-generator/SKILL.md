@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 4.0.1
+version: 4.0.2
 dependencies:
   skills:
     - name: verification-writer
@@ -126,7 +126,7 @@ tests/verification-playwright/manifest/items/*.json -merge
 tests/verification-playwright/manifest/import-index/*.json -merge
 ```
 
-On a conflict take either side, then re-run `sync-tests.js` for that doc (or `--force-index` for that page).
+On a conflict take either side, then re-run `sync-tests.js` for that doc, passing its path (`node scripts/verification-playwright/sync-tests.js docs/verification/<doc>.md`), or `--force-index` for that page.
 
 ## Entry Points
 
@@ -812,6 +812,10 @@ Browser-verification findings feed back to verification-writer, which updates do
 - Multiple parallel agents were used to generate tests and their work has been merged — run `verify-pipeline.js` before declaring done; parallel worktree merges silently discard all-but-last for shared files
 
 ## Changelog
+
+### 4.0.2
+
+**Fix: `sync-tests.js` with no argument no longer hangs.** With no doc path it read stdin for the hook's `{"tool_input":{"file_path":…}}` payload using a blocking read, which never returns when stdin is a terminal (run by hand) or a pipe that stays open without writing (run by an agent). It now reads stdin with a 2 s bound. If stdin is a terminal or stays silent, it prints usage to stderr and exits 2. The hook still writes its payload and closes at once, so it is unaffected. The docs' "re-run `sync-tests.js` for that doc" steps now show the path form.
 
 ### 4.0.1
 

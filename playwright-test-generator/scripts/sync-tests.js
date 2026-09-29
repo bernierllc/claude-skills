@@ -302,12 +302,18 @@ export async function syncTests(docPath, manifestDir) {
  * postToolUse hook hands us on stdin as `{tool_input: {file_path}}`. That hook
  * has no way to interpolate a path into the command, so without the stdin read
  * it invoked the script with nothing to sync and failed on every doc edit.
+ *
+ * readStdin() returning undefined means no payload is coming (see
+ * readStdinWithin); that returns undefined too, vs null for "hook payload,
+ * nothing to sync", so the CLI can fail with usage instead of exiting clean.
  */
 export function resolveDocArg(argv, readStdin) {
   if (argv[2] && !argv[2].startsWith('-')) return argv[2];
+  const text = readStdin();
+  if (text === undefined) return undefined;
   let edited;
   try {
-    edited = JSON.parse(readStdin())?.tool_input?.file_path;
+    edited = JSON.parse(text)?.tool_input?.file_path;
   } catch {
     return null;
   }
@@ -316,20 +322,44 @@ export function resolveDocArg(argv, readStdin) {
   return /verification\/.*\.md$/.test(edited ?? '') ? edited : null;
 }
 
+/**
+ * Read all of stdin, or resolve undefined when nothing is coming: stdin is a
+ * terminal (run by hand) or an inherited pipe that stays open without writing
+ * (run by an agent). A blocking read hangs forever in both. The hook writes its
+ * payload and closes stdin at once, so a short bound never cuts it off.
+ */
+export function readStdinWithin(stream, ms) {
+  if (stream.isTTY) return Promise.resolve(undefined);
+  return new Promise(done => {
+    let text = '';
+    const timer = setTimeout(() => { stream.destroy(); done(undefined); }, ms);
+    stream.setEncoding('utf8');
+    stream.on('data', chunk => { text += chunk; });
+    stream.on('end', () => { clearTimeout(timer); done(text); });
+    stream.on('error', () => { clearTimeout(timer); done(''); });
+  });
+}
+
 // --- CLI entry point ---
 const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
+  const hasPathArg = process.argv[2] && !process.argv[2].startsWith('-');
+  const stdinText = process.argv.includes('--help') || hasPathArg
+    ? ''
+    : await readStdinWithin(process.stdin, 2000);
   const docArg = process.argv.includes('--help')
     ? null
-    : resolveDocArg(process.argv, () => readFileSync(0, 'utf8'));
+    : resolveDocArg(process.argv, () => stdinText);
 
   if (!docArg) {
-    console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
+    // undefined = run by hand with nothing to sync: an error, not a quiet no-op.
+    const log = docArg === undefined ? console.error : console.log;
+    log(`sync-tests.js - Sync verification docs to Playwright test manifest
 
 Usage: node sync-tests.js <verification-doc-path>
-       node sync-tests.js            # reads {"tool_input":{"file_path":…}} on stdin
+       node sync-tests.js            # hook form: reads {"tool_input":{"file_path":…}} on stdin
        node sync-tests.js --help`);
-    process.exit(0);
+    process.exit(docArg === undefined ? 2 : 0);
   }
 
   const docPath = resolve(docArg);

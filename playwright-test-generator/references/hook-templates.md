@@ -202,7 +202,7 @@ This is a **mandatory gate**, not optional. The failure modes it catches: two ag
 
 **Coordinator agent responsibilities:**
 - Assign each worker a disjoint set of docs; a worker writes only `manifest/items/<doc-slug>.json` for its docs and `manifest/import-index/<page>.json` for its pages
-- Cherry-pick each agent's spec files, metadata docs, test helpers, and its own per-doc manifest files; on a conflict in a manifest file (they are `-merge`), take one side and re-run `sync-tests.js` for that doc
+- Cherry-pick each agent's spec files, metadata docs, test helpers, and its own per-doc manifest files; on a conflict in a manifest file (they are `-merge`), take one side and re-run `sync-tests.js` for that doc, passing its path (`node scripts/verification-playwright/sync-tests.js docs/verification/<doc>.md`)
 - Run `check-versions.js` and rebuild the index after all worker branches are merged
 - Run `verify-pipeline.js` before the final commit
 

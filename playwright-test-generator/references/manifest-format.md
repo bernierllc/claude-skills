@@ -264,7 +264,7 @@ tests/verification-playwright/manifest/items/*.json -merge
 tests/verification-playwright/manifest/import-index/*.json -merge
 ```
 
-On a conflict, take either side and re-run `sync-tests.js` for that doc (items) or rebuild that page's index (`--force-index`).
+On a conflict, take either side and re-run `sync-tests.js` for that doc (items: `node scripts/verification-playwright/sync-tests.js docs/verification/<doc>.md`) or rebuild that page's index (`--force-index`).
 
 ## The pending-generation queue
 

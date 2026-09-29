@@ -6,8 +6,12 @@ import {
   removeTestBlock,
   detectPinning,
   syncTests,
-  resolveDocArg
+  resolveDocArg,
+  readStdinWithin
 } from '../sync-tests.js';
+import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { hashItem } from '../lib/hash.js';
 import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -352,4 +356,34 @@ describe('resolveDocArg', () => {
   it('returns null when stdin is empty or unparseable', () => {
     expect(resolveDocArg(['node', 'sync-tests.js'], () => '')).toBeNull();
   });
+  it('returns undefined when no stdin payload is coming', () => {
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => undefined)).toBeUndefined();
+  });
+});
+
+describe('readStdinWithin', () => {
+  it('returns what the hook wrote once it closes stdin', async () => {
+    const stream = new PassThrough();
+    stream.end('{"tool_input":{}}');
+    expect(await readStdinWithin(stream, 1000)).toBe('{"tool_input":{}}');
+  });
+
+  it('gives up on a pipe that stays open without writing', async () => {
+    expect(await readStdinWithin(new PassThrough(), 50)).toBeUndefined();
+  });
+
+  it('never reads a terminal', async () => {
+    const stream = Object.assign(new PassThrough(), { isTTY: true });
+    expect(await readStdinWithin(stream, 10_000)).toBeUndefined();
+  });
+
+  it('CLI with no argument and a never-closing stdin exits 2 with usage instead of hanging', async () => {
+    const script = fileURLToPath(new URL('../sync-tests.js', import.meta.url));
+    const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', d => { stderr += d; });
+    const code = await new Promise(res => child.on('exit', res));
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/Usage: node sync-tests\.js <verification-doc-path>/);
+  }, 10_000);
 });
