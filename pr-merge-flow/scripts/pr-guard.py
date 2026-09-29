@@ -36,7 +36,7 @@ KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
-HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()")}
+HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
 UNHIDE = {v: k for k, v in HIDE.items()}
 
 
@@ -111,7 +111,8 @@ def strip_comments_and_heredocs(cmd):
         else:
             out.append(c)
             i += 1
-    return "".join(out)
+    # An unclosed quote hid everything after it; un-hide so the fallback checks it all.
+    return "".join(out).translate(UNHIDE) if quote else "".join(out)
 
 
 def segments(cmd):

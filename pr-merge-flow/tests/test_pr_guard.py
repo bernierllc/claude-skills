@@ -89,6 +89,8 @@ assert calls("printf '('; cd /tmp/repo; printf ')'; git merge origin/main") == \
 assert calls("echo \\( ; cd /x; echo \\) ; git merge origin/main") == [("/x", "merge", ["origin/main"])]
 assert g.draft_violation("echo ';' && gh pr create --draft")
 assert list(g.segments("echo ';' '|'")) == [["echo", ";", "|"]]
+assert g.draft_violation("gh pr create --title '\n' --draft")
+assert g.draft_violation('gh pr create --title "a\nb" --draft')
 # Unparseable input still keeps line boundaries.
 assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
 print("ok")
