@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-09-28T21:52:27.217942+00:00",
+  "generatedAt": "2026-09-29T03:38:08.253413+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -63,8 +63,8 @@
       "author": "Bernier LLC"
     },
     "playwright-test-generator": {
-      "version": "3.11.1",
-      "description": "Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when the pending-generation queue has items."
+      "version": "4.0.0",
+      "description": "Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when manifest items are flagged pending_generation."
     },
     "playwright-test-runner": {
       "version": "1.3.0",
