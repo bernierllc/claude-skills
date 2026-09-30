@@ -4,19 +4,11 @@
  * Exports testable functions. CLI entry point at bottom.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, relative, basename, join, sep } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
-import {
-  readManifestFileSync, writeManifestFileSync, acquireLockSync,
-  readPendingIds, writePendingIds,
-} from './lib/manifest.js';
-
-// Re-exported: readPendingIds lives in lib/manifest.js so this script, the
-// queue helpers and verify-pipeline.js all share ONE reader. Kept on this
-// module's surface because callers already import it from here.
-export { readPendingIds };
-import { fileURLToPath } from 'node:url';
+import { acquireLockSync, loadManifest, saveManifest, manifestDirFor } from './lib/manifest.js';
+import { isEntryPoint } from './lib/repo.js';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- outcome. *Expected: type*
 // ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30).
@@ -197,13 +189,9 @@ export function detectPinning(specContent, itemId, generatedHash) {
 
 /** Run the full sync operation. */
 export async function syncTests(docPath, manifestDir) {
-  const itemsPath = join(manifestDir, 'items.json');
-  let items;
-  try {
-    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
-  } catch {
-    items = { version: '1.0', items: {} };
-  }
+  // The one loader: migrates an older manifest layout first, then hands back
+  // every per-doc items file as one flat {id: entry} map.
+  const manifest = loadManifest(manifestDir);
 
   // Repo-relative source_doc: an absolute path is machine-specific and
   // rewrites every entry the moment anyone syncs from a different checkout.
@@ -225,28 +213,28 @@ export async function syncTests(docPath, manifestDir) {
   // added, and rewrite the paths -- then churn back on the next unix sync.
   const docRel = relative(repoRoot, docPath).split(sep).join('/');
   const scopedManifestItems = {};
-  for (const [id, item] of Object.entries(items.items)) {
+  for (const [id, item] of Object.entries(manifest.items)) {
     if (item.source_doc === docRel) {
       scopedManifestItems[id] = item;
     }
   }
   const changes = detectChanges(docItems, scopedManifestItems);
 
-  // Process removals
+  // Process removals. A queued id leaves the queue with its entry, because
+  // the queue is the entry's own pending_generation flag.
   for (const removed of changes.removed) {
-    delete items.items[removed.id];
+    delete manifest.items[removed.id];
   }
 
   // Refuse to write when an added ID is already owned by a different doc.
-  // items.items is keyed globally by item ID, so writing here would silently
-  // reassign the other doc's item to this one and drop its test coverage with
-  // no error anywhere. Two docs sharing an id_namespace is the usual cause —
-  // verification-writer's integrity pass reports that upstream.
-  // ponytail: keying the manifest by source_doc + id would remove the
-  // collision entirely; that is a manifest format change, deferred.
+  // Item IDs are unique across ALL per-doc files (the loader flattens them),
+  // so writing here would silently move the other doc's item into this doc's
+  // file and drop its test coverage with no error anywhere. Two docs sharing
+  // an id_namespace is the usual cause — verification-writer's integrity pass
+  // reports that upstream.
   const collisions = changes.added
-    .filter((a) => items.items[a.id])
-    .map((a) => `  ${a.id} — already owned by ${items.items[a.id].source_doc}`);
+    .filter((a) => manifest.items[a.id])
+    .map((a) => `  ${a.id} — already owned by ${manifest.items[a.id].source_doc}`);
   if (collisions.length > 0) {
     throw new Error(
       `sync-tests: ${collisions.length} item ID collision(s) syncing ${docFilename}; manifest not written.\n` +
@@ -258,7 +246,7 @@ export async function syncTests(docPath, manifestDir) {
   // Process additions
   const pendingIds = [];
   for (const added of changes.added) {
-    items.items[added.id] = {
+    manifest.items[added.id] = {
       source_doc: docRel,
       content_hash: added.contentHash,
       depth: added.depth,
@@ -271,48 +259,34 @@ export async function syncTests(docPath, manifestDir) {
 
   // Process modifications
   for (const mod of changes.modified) {
-    const existing = items.items[mod.id];
+    const existing = manifest.items[mod.id];
     const classification = classifyModification(mod, existing);
-    items.items[mod.id].content_hash = mod.contentHash;
-    items.items[mod.id].source_doc = docRel;
-    items.items[mod.id].expected_type = mod.expectedType;
+    manifest.items[mod.id].content_hash = mod.contentHash;
+    manifest.items[mod.id].source_doc = docRel;
+    manifest.items[mod.id].expected_type = mod.expectedType;
     if (classification === 'substantial' && !existing.pinned) {
       pendingIds.push(mod.id);
     }
   }
 
-  // Write pending queue. Removals have to be dropped from it as well as from
-  // the manifest -- a queued id whose entry is gone (renamed namespace, deleted
-  // check) sends the generator looking for a manifest entry that no longer
-  // exists, and the id sits in the queue forever because nothing else clears it.
-  const removedIds = new Set(changes.removed.map((r) => r.id));
-  const pendingPath = join(manifestDir, '..', 'pending-generation.json');
-  const queued = readPendingIds(pendingPath);
-  const merged = [...new Set([...queued, ...pendingIds])].filter((id) => !removedIds.has(id));
-  if (merged.length !== queued.length || pendingIds.length > 0) {
-    writePendingIds(pendingPath, merged);
-  }
+  // Queue for LLM generation: the flag lives on the entry, in this doc's file.
+  for (const id of pendingIds) manifest.items[id].pending_generation = true;
 
   // Backfill expected_type on entries that predate the field. Without it
   // classifyModification compares a parsed type against undefined and calls
   // every wording edit substantial, queueing regeneration that isn't needed.
   let backfilled = 0;
   for (const item of changes.unchanged) {
-    const entry = items.items[item.id];
+    const entry = manifest.items[item.id];
     if (entry && entry.expected_type === undefined) {
       entry.expected_type = item.expectedType;
       backfilled++;
     }
   }
 
-  // Write updated manifest. A sync that changed nothing must not rewrite the
-  // file: items.json is committed, and a fresh generated_at on every no-op
-  // sync leaves a dirty tree after every commit that touches a verification
-  // doc, which is how the whole manifest drifted unnoticed in the first place.
-  if (changes.added.length || changes.removed.length || changes.modified.length || backfilled) {
-    items.generated_at = new Date().toISOString();
-    writeFileSync(itemsPath, JSON.stringify(items, null, 2) + '\n', 'utf8');
-  }
+  // saveManifest rewrites only the per-doc files whose content changed, so a
+  // no-op sync leaves the tree clean and an edit to one doc touches one file.
+  saveManifest(manifest);
 
   return {
     added: changes.added.length,
@@ -328,34 +302,73 @@ export async function syncTests(docPath, manifestDir) {
  * postToolUse hook hands us on stdin as `{tool_input: {file_path}}`. That hook
  * has no way to interpolate a path into the command, so without the stdin read
  * it invoked the script with nothing to sync and failed on every doc edit.
+ *
+ * readStdin() returning undefined means no payload is coming (see
+ * readStdinWithin); that returns undefined too, vs null for "hook payload,
+ * nothing to sync", so the CLI can fail with usage instead of exiting clean.
+ * A non-empty payload that isn't JSON (a writer cut off mid-payload) is
+ * undefined as well: skipping the sync there must not look like success.
  */
 export function resolveDocArg(argv, readStdin) {
   if (argv[2] && !argv[2].startsWith('-')) return argv[2];
+  const text = readStdin();
+  if (text === undefined) return undefined;
   let edited;
   try {
-    edited = JSON.parse(readStdin())?.tool_input?.file_path;
+    edited = JSON.parse(text.replace(/^\uFEFF/, ''))?.tool_input?.file_path;
   } catch {
-    return null;
+    return text ? undefined : null;
   }
   // The hook fires on every Edit/Write, not just verification docs — ignore
   // anything that isn't one rather than rewriting the manifest for a stray file.
   return /verification\/.*\.md$/.test(edited ?? '') ? edited : null;
 }
 
+/**
+ * Read all of stdin, or resolve undefined when nothing is coming: stdin is a
+ * terminal (run by hand) or an inherited pipe that stays open without writing
+ * (run by an agent). A blocking read hangs forever in both. `ms` is an idle
+ * bound, reset by every chunk, so a slow writer is never cut off; if a writer
+ * goes quiet without closing, whatever it sent is still returned. Closed with
+ * nothing sent (`</dev/null`) is "nothing coming" too.
+ */
+export function readStdinWithin(stream, ms) {
+  if (stream.isTTY) return Promise.resolve(undefined);
+  return new Promise(done => {
+    let text = '';
+    const idle = () => { stream.destroy(); done(text || undefined); };
+    let timer = setTimeout(idle, ms);
+    stream.setEncoding('utf8');
+    stream.on('data', chunk => {
+      text += chunk;
+      clearTimeout(timer);
+      timer = setTimeout(idle, ms);
+    });
+    stream.on('end', () => { clearTimeout(timer); done(text || undefined); });
+    stream.on('error', () => { clearTimeout(timer); done(''); });
+  });
+}
+
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
+  const hasPathArg = process.argv[2] && !process.argv[2].startsWith('-');
+  const stdinText = process.argv.includes('--help') || hasPathArg
+    ? ''
+    : await readStdinWithin(process.stdin, 2000);
   const docArg = process.argv.includes('--help')
     ? null
-    : resolveDocArg(process.argv, () => readFileSync(0, 'utf8'));
+    : resolveDocArg(process.argv, () => stdinText);
 
   if (!docArg) {
-    console.log(`sync-tests.js - Sync verification docs to Playwright test manifest
+    // undefined = run by hand with nothing to sync: an error, not a quiet no-op.
+    const log = docArg === undefined ? console.error : console.log;
+    log(`sync-tests.js - Sync verification docs to Playwright test manifest
 
 Usage: node sync-tests.js <verification-doc-path>
-       node sync-tests.js            # reads {"tool_input":{"file_path":…}} on stdin
+       node sync-tests.js            # hook form: reads {"tool_input":{"file_path":…}} on stdin
        node sync-tests.js --help`);
-    process.exit(0);
+    process.exit(docArg === undefined ? 2 : 0);
   }
 
   const docPath = resolve(docArg);
@@ -368,7 +381,7 @@ Usage: node sync-tests.js <verification-doc-path>
 
   const release = acquireLockSync(projectDir);
   try {
-    const manifestDir = join(projectDir, 'tests', 'verification-playwright', 'manifest');
+    const manifestDir = manifestDirFor(projectDir);
     const result = await syncTests(docPath, manifestDir);
     const parts = [];
     if (result.added) parts.push(`${result.added} added`);

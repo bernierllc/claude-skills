@@ -174,7 +174,7 @@ When an item carries an `API-VERIFICATION-FLAG` annotation, use this table to de
 
 A live test (non-`.skip()`) must use a selector confirmed against component source. Before writing the test:
 
-1. Use `manifest/import-index.json` to map the route → source file.
+1. Use `manifest/import-index/` to map the route → source file.
 2. Read the component file(s) rendered for that route.
 3. For each selector, confirm one of:
    - exact `data-testid` attribute present in JSX
@@ -298,18 +298,18 @@ test.skip('@EVT-FRM-SD-01 @deep @admin-event-form state cascade on type change',
 - `confirmed-missing` — component source was read; the suggested testid (or any stable alternative) is not present. Add the testid.
 - `unverified` — component source could not be confidently located or read. The testid may or may not exist; needs human disambiguation. Pair with a note in the Description column explaining what blocked verification.
 
-3. On subsequent runs, grep the codebase for previously-missing testids. If found, remove `.skip()` and update status to `active`. For `unverified` rows, re-attempt source location before grepping — the gap may resolve once `import-index.json` is corrected.
+3. On subsequent runs, grep the codebase for previously-missing testids. If found, remove `.skip()` and update status to `active`. For `unverified` rows, re-attempt source location before grepping — the gap may resolve once `manifest/import-index/` is corrected.
 
 4. **Data-dependency stubs (skip reason 2) do NOT belong in `testid-gaps.md`.** They go in a separate `data-setup-gaps.md` (or a labeled section within the same report) keyed by required seed shape. Mixing them obscures which component owners need to act vs. which seed authors do.
 
 ## Test Pinning
 
-Detect manual edits by comparing actual file content (between `@begin`/`@end` markers) against `generated_hash` in `items.json`.
+Detect manual edits by comparing actual file content (between `@begin`/`@end` markers) against `generated_hash` on the item in its `manifest/items/<doc-slug>.json`.
 
 - Hash matches → test is generated, safe to overwrite
 - Hash differs → developer edited the test, set `pinned: true`
 - Pinned tests: never overwritten, reported as "pinned (manually edited)"
-- Un-pin: set `"pinned": false` in items.json, or use `--force`
+- Un-pin: set `"pinned": false` on the item in its `manifest/items/<doc-slug>.json`, or use `--force`
 
 ## First Run Behavior
 

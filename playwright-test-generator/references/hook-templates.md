@@ -116,8 +116,8 @@ Template at `templates/hooks/pre-push.sh`. Branch-aware tiered test execution.
 2. Parse target branch from stdin refspecs (reliable) with `@{push}` fallback
 3. Select tier via `select-tier.js` based on target branch
 4. Execute:
-   - **thorough:** 3 browsers, all depths, changes-only (`--grep`)
-   - **full:** all browsers, all tests (no `--grep`)
+   - **thorough:** `tiers.thorough.browsers` (as `--project` flags), all depths, changes-only (`--grep`)
+   - **full:** `tiers.full.browsers` (as `--project` flags), all tests (no `--grep`)
    - **no match:** exit 0 (feature branch push, skip)
 
 ### Branch-to-tier mapping (from config.json)
@@ -184,7 +184,7 @@ Disable by setting `dry_run: false` in config or removing the env var.
 
 ## Coordinator / Parallel-Agent Post-Merge Gate
 
-When multiple parallel agents generate tests (e.g., one agent per page doc), they work in isolated worktrees. Worktree merge is last-write-wins for shared files — `items.json`, `import-index.json`, and `pending-generation.json` will reflect only the last agent's state unless a coordinator rebuilds them.
+When multiple parallel agents generate tests (e.g., one agent per page doc), they work in isolated worktrees. Since 4.0.0 the manifest is one file per doc (`manifest/items/<doc-slug>.json`) and one per page (`manifest/import-index/<page>.json`), so agents that each own **different docs and pages** write disjoint manifest files and their merges do not collide. Two agents touching the same doc or page still collide on that file — last write wins — so split work by doc, never within one.
 
 **After merging parallel agent work, before committing:**
 
@@ -198,11 +198,11 @@ node scripts/verification-playwright/verify-pipeline.js --check-orphans
 # 3. If either check fails, DO NOT commit — fix the issues first
 ```
 
-This is a **mandatory gate**, not optional. The failure mode: 5 parallel agents each write `items.json` with their page's items only; the final merge state has only the last agent's page items; all other pages show `test-missing` on the next `check-versions.js` run; if committed, the gap is invisible until someone runs `check-versions.js`.
+This is a **mandatory gate**, not optional. The failure modes it catches: two agents given overlapping docs, where the last merge silently drops the other agent's items for that doc (the page shows `test-missing` on the next `check-versions.js` run); a worker branch cut before the 4.0.0 migration that brings a layout-1 `items.json` back (`verify-pipeline.js` fails, folds it in per doc, and names the `git rm`); and an ID minted by two docs (the loader refuses).
 
 **Coordinator agent responsibilities:**
-- Own `items.json`, `import-index.json`, and `pending-generation.json` exclusively — worker agents must NOT write these files
-- Cherry-pick only each agent's spec files, metadata docs, and test helpers — not shared manifest files
+- Assign each worker a disjoint set of docs; a worker writes only `manifest/items/<doc-slug>.json` for its docs and `manifest/import-index/<page>.json` for its pages
+- Cherry-pick each agent's spec files, metadata docs, test helpers, and its own per-doc manifest files; on a conflict in a manifest file (they are `-merge`), take one side and re-run `sync-tests.js` for that doc, passing its path (`node scripts/verification-playwright/sync-tests.js docs/verification/<doc>.md`)
 - Run `check-versions.js` and rebuild the index after all worker branches are merged
 - Run `verify-pipeline.js` before the final commit
 

@@ -4,12 +4,13 @@
  * Exports testable functions. CLI entry point at bottom.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolveRepoRoot } from './lib/repo.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
-import { readPendingIds, pendingQueuePath } from './lib/manifest.js';
+import {
+  loadManifest, manifestDirFor, pendingIds, LEGACY_MANIFEST_FILES, MANIFEST_VERSION,
+} from './lib/manifest.js';
 
 // Tool-call artifact tokens that must never appear in a generated spec. A
 // malformed generation can leak these trailer tokens into a file; because
@@ -26,18 +27,28 @@ const ARTIFACT_TOKENS = [
   '</function_calls>',
 ];
 
-/** Check manifest file integrity (all 3 files parse as valid JSON). */
+const LAYOUT_DIRS = ['items', 'import-index'];
+
+function jsonFilesIn(manifestDir) {
+  const files = existsSync(join(manifestDir, 'config.json')) ? ['config.json'] : [];
+  for (const sub of LAYOUT_DIRS) {
+    const dir = join(manifestDir, sub);
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).sort()) if (f.endsWith('.json')) files.push(`${sub}/${f}`);
+  }
+  return files;
+}
+
+/** Check manifest file integrity: config.json and every per-doc / per-page
+ *  file parse as valid JSON. */
 export async function checkManifestIntegrity(manifestDir) {
-  const files = ['items.json', 'import-index.json', 'config.json'];
   const results = [];
-  for (const file of files) {
-    const filePath = join(manifestDir, file);
-    if (!existsSync(filePath)) {
-      results.push({ file, status: 'warn', message: `Missing manifest file: ${file}` });
-      continue;
-    }
+  if (!existsSync(join(manifestDir, 'config.json'))) {
+    results.push({ file: 'config.json', status: 'warn', message: 'Missing manifest file: config.json' });
+  }
+  for (const file of jsonFilesIn(manifestDir)) {
     try {
-      JSON.parse(readFileSync(filePath, 'utf8'));
+      JSON.parse(readFileSync(join(manifestDir, file), 'utf8'));
       results.push({ file, status: 'pass', message: 'Valid JSON' });
     } catch (err) {
       results.push({ file, status: 'fail', message: `Invalid JSON: ${err.message}` });
@@ -46,15 +57,62 @@ export async function checkManifestIntegrity(manifestDir) {
   return results;
 }
 
+/**
+ * Load the manifest through the one loader (which migrates an older layout
+ * first) and report the layout state. Returns { checks, manifest }; manifest
+ * is null when the loader refused.
+ *   - loader throws (unmigratable layout 1, newer layout, ID collision) -> fail
+ *   - layout-1 files next to per-doc files (a pre-migration branch merged in)
+ *     -> fail: the loader folded them locally, but the tree must not carry both
+ *   - layout 1 alone -> warn: migrated in the working tree, not yet committed
+ */
+export async function checkManifestLayout(manifestDir) {
+  const legacy = LEGACY_MANIFEST_FILES.filter((f) => existsSync(join(manifestDir, f)));
+  const shardCount = (sub) => existsSync(join(manifestDir, sub))
+    ? readdirSync(join(manifestDir, sub)).filter((f) => f.endsWith('.json')).length : 0;
+  const hadCurrent = LAYOUT_DIRS.some((sub) => shardCount(sub) > 0);
+  // A bootstrapped pipeline (config.json present) with no item files at all
+  // means manifest/items/ was deleted or emptied: loadManifest would return an
+  // empty map and every later check would pass over nothing.
+  if (existsSync(join(manifestDir, 'config.json')) && !legacy.length && shardCount('items') === 0) {
+    return { manifest: null, checks: [{ file: 'items/', status: 'fail', message:
+      'Manifest has config.json but no per-doc item files under manifest/items/. Fix: restore them ' +
+      '(git checkout -- manifest/items) or regenerate with --force' }] };
+  }
+  let manifest;
+  try {
+    manifest = loadManifest(manifestDir);
+  } catch (err) {
+    return {
+      manifest: null,
+      checks: [{ file: 'manifest', status: 'fail', message:
+        `Manifest cannot be loaded: ${err.message}. Fix: correct the file named above, then re-run ` +
+        '(a refused migration leaves the old files untouched)' }],
+    };
+  }
+  const commit = `commit manifest/items/ and manifest/import-index/, then git rm ${legacy.join(' ')}`;
+  if (legacy.length && hadCurrent) {
+    return { manifest, checks: [{ file: legacy.join(', '), status: 'fail', message:
+      `Layout-1 manifest file(s) committed alongside the ${MANIFEST_VERSION} per-doc layout (folded in locally). Fix: ${commit}` }] };
+  }
+  if (legacy.length) {
+    return { manifest, checks: [{ file: legacy.join(', '), status: 'warn', message:
+      `Manifest migrated from layout 1 to ${MANIFEST_VERSION} in the working tree. Fix: ${commit}` }] };
+  }
+  if (shardCount('import-index') === 0 && Object.keys(manifest.items).length) {
+    return { manifest, checks: [{ file: 'import-index/', status: 'warn', message:
+      'No import-index pages under manifest/import-index/, so no source change maps to a test. ' +
+      'Fix: restore them (git checkout -- manifest/import-index) or regenerate with --force' }] };
+  }
+  return { manifest, checks: [] };
+}
+
 /** Check that all source files in the import index exist on disk.
- * import-index keys are repo-root-relative, so they resolve against repoRoot,
+ * import-index paths are repo-root-relative, so they resolve against repoRoot,
  * which defaults to projectDir for single-root projects. */
-export async function checkSourceFiles(manifestDir, projectDir, repoRoot = projectDir) {
-  const indexPath = join(manifestDir, 'import-index.json');
-  if (!existsSync(indexPath)) return [];
-  const index = JSON.parse(readFileSync(indexPath, 'utf8'));
+export async function checkSourceFiles(manifest, projectDir, repoRoot = projectDir) {
   const results = [];
-  for (const file of Object.keys(index.entries || {})) {
+  for (const file of Object.keys(manifest.entries)) {
     // Failing here is the other half of the split documented in
     // lib/index-drift.js: drift that reaches CI means nobody refreshed.
     if (isIndexEntryStale(file, repoRoot)) {
@@ -67,16 +125,8 @@ export async function checkSourceFiles(manifestDir, projectDir, repoRoot = proje
 }
 
 /** Check that all spec files referenced in items exist on disk. */
-export async function checkSpecFiles(manifestDir, projectDir) {
-  const itemsPath = join(manifestDir, 'items.json');
-  if (!existsSync(itemsPath)) return [];
-  let items;
-  try {
-    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
-  } catch {
-    return [{ file: 'items.json', status: 'fail', message: 'Cannot parse items.json' }];
-  }
-  const specFiles = [...new Set(Object.values(items.items || {}).map(i => i.spec_file).filter(Boolean))];
+export async function checkSpecFiles(manifest, projectDir) {
+  const specFiles = [...new Set(Object.values(manifest.items).map(i => i.spec_file).filter(Boolean))];
   const results = [];
   for (const file of specFiles) {
     const fullPath = join(projectDir, file);
@@ -90,17 +140,9 @@ export async function checkSpecFiles(manifestDir, projectDir) {
 }
 
 /** Check that every item ID has @begin/@end markers in its spec file. */
-export async function checkItemConsistency(manifestDir, projectDir) {
-  const itemsPath = join(manifestDir, 'items.json');
-  if (!existsSync(itemsPath)) return [];
-  let items;
-  try {
-    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
-  } catch {
-    return [{ itemId: 'N/A', status: 'fail', message: 'Cannot parse items.json' }];
-  }
+export async function checkItemConsistency(manifest, projectDir) {
   const results = [];
-  for (const [id, item] of Object.entries(items.items || {})) {
+  for (const [id, item] of Object.entries(manifest.items)) {
     if (!item.spec_file) {
       // Items without spec_file are pending generation or have minimal config — skip, don't fail
       continue;
@@ -140,16 +182,8 @@ export async function checkItemConsistency(manifestDir, projectDir) {
 /** Check that no spec file contains leaked tool-call artifact tokens.
  * A single corrupted spec aborts the whole Playwright run at collection time,
  * so reject artifacts deterministically rather than waiting for a SyntaxError. */
-export async function checkSpecArtifacts(manifestDir, projectDir) {
-  const itemsPath = join(manifestDir, 'items.json');
-  if (!existsSync(itemsPath)) return [];
-  let items;
-  try {
-    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
-  } catch {
-    return [];
-  }
-  const specFiles = [...new Set(Object.values(items.items || {}).map(i => i.spec_file).filter(Boolean))];
+export async function checkSpecArtifacts(manifest, projectDir) {
+  const specFiles = [...new Set(Object.values(manifest.items).map(i => i.spec_file).filter(Boolean))];
   const results = [];
   for (const file of specFiles) {
     const fullPath = join(projectDir, file);
@@ -166,17 +200,9 @@ export async function checkSpecArtifacts(manifestDir, projectDir) {
 }
 
 /** Report pinned tests. */
-export async function checkPinnedTests(manifestDir) {
-  const itemsPath = join(manifestDir, 'items.json');
-  if (!existsSync(itemsPath)) return [];
-  let items;
-  try {
-    items = JSON.parse(readFileSync(itemsPath, 'utf8'));
-  } catch {
-    return [];
-  }
+export async function checkPinnedTests(manifest) {
   const results = [];
-  for (const [id, item] of Object.entries(items.items || {})) {
+  for (const [id, item] of Object.entries(manifest.items)) {
     if (item.pinned) {
       results.push({ itemId: id, status: 'warn', message: `Pinned (manually edited)` });
     }
@@ -184,20 +210,14 @@ export async function checkPinnedTests(manifestDir) {
   return results;
 }
 
-/** Report pending generation items. */
-export async function checkPendingGeneration(projectDir) {
-  const queuePath = pendingQueuePath(projectDir);
-  if (!existsSync(queuePath)) return [];
-  // readPendingIds is the one reader of this file's shape — it knows the
-  // `{version, generated_at, items}` envelope sync-tests.js writes as well as
-  // the bare arrays older runs left. Parsing it here independently is how this
-  // check came to report every populated queue as 'corrupted'.
-  return readPendingIds(queuePath).map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
+/** Report pending generation items (entries flagged pending_generation). */
+export async function checkPendingGeneration(manifest) {
+  return pendingIds(manifest).map(id => ({ itemId: id, status: 'warn', message: 'Pending generation' }));
 }
 
 /** Run full pipeline verification. */
 export async function verifyPipeline(projectDir) {
-  const manifestDir = join(projectDir, 'tests', 'verification-playwright', 'manifest');
+  const manifestDir = manifestDirFor(projectDir);
   const repoRoot = resolveRepoRoot(projectDir);
   const checks = [];
   let hasFailure = false;
@@ -206,26 +226,32 @@ export async function verifyPipeline(projectDir) {
   checks.push(...integrity);
   if (integrity.some(r => r.status === 'fail')) hasFailure = true;
 
-  const sources = await checkSourceFiles(manifestDir, projectDir, repoRoot);
+  const layout = await checkManifestLayout(manifestDir);
+  checks.push(...layout.checks);
+  if (layout.checks.some(r => r.status === 'fail')) hasFailure = true;
+  const manifest = layout.manifest;
+  if (!manifest) return { exitCode: 1, checks };
+
+  const sources = await checkSourceFiles(manifest, projectDir, repoRoot);
   checks.push(...sources);
   if (sources.some(r => r.status === 'fail')) hasFailure = true;
 
-  const specs = await checkSpecFiles(manifestDir, projectDir);
+  const specs = await checkSpecFiles(manifest, projectDir);
   checks.push(...specs);
   if (specs.some(r => r.status === 'fail')) hasFailure = true;
 
-  const artifacts = await checkSpecArtifacts(manifestDir, projectDir);
+  const artifacts = await checkSpecArtifacts(manifest, projectDir);
   checks.push(...artifacts);
   if (artifacts.some(r => r.status === 'fail')) hasFailure = true;
 
-  const consistency = await checkItemConsistency(manifestDir, projectDir);
+  const consistency = await checkItemConsistency(manifest, projectDir);
   checks.push(...consistency);
   if (consistency.some(r => r.status === 'fail')) hasFailure = true;
 
-  const pinned = await checkPinnedTests(manifestDir);
+  const pinned = await checkPinnedTests(manifest);
   checks.push(...pinned);
 
-  const pending = await checkPendingGeneration(projectDir);
+  const pending = await checkPendingGeneration(manifest);
   checks.push(...pending);
 
   return { exitCode: hasFailure ? 1 : 0, checks };
@@ -259,7 +285,7 @@ export function formatChecks(checks, maxSubjects = 10) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`verify-pipeline.js - Pipeline health diagnostic

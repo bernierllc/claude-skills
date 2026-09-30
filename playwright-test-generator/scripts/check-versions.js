@@ -12,8 +12,8 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { resolveRepoRoot } from './lib/repo.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
+import { acquireLockSync, migrateManifest, manifestDirFor } from './lib/manifest.js';
 
 const VERIFICATION_ROOT = join('docs', 'verification');
 const PLAYWRIGHT_ROOT = join('tests', 'verification-playwright');
@@ -194,7 +194,7 @@ export function checkVersions(projectDir, repoRoot = projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`check-versions.js - Report staleness across verification doc -> metadata -> spec
@@ -204,12 +204,26 @@ Usage: node check-versions.js [project-dir]
 Exit codes:
   0  scan completed, nothing blocking
   1  at least one doc needs agent work
-  2  at least one doc is a hard stop (skill-version-mismatch: run --resync)`);
+  2  at least one doc is a hard stop (skill-version-mismatch: run --resync),
+     or the manifest layout could not be migrated (message on stderr)
+
+Runs first on every invocation, so it also upgrades an older manifest layout
+to the current one (reported as manifest_migration).`);
     process.exit(0);
   }
 
   const projectDir = resolve(process.argv[2] || process.cwd());
-  const report = checkVersions(projectDir, resolveRepoRoot(projectDir));
+  let manifestMigration;
+  const release = acquireLockSync(projectDir);
+  try {
+    manifestMigration = migrateManifest(manifestDirFor(projectDir));
+  } catch (err) {
+    console.error(`check-versions: ${err.message}`);
+    process.exit(2);
+  } finally {
+    release();
+  }
+  const report = { ...checkVersions(projectDir, resolveRepoRoot(projectDir)), manifest_migration: manifestMigration };
   console.log(JSON.stringify(report, null, 2));
 
   const blocking = report.counts['skill-version-mismatch'] || 0;

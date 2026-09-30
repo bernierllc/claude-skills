@@ -6,10 +6,9 @@
 
 import { execSync } from 'node:child_process';
 import { basename, resolve } from 'node:path';
-import { readManifestFileSync } from './lib/manifest.js';
-import { resolveRepoRoot } from './lib/repo.js';
+import { loadManifest, manifestDirFor } from './lib/manifest.js';
+import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
-import { fileURLToPath } from 'node:url';
 
 /** Map file list to affected page tags using an import index.
  * `files` (from `git diff --name-only`) and import-index keys are both
@@ -50,8 +49,11 @@ export async function mapFilesToTags(files, importIndex, projectDir, repoRoot = 
 
 /** Main entry for CLI and testing. */
 export async function main(args, projectDir) {
-  const importIndex = readManifestFileSync(projectDir, 'import-index.json');
-  if (!importIndex) return { tags: [], warnings: [] };
+  // The one loader: migrates an older layout, then inverts the per-page index
+  // shards into {sourceFile: [pageTags]} in memory.
+  const manifest = loadManifest(manifestDirFor(projectDir));
+  if (Object.keys(manifest.pages).length === 0) return { tags: [], warnings: [] };
+  const importIndex = { entries: manifest.entries };
 
   const repoRoot = resolveRepoRoot(projectDir);
   let files;
@@ -71,7 +73,7 @@ export async function main(args, projectDir) {
 }
 
 // --- CLI entry point ---
-const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   if (process.argv.includes('--help')) {
     console.log(`map-changes.js - Map changed files to affected test tags
