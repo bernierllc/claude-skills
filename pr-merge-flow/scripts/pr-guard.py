@@ -34,6 +34,10 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
+# Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
+# which drops quoting, so `printf '('` stays an argument; swapped back after.
+HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
+UNHIDE = {v: k for k, v in HIDE.items()}
 
 
 def strip_comments_and_heredocs(cmd):
@@ -50,7 +54,7 @@ def strip_comments_and_heredocs(cmd):
     while i < n:
         c = cmd[i]
         if quote:
-            out.append(c)
+            out.append(c.translate(HIDE))
             if c == "\\" and quote == '"' and i + 1 < n:
                 out.append(cmd[i + 1])
                 i += 1
@@ -58,8 +62,19 @@ def strip_comments_and_heredocs(cmd):
                 quote = None
             i += 1
         elif c == "\\" and i + 1 < n:
-            out.append(cmd[i:i + 2])
+            out.append("\\" + cmd[i + 1].translate(HIDE))
             i += 2
+        elif cmd.startswith("$'", i):
+            # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
+            # so re-emit it double-quoted. ponytail: escapes like \n become the letter.
+            m = re.match(r"\$'((?:\\.|[^'\\])*)'", cmd[i:], re.S)
+            if not m:
+                out.append(c)
+                i += 1
+                continue
+            body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
+            out.append('"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
+            i += m.end()
         elif c in "'\"":
             quote = c
             out.append(c)
@@ -71,7 +86,7 @@ def strip_comments_and_heredocs(cmd):
             m = re.match(r"""<<(-?)[ \t]*((?:\\.|'[^']*'|"[^"]*"|[^\s;&|()<>'"\\])+)""", cmd[i:])
             if m:
                 try:  # the delimiter is the word after quote removal: <<'E'OF and <<E\OF end at EOF
-                    delim = "".join(shlex.split(m.group(2)))
+                    delim = "".join(shlex.split(re.sub(r"\$(?=['\"])", "", m.group(2))))
                 except ValueError:
                     delim = m.group(2)
                 pending.append((delim, bool(m.group(1))))
@@ -96,7 +111,8 @@ def strip_comments_and_heredocs(cmd):
         else:
             out.append(c)
             i += 1
-    return "".join(out)
+    # An unclosed quote hid everything after it; un-hide so the fallback checks it all.
+    return "".join(out).translate(UNHIDE) if quote else "".join(out)
 
 
 def segments(cmd):
@@ -113,8 +129,10 @@ def segments(cmd):
     try:
         tokens = list(lex)
     except ValueError:
-        # Unbalanced quotes: fall back to words, but keep each line its own command.
-        tokens = [t for line in cmd.split("\n") for t in line.split() + ["\n"]]
+        # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
+        # character, quoted or not. Over-splitting only means more gets checked.
+        tokens = [t for part in re.split(r"([;&|()\n])", cmd)
+                  for t in ([part] if part in OPERATORS else part.split())]
     argv = []
     for t in tokens + [";"]:
         if t and set(t) <= OPERATORS:
@@ -123,8 +141,10 @@ def segments(cmd):
             if argv:
                 yield argv
             argv = []
+            # Subshell bounds go through as their own segments so callers can scope `cd`.
+            yield from ([c] for c in t if c in "()")
         else:
-            argv.append(t)
+            argv.append(t.translate(UNHIDE))
 
 
 def sync_calls(cmd, cwd):
@@ -133,7 +153,14 @@ def sync_calls(cmd, cwd):
     Tracks `cd DIR` and `git -C DIR`. A dir containing `$` or a backtick can't be
     resolved statically; it is yielded as-is so the caller can refuse it.
     """
+    stack = []
     for argv in segments(cmd):
+        if argv == ["("]:
+            stack.append(cwd)
+            continue
+        if argv == [")"]:
+            cwd = stack.pop() if stack else cwd
+            continue
         if argv[0] == "cd" and len(argv) > 1:
             cwd = argv[1] if "$" in argv[1] else os.path.join(cwd, os.path.expanduser(argv[1]))
             continue
