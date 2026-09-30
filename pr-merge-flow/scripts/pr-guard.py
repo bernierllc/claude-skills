@@ -9,7 +9,9 @@ text is what the agent sees.
    can't be asked. Override when a specific base commit is genuinely needed:
    put `sync-base: <reason>` in the command (e.g. a trailing `# sync-base: ...`).
 2. PRs open ready for review, never as drafts (`gh pr create --draft`,
-   `gh pr ready --undo`).
+   `gh pr ready --undo`), unless aec's `pr_open_mode` setting is `draft`
+   (`~/.agents-environment-config/preferences.json`). Unset, unreadable or any
+   other value means ready.
 3. In a fork with no `gh repo set-default`, `gh pr create` without `-R/--repo`
    targets the UPSTREAM repo (a claude-skills PR landed on anthropics/skills
    this way, 2026-09-28). Blocked until the target is explicit.
@@ -23,6 +25,7 @@ import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 SYNC_SUBCOMMANDS = {"merge", "pull", "rebase"}
 # Anything else, including UNKNOWN, fails open.
@@ -267,6 +270,15 @@ def draft_violation(cmd):
     return False
 
 
+def draft_mode(prefs=None):
+    """True when aec's settings.pr_open_mode is "draft"; anything else means ready."""
+    prefs = prefs or Path.home() / ".agents-environment-config" / "preferences.json"
+    try:
+        return json.loads(prefs.read_text())["settings"]["pr_open_mode"] == "draft"
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def creates_pr_without_repo(cmd):
     return any((pr := gh_pr(argv)) and pr == ("create", False) for argv in segments(cmd))
 
@@ -290,9 +302,10 @@ def unpinned_fork(cwd):
 
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
-    if draft_violation(cmd):
+    if draft_violation(cmd) and not draft_mode():
         return ("Blocked: PRs open ready for review, never as drafts. Drop --draft / --undo. "
-                "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`.")
+                "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`, "
+                "or set aec's pr_open_mode to draft.")
     if creates_pr_without_repo(cmd):
         fork = unpinned_fork(cwd)
         if fork:

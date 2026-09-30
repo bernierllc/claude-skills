@@ -1,6 +1,6 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "hooks": [
     {
       "id": "pmf-pr-guard",
