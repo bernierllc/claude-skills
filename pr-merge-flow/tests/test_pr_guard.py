@@ -93,4 +93,15 @@ assert g.draft_violation("gh pr create --title '\n' --draft")
 assert g.draft_violation('gh pr create --title "a\nb" --draft')
 # Unparseable input still keeps line boundaries.
 assert g.draft_violation("echo 'unterminated\ngh pr create --draft")
+
+# pr_open_mode: only an explicit "draft" allows drafts; unset, ready and corrupt mean ready.
+import json, tempfile
+_prefs = Path(tempfile.mkdtemp()) / "preferences.json"
+assert not g.draft_mode(_prefs)  # missing file
+for body, want in [({}, False), ({"settings": {}}, False), ({"settings": {"pr_open_mode": "ready"}}, False),
+                   ({"settings": {"pr_open_mode": "draft"}}, True), ({"settings": None}, False)]:
+    _prefs.write_text(json.dumps(body))
+    assert g.draft_mode(_prefs) is want, body
+_prefs.write_text("{not json")
+assert not g.draft_mode(_prefs)
 print("ok")
