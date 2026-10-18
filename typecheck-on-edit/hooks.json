@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/bernierllc/agents-environment-config/main/schemas/hooks.schema.json",
+  "version": "1.0.0",
+  "hooks": [],
+  "claude": [
+    {
+      "id": "toe-typecheck",
+      "event": "PostToolUse",
+      "matcher": "Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "if": "Edit(*.ts*)",
+          "timeout": 60,
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(\"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
+        },
+        {
+          "type": "command",
+          "if": "Write(*.ts*)",
+          "timeout": 60,
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(\"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
+        }
+      ]
+    },
+    {
+      "id": "toe-lockfile-freshness",
+      "event": "SessionStart",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; if [ -f \"$d/pnpm-lock.yaml\" ]; then l=pnpm-lock.yaml; s=node_modules/.modules.yaml; i=\"pnpm install\"; elif [ -f \"$d/package-lock.json\" ]; then l=package-lock.json; s=node_modules/.package-lock.json; i=\"npm ci\"; else exit 0; fi; if [ -L \"$d/node_modules\" ]; then t=$(cd \"$d/node_modules\" 2>/dev/null && pwd -P); cmp -s \"$d/$l\" \"${t%/node_modules}/$l\" 2>/dev/null || echo \"typecheck-on-edit: node_modules links to another checkout whose $l differs from this one (or the link is dangling). Install here: rm node_modules && $i\"; elif [ ! -e \"$d/$s\" ] || [ \"$d/$l\" -nt \"$d/$s\" ]; then echo \"typecheck-on-edit: $l is newer than $s (or node_modules is missing). Run $i before trusting type-check results in this checkout.\"; fi"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/bernierllc/agents-environment-config/main/schemas/hooks.schema.json",
+  "version": "1.0.0",
+  "hooks": [],
+  "git": [
+    {
+      "id": "gc-commit-msg",
+      "hook_name": "commit-msg",
+      "command": "m=$(grep -v \"^#\" \"$1\" | grep -m1 .); case \"$m\" in Merge\\ *|Revert\\ \\\"*|fixup!\\ *|squash!\\ *|amend!\\ *) exit 0;; esac; printf \"%s\\n\" \"$m\" | grep -Eq \"^(feat|fix|docs|chore|test|refactor|perf|ci|build|revert|release|style)(\\([a-z0-9._/,-]+\\))?!?: [a-z]\" || { printf \"commit-msg: subject must be \\\"type(scope): lowercase description\\\" (types: feat fix docs chore test refactor perf ci build revert release style). Got: %s\\n\" \"$m\" >&2; exit 1; }"
+    }
+  ]
+}
