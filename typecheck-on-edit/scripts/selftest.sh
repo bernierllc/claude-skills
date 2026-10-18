@@ -24,7 +24,9 @@ r=$(repo notsconfig); rm "$r/tsconfig.json"; touch "$r/BROKEN"; run "$r" "$TC"; 
 r=$(repo refs); mkdir "$r/app"; touch "$r/app/BROKEN"
 printf '{\n "references": [\n  // { "path": "./gone" }\n  { "path": "./app" }\n ]\n}\n' > "$r/tsconfig.json"
 run "$r" "$TC"; check reference-error 2 "app/x.ts" $rc "$out"
-calls=$(tr '\n' ' ' < "$r/calls"); [ "$calls" = ". ./app " ] || { echo "FAIL references: checked [$calls], want [. ./app ]"; fail=1; }
+calls=$(tr '\n' '|' < "$r/calls"); [ "$calls" = ".|./app|" ] || { echo "FAIL references: checked [$calls], want [.|./app|]"; fail=1; }
+r=$(repo spaced); mkdir "$r/my app"; printf '{ "references": [ { "path": "./my app" } ] }\n' > "$r/tsconfig.json"
+run "$r" "$TC"; check spaced-path 0 "" $rc "$out"; touch "$r/my app/BROKEN"; run "$r" "$TC"; check spaced-path-error 2 "my app/x.ts" $rc "$out"
 
 r=$(repo lockfresh); echo a > "$r/package-lock.json"; sleep 1; echo b > "$r/node_modules/.package-lock.json"
 run "$r" "$LF"; check lock-fresh 0 "" $rc "$out"
