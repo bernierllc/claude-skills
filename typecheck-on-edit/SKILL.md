@@ -15,8 +15,10 @@ author: Bernier LLC
    native per-path filter: an `Edit(...)` rule never matches Write, so both entries exist). Runs
    `node_modules/.bin/tsgo --noEmit` when present, else `node_modules/.bin/tsc --noEmit`, and exits 0 silently
    when neither exists or the repo has no root `tsconfig.json` (monorepos without one are not checked).
-   A solution-style root (`"files": []` plus `"references"`, as Vite scaffolds) checks nothing by
-   itself, so each referenced project is checked with `-p <path>` instead. Only `node_modules` installs
+   The root is always checked with `-p .`; when it lists `"references"` (a solution-style root with
+   `"files": []`, as Vite scaffolds, or a root with its own sources too), each referenced project is
+   also checked with `-p <path>`. References are read with a line grep, so a reference commented out
+   with `//` on its own line is skipped, but one inside a `/* */` block is not. Only `node_modules` installs
    (npm, pnpm) are supported: a Yarn Plug'n'Play repo has no `node_modules/.bin` and is skipped. On errors it prints the first 20 lines to stderr and exits 2, which is the only
    way a PostToolUse hook's output reaches the model. Exit-0 stdout is never shown to it.
 2. **SessionStart** lockfile freshness: when `pnpm-lock.yaml` is newer than `node_modules/.modules.yaml`

@@ -12,13 +12,13 @@
           "type": "command",
           "if": "Edit(*.ts*)",
           "timeout": 60,
-          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; ps=$(grep -o \"\\\"path\\\": *\\\"[^\\\"]*\\\"\" \"$d/tsconfig.json\" | sed \"s/.*\\\"\\\\([^\\\"]*\\\\)\\\"\\$/\\\\1/\"); out=$(cd \"$d\" && for p in ${ps:-.}; do \"$b\" --noEmit --pretty false -p \"$p\" 2>&1 || echo \"${b##*/} -p $p failed\"; done); [ -z \"$out\" ] || { printf \"%s\\n\" \"$out\" | head -20 >&2; exit 2; }"
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; ps=$(grep -v \"^[[:space:]]*//\" \"$d/tsconfig.json\" | grep -o \"\\\"path\\\": *\\\"[^\\\"]*\\\"\" | sed \"s/.*\\\"\\\\([^\\\"]*\\\\)\\\"\\$/\\\\1/\"); out=$(cd \"$d\" && for p in . $ps; do \"$b\" --noEmit --pretty false -p \"$p\" 2>&1 || echo \"${b##*/} -p $p failed\"; done); [ -z \"$out\" ] || { printf \"%s\\n\" \"$out\" | head -20 >&2; exit 2; }"
         },
         {
           "type": "command",
           "if": "Write(*.ts*)",
           "timeout": 60,
-          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; ps=$(grep -o \"\\\"path\\\": *\\\"[^\\\"]*\\\"\" \"$d/tsconfig.json\" | sed \"s/.*\\\"\\\\([^\\\"]*\\\\)\\\"\\$/\\\\1/\"); out=$(cd \"$d\" && for p in ${ps:-.}; do \"$b\" --noEmit --pretty false -p \"$p\" 2>&1 || echo \"${b##*/} -p $p failed\"; done); [ -z \"$out\" ] || { printf \"%s\\n\" \"$out\" | head -20 >&2; exit 2; }"
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; ps=$(grep -v \"^[[:space:]]*//\" \"$d/tsconfig.json\" | grep -o \"\\\"path\\\": *\\\"[^\\\"]*\\\"\" | sed \"s/.*\\\"\\\\([^\\\"]*\\\\)\\\"\\$/\\\\1/\"); out=$(cd \"$d\" && for p in . $ps; do \"$b\" --noEmit --pretty false -p \"$p\" 2>&1 || echo \"${b##*/} -p $p failed\"; done); [ -z \"$out\" ] || { printf \"%s\\n\" \"$out\" | head -20 >&2; exit 2; }"
         }
       ]
     },
