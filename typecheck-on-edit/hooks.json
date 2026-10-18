@@ -12,13 +12,13 @@
           "type": "command",
           "if": "Edit(*.ts*)",
           "timeout": 60,
-          "command": "d=${CLAUDE_PROJECT_DIR:-.}; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(\"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(cd \"$d\" && \"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
         },
         {
           "type": "command",
           "if": "Write(*.ts*)",
           "timeout": 60,
-          "command": "d=${CLAUDE_PROJECT_DIR:-.}; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(\"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
+          "command": "d=${CLAUDE_PROJECT_DIR:-.}; [ -f \"$d/tsconfig.json\" ] || exit 0; for b in \"$d\"/node_modules/.bin/tsgo \"$d\"/node_modules/.bin/tsc; do [ -x \"$b\" ] && break; b=; done; [ -n \"$b\" ] || exit 0; out=$(cd \"$d\" && \"$b\" --noEmit --pretty false 2>&1); rc=$?; [ $rc -eq 0 ] && [ -z \"$out\" ] || { printf \"%s\\n\" \"${out:-$b exited $rc with no output}\" | head -20 >&2; exit 2; }"
         }
       ]
     },

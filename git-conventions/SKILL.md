@@ -12,7 +12,7 @@ One rule, enforced where the commit happens: the first line of every commit is
 
 - **types:** `feat fix docs chore test refactor perf ci build revert release style`
 - **scope:** optional, `[a-z0-9._/,-]+` (`fix(senders,campaigns):` is fine), `!` before the colon for breaking changes
-- **description:** starts lowercase; anything after that is free, so GitHub's squash suffix `(#815)` passes
+- **description:** starts with a lowercase letter or a digit; anything after that is free, so GitHub's squash suffix `(#815)` passes
 - **passthrough:** `Merge …`, `Revert "…"`, `fixup! …`, `squash! …`, `amend! …` are git's own subjects and are not checked
 
 ## Install
@@ -23,7 +23,7 @@ aec install skill git-conventions
 
 `hooks.json` carries a `git` override for `commit-msg`. aec writes it as a delimited block into
 the repo's active hooks directory (`.husky/` if present, else `core.hooksPath`, else `.git/hooks`),
-so it runs in every worktree of that repo. The check is inline in the hook, so it works in
+so it runs in every worktree of that repo. The block runs in a subshell, so a passing subject falls through to whatever else the hook file runs (husky lines, other aec blocks). The check is inline in the hook, so it works in
 worktrees where `.claude/skills/` is gitignored and absent.
 
 ## Verify

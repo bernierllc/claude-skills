@@ -14,7 +14,7 @@ author: Bernier LLC
 1. **PostToolUse, `Edit|Write`, filtered with `if`** to `Edit(*.ts*)` and `Write(*.ts*)` (Claude Code's
    native per-path filter: an `Edit(...)` rule never matches Write, so both entries exist). Runs
    `node_modules/.bin/tsgo --noEmit` when present, else `node_modules/.bin/tsc --noEmit`, and exits 0 silently
-   when neither exists. On errors it prints the first 20 lines to stderr and exits 2, which is the only
+   when neither exists or the repo has no root `tsconfig.json` (monorepos without one are not checked). On errors it prints the first 20 lines to stderr and exits 2, which is the only
    way a PostToolUse hook's output reaches the model. Exit-0 stdout is never shown to it.
 2. **SessionStart** lockfile freshness: when `pnpm-lock.yaml` is newer than `node_modules/.modules.yaml`
    (or `package-lock.json` newer than `node_modules/.package-lock.json`, or `node_modules` is missing),
@@ -33,7 +33,7 @@ Per-agent overrides carry no `when` condition, so install it only in TypeScript 
 and delete any hand-written type-check hook from `.claude/settings.json` in the same commit.
 
 For speed, pin tsgo: `npm i -D @typescript/native-preview` (sub-second warm runs on a Next.js app
-where tsc takes 10+ s). CI keeps `tsc`; this hook is a tripwire, not the gate.
+where tsc takes 10+ s). CI keeps `tsc`; this hook is a tripwire, not the gate. It checks the whole project, so a pre-existing error anywhere blocks every edit until fixed, and a run past the 60 s timeout is silently unchecked.
 
 ## Verify
 
