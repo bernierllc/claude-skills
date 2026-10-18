@@ -38,10 +38,12 @@ Per-agent overrides carry no `when` condition, so install it only in TypeScript 
 and delete any hand-written type-check hook from `.claude/settings.json` in the same commit.
 
 For speed, pin tsgo: `npm i -D @typescript/native-preview` (sub-second warm runs on a Next.js app
-where tsc takes 10+ s). CI keeps `tsc`; this hook is a tripwire, not the gate. It checks the whole project, so a pre-existing error anywhere blocks every edit until fixed, and a run past the 60 s timeout is silently unchecked.
+where tsc takes 10+ s). CI keeps `tsc`; this hook is a tripwire, not the gate. It checks the whole project, so a pre-existing error anywhere blocks every edit until fixed, and a run past the 60 s timeout is silently unchecked. In a composite monorepo where one referenced project imports another, each project is checked on its own, so a dependent sees its dependency's last-built `.d.ts`, not the edited source: a breaking change across projects passes until `tsc -b` runs. Build mode cannot fix this in a hook, because `tsc -b --noEmit` (and tsgo's) fails with TS6310 on composite references, and an emitting `tsc -b` would write build output on every edit.
 
 ## Verify
 
 In a fresh Claude Code session in the repo, have the model write `export const x: number = "s";` into a
 `.ts` file. The tool result carries a `PostToolUse:Write hook blocking error` block with the TS2322 line.
 Edit a `.md` file: nothing runs.
+
+`bash scripts/selftest.sh` (from this skill's directory) runs both hook commands from `hooks.json` against scratch repos with a stub compiler: clean, diagnostic, no compiler, no tsconfig, references (root plus each reference, `//` lines skipped), and the lockfile check's fresh, stale, missing and symlinked cases. CI runs it through `scripts/test_skill_selftests.py`.
