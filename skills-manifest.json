@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-09-30T22:01:26.751709+00:00",
+  "generatedAt": "2026-10-18T23:51:33.036361+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -40,6 +40,11 @@
     "gdocs": {
       "version": "1.1.0",
       "description": "Writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents, structure-aware insertion (tables, lists, paragraphs), and automatic style matching.",
+      "author": "Bernier LLC"
+    },
+    "git-conventions": {
+      "version": "1.0.0",
+      "description": "Use when committing in any Bernier LLC repo, or when a commit is rejected with \"commit-msg: subject must be\". Enforces conventional commits with a lowercase subject (`type(scope): description`) through a git commit-msg hook that aec installs into the repo's active hooks directory. Replaces the commitlint that the global rules used to name but no repo ever had.",
       "author": "Bernier LLC"
     },
     "internal-comms": {
@@ -109,6 +114,11 @@
       "version": "1.0.0",
       "description": "Toolkit for styling artifacts with a theme. These artifacts can be slides, docs, reportings, HTML landing pages, etc. There are 10 pre-set themes with colors/fonts that you can apply to any artifact that has been creating, or can generate a new theme on-the-fly.",
       "author": "Anthropic"
+    },
+    "typecheck-on-edit": {
+      "version": "1.0.0",
+      "description": "Use in any TypeScript repo where Claude Code edits files. Installs a PostToolUse hook that type-checks the project after every Edit or Write of a .ts/.tsx file (tsgo if installed, else the repo's tsc) and surfaces the first errors to the model as a blocking error, plus a SessionStart check that warns when the lockfile is newer than node_modules. Replaces hand-written `npx tsc --noEmit | head -20` hooks that ran on every edit of every file and whose output the model never saw.",
+      "author": "Bernier LLC"
     },
     "ui-audit": {
       "version": "1.0.0",
