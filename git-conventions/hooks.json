@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/bernierllc/agents-environment-config/main/schemas/hooks.schema.json",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "hooks": [],
   "git": [
     {
