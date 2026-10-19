@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.4.5
+version: 3.6.5
 author: Bernier LLC
 ---
 
@@ -164,6 +164,9 @@ access:
   required_scopes: [events.read]           # oauth-scope: OAuth scope strings
   mfa_required: false
   notes: ""               # free text for non-standard auth (custom model, conditional access, etc.)
+  gated_by: []            # optional: feature flags / env vars that must be on for a customer to reach this (e.g. [INBOUND_ROUTING_ENABLED]). Docs agents treat a gated surface as unreachable until the flag is confirmed on
+  visibility: draft       # public | internal | admin | draft — who may SEE this documented. Default draft. Declared by a human or confirmed in review; never inferred from auth alone
+  tier: null              # entitlement/plan gate (e.g. pro), if the feature is plan-limited
 
 # Page characteristics — useful for any downstream consumer
 page:
@@ -546,6 +549,26 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 **When adding a new page:** Create a new file in `pages/` with frontmatter, update `index.md`, check if any existing flow files should reference it.
 
 **When a page is removed:** Delete the file, update `index.md`, update any flow files that referenced its items.
+
+## Access manifest (audience data for docs consumers)
+
+`access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
+
+`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+
+```bash
+python3 verification-writer/scripts/build-access-manifest.py --root .          # write
+python3 verification-writer/scripts/build-access-manifest.py --root . --check  # CI: fail if stale
+```
+
+Rules:
+
+- `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
+- Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
+- A doc whose `surface:` is not rest|mcp|page|flow is an `invalid-surface` finding and is omitted.
+- A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
+- Regenerate the manifest after every run that writes or edits docs, and commit it with them. Never hand-edit it.
+- Report manifest findings in the findings report under "Access manifest".
 
 ## Skill Version Tracking and Migration
 
@@ -1058,6 +1081,17 @@ Browser-verification sends a payload describing what's stale:
 - Fixed items (verification updated behavior during a run)
 
 Re-analyze that specific section against current code. Update the doc. Return control to browser-verification.
+
+### API-only items and API/MCP surfaces
+
+Pages with an `*API-only*` item, and any repo that exposes a REST API or MCP server, are covered by `api-verification-writer` (docs under `docs/verification/api/` and `docs/verification/mcp/`) and executed by `api-verification`. When the analysis finds API/MCP surfaces and those docs do not exist, log it in the findings report and suggest running `api-verification-writer`. Do not duplicate its items here.
+
+### Cross-agent feedback
+
+Each findings report ends with a **Cross-agent feedback** section, read by the next run of the producer or consumer on the other side:
+
+- Docs-writer signals received: "feature documented with no verification doc", "wants to document an API-only permanent item", "reader-visible flow contradicts flow doc steps" (a flow doc written incorrectly: fix it here).
+- Signals to send: `access:` changed with a major bump (dependent customer docs are stale); browser-verification affordance mismatches that suggest a flow doc is wrong.
 
 ### After generating/updating docs
 

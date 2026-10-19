@@ -127,6 +127,27 @@ def test_stale_scan_version_discards_whole_cache():
         assert entry["item_ids"] == ["WID-01"], entry["item_ids"]
 
 
+def test_api_verification_writer_stamp_is_not_malformed():
+    with tempfile.TemporaryDirectory() as d:
+        doc = Path(d) / "list-events.md"
+        doc.write_text("---\nid_namespace: EVT\ngenerated_by: api-verification-writer@1.0.0\n---\n"
+                       "- [ ] [smoke] **EVT-01** Call it --- It works. *Expected: success*\n")
+        r = sv.scan_file(doc, {}, "api/list-events.md")
+        assert "generated_by-malformed" not in r.issues, r.issues
+        assert r.skill_version is None  # not ours to version-check
+        assert r.item_ids == ["EVT-01"], r.item_ids
+
+
+def test_narrative_api_doc_needs_no_id_namespace():
+    with tempfile.TemporaryDirectory() as d:
+        doc = Path(d) / "list-events.md"
+        doc.write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# List events\n")
+        r = sv.scan_file(doc, {}, "api/list-events.md")
+        assert "id_namespace-missing" not in r.issues, r.issues
+        r = sv.scan_file(doc, {}, "pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
+        assert "id_namespace-missing" in r.issues, r.issues
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

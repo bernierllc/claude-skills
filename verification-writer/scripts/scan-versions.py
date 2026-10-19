@@ -46,9 +46,13 @@ CACHE_FILENAME = ".scan-cache.json"
 # written by an older SCAN_VERSION are discarded wholesale — otherwise a fix
 # to an item regex is invisible for every doc whose bytes have not changed,
 # and the report keeps citing defects the current parser no longer finds.
-SCAN_VERSION = 2
+SCAN_VERSION = 3
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
+# API/MCP docs under docs/verification/{api,mcp}/ are produced by a sibling skill
+# with its own version line. They get the same integrity pass (item IDs, Format A)
+# but no verification-writer staleness verdict.
+SIBLING_STAMP_REGEX = re.compile(r"^api-verification-writer@\d+\.\d+\.\d+$")
 FORMAT_A_REGEX = re.compile(r"^- \[[ x]\] (\[\w+\] )?\*\*[A-Z][A-Z0-9-]+\*\*")
 CHECKLIST_LINE_REGEX = re.compile(r"^\s*- \[[ x]\] ")
 # ID charset matches playwright-test-generator's parser exactly. A stricter
@@ -309,13 +313,17 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         frontmatter_version = scalars.get("version")
         has_affected_paths = "affected_paths" in keys
         id_namespace = scalars.get("id_namespace")
-        if not id_namespace:
-            issues.append("id_namespace-missing")
         stamp = scalars.get("generated_by")
+        # narrative API/MCP docs carry a sibling stamp and no checklist namespace
+        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.split("/")[0] in ("api", "mcp")
+        if not id_namespace and not sibling:
+            issues.append("id_namespace-missing")
         if stamp:
             m = STAMP_REGEX.match(stamp)
             if m:
                 skill_version = stamp
+            elif sibling:
+                pass  # stamped by api-verification-writer; not ours to version-check
             else:
                 issues.append("generated_by-malformed")
                 inferred_version = fingerprint_version(keys, text)

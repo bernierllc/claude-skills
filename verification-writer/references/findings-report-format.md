@@ -42,6 +42,22 @@ Use the current date. If multiple runs happen in a day, append a sequence number
 | docs/verification/educator.md | X | Y | updated (3 sections changed) |
 | ... | | | |
 
+## Access Manifest
+
+Output of `scripts/build-access-manifest.py` (omit if no manifest was built):
+
+- Entries by visibility: public X · internal X · admin X · draft X
+- Findings: [each `visibility-contradicts-access`, `invalid-visibility`, `duplicate-entry`, `frontmatter-missing` with id and file, or "none"]
+- Docs still `draft` that look customer-facing and need a human visibility decision: [list]
+
+## Cross-agent feedback
+
+Read by the next run of the docs writer, `api-verification-writer`, and browser-verification.
+
+- **To docs agents:** [`access:` changes (major bump) that make customer docs stale, or "none"]
+- **From docs agents (received):** [features documented with no verification doc; API-only permanent items they wanted to document; flows that contradict a flow doc, or "none"]
+- **Flow docs likely wrong:** [flow, step, evidence, or "none"]
+
 ## Auto-Fixes Applied
 
 ### Fix: [Short description]
