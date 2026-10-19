@@ -313,9 +313,10 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         frontmatter_version = scalars.get("version")
         has_affected_paths = "affected_paths" in keys
         id_namespace = scalars.get("id_namespace")
-        if not id_namespace:
-            issues.append("id_namespace-missing")
         stamp = scalars.get("generated_by")
+        # narrative API/MCP docs carry a sibling stamp and no checklist namespace
+        if not id_namespace and not (stamp and SIBLING_STAMP_REGEX.match(stamp)):
+            issues.append("id_namespace-missing")
         if stamp:
             m = STAMP_REGEX.match(stamp)
             if m:

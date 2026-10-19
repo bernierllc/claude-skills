@@ -97,6 +97,20 @@ def test_routes_without_any_spec_are_flagged():
         assert [f["kind"] for f in res["findings"]] == ["spec-missing"], res["findings"]
 
 
+def test_empty_security_alternative_is_public_and_scoped_no_spec_gives_one_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"paths": {"/api/v1/x": {"get": {"security": [{}, {"k": []}]}}}}))
+        _, res = scan(root)
+        assert res["operations"][0]["explicitly_public"] is True
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/a', h)\n")
+        _, res = scan(root, "--prefix", "/api/v1")
+        assert [f["kind"] for f in res["findings"]] == ["spec-missing"], res["findings"]
+
+
 def test_prefix_scopes_out_internal_routes():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

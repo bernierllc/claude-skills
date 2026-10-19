@@ -124,7 +124,7 @@ def scan_spec(spec: dict, source: str, findings: list[dict]) -> list[dict]:
             sec = op["security"] if "security" in op else global_security
             scopes = sorted({s for req in (sec or []) for v in req.values() for s in (v or [])})
             declared = sec is not None
-            public = declared and sec == []
+            public = declared and (sec == [] or any(req == {} for req in sec))  # `{}` alternative = anonymous allowed
             entry = {
                 "surface": "rest", "source": "openapi", "file": source,
                 "method": method.upper(), "path": normalize(raw_path),
@@ -298,10 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     code_routes = [r for r in code_routes if not excluded(r["path"])]
     if args.prefix:
         under = lambda path: any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in args.prefix)
+        had_spec = bool(spec_ops)
         spec_ops = [o for o in spec_ops if under(o["path"])]
         code_routes = [r for r in code_routes if under(r["path"])]
         findings = [f for f in findings if f["kind"] != "no-security-declared" or under(f["id"].split(" ", 1)[1])]
-        if not spec_ops:
+        if had_spec and not spec_ops:  # no spec at all is drift()'s spec-missing
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     drift(spec_ops, code_routes, findings)
