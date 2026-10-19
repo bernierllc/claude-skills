@@ -1,7 +1,7 @@
 ---
 name: git-conventions
-description: Use when committing in any Bernier LLC repo, or when a commit is rejected with "commit-msg: subject must be". Enforces conventional commits with a lowercase subject (`type(scope): description`) through a git commit-msg hook that aec installs into the repo's active hooks directory. Replaces the commitlint that the global rules used to name but no repo ever had.
-version: 1.0.0
+description: Use when committing in a repo that requires lowercase conventional commits, or when a commit is rejected with `commit-msg: subject must be`. Enforces conventional commits with a lowercase subject (`type(scope): description`) through a git commit-msg hook that aec installs into the repo's active hooks directory, so no commitlint install is needed.
+version: 1.0.1
 author: Bernier LLC
 ---
 
