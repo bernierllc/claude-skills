@@ -315,13 +315,14 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         id_namespace = scalars.get("id_namespace")
         stamp = scalars.get("generated_by")
         # narrative API/MCP docs carry a sibling stamp and no checklist namespace
-        if not id_namespace and not (stamp and SIBLING_STAMP_REGEX.match(stamp)):
+        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.split("/")[0] in ("api", "mcp")
+        if not id_namespace and not sibling:
             issues.append("id_namespace-missing")
         if stamp:
             m = STAMP_REGEX.match(stamp)
             if m:
                 skill_version = stamp
-            elif SIBLING_STAMP_REGEX.match(stamp):
+            elif sibling:
                 pass  # stamped by api-verification-writer; not ours to version-check
             else:
                 issues.append("generated_by-malformed")

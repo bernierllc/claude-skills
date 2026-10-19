@@ -95,6 +95,15 @@ def test_absent_rows_fail_unless_skipped_or_surface_untested():
     assert kinds == [("GET /a", "missing-result")], kinds
 
 
+def test_auth_kinds():
+    import urllib.request
+    for auth, header, value in [(None, "Authorization", "Bearer t"), ({"kind": "header", "name": "X-API-Key"}, "X-API-Key", "t"),
+                                ({"kind": "cookie", "name": "sid"}, "Cookie", "sid=t")]:
+        req = urllib.request.Request("http://localhost/x")
+        mx.apply_auth(req, "t", auth or {})
+        assert req.get_header(header.capitalize()) == value, (auth, req.headers)
+
+
 def test_run_end_to_end_flags_leak_and_skips_mutating():
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

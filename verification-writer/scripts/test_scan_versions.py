@@ -144,6 +144,8 @@ def test_narrative_api_doc_needs_no_id_namespace():
         doc.write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# List events\n")
         r = sv.scan_file(doc, {}, "api/list-events.md")
         assert "id_namespace-missing" not in r.issues, r.issues
+        r = sv.scan_file(doc, {}, "pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
+        assert "id_namespace-missing" in r.issues, r.issues
 
 
 if __name__ == "__main__":

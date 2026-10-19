@@ -211,6 +211,10 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                 continue
             fm = parse_frontmatter(body)
             entry_surface = {"api": "rest"}.get(str(fm.get("surface") or surface), str(fm.get("surface") or surface))
+            if entry_surface not in SURFACE_DIRS.values():
+                findings.append({"kind": "invalid-surface", "id": rel.as_posix(), "file": rel.as_posix(),
+                                 "detail": f"surface {entry_surface!r} is not one of {'|'.join(SURFACE_DIRS.values())}; entry omitted"})
+                continue
             entries.append(build_entry(entry_surface, fm, rel, findings))
 
     seen: dict[tuple[str, str], str] = {}

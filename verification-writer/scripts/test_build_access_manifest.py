@@ -146,6 +146,14 @@ def test_sibling_entries_with_same_paths_must_agree_on_gated_by():
         assert kinds == {("gated-by-inconsistent", "/a"), ("gated-by-inconsistent", "/b")}, kinds
 
 
+def test_unsupported_surface_is_a_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/x.md", "surface: REST\nmethod: get\npath: /x\naccess:\n  public: true")
+        m = bam.build(root)
+        assert [f["kind"] for f in m["findings"]] == ["invalid-surface"] and m["entries"] == [], m
+
+
 def test_comment_after_quoted_scalar_is_stripped():
     fm = bam.parse_frontmatter('path: "/v1/users" # route\nnote: "a # b"\n')
     assert fm["path"] == "/v1/users" and fm["note"] == "a # b", fm

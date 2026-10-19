@@ -18,6 +18,8 @@ placeholder path id still proves the auth gate let the request through.
 
 principals.json holds env var NAMES only, never tokens:
   {"principals": {"anonymous": {}, "viewer": {"roles": ["viewer"], "token_env": "VERIFY_VIEWER_TOKEN"}}}
+A principal may add "auth": {"kind": "header", "name": "X-API-Key"} or {"kind": "cookie", "name": "session"};
+the default is "Authorization: Bearer <token>".
 
 Stdlib only. Exit: 0 ok · 1 usage/IO · 2 guard refused or mismatches found.
 """
@@ -102,13 +104,24 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def probe(base_url: str, entry_id: str, token: str | None) -> int | None:
+def apply_auth(req, token: str, auth: dict) -> None:
+    """Carry the secret the way the principal's app expects: bearer (default), custom header, or cookie."""
+    kind, name = auth.get("kind", "bearer"), auth.get("name")
+    if kind == "header":
+        req.add_header(name or "X-API-Key", token)
+    elif kind == "cookie":
+        req.add_header("Cookie", f"{name or 'session'}={token}")
+    else:
+        req.add_header("Authorization", f"Bearer {token}")
+
+
+def probe(base_url: str, entry_id: str, token: str | None, auth: dict | None = None) -> int | None:
     """HTTP status, or None when the server did not answer."""
     method, path = entry_id.split(" ", 1)
     url = base_url.rstrip("/") + re.sub(r"\{[^}]+\}", "verify-probe", path)
     req = urllib.request.Request(url, method=method)
     if token:
-        req.add_header("Authorization", f"Bearer {token}")
+        apply_auth(req, token, auth or {})
     try:
         with OPENER.open(req, timeout=10) as r:
             return r.status
@@ -137,7 +150,8 @@ def cmd_run(args) -> int:
             print(f"env var {env} for principal {row['principal']!r} is not set", file=sys.stderr)
             return 1
         results.append({"id": row["id"], "principal": row["principal"],
-                        "status": probe(args.base_url, row["id"], token)})
+                        "status": probe(args.base_url, row["id"], token,
+                                        principals["principals"][row["principal"]].get("auth"))})
     print(json.dumps({"results": results, "skipped_mutating": sorted(set(skipped))}, indent=2))
     return 0
 
