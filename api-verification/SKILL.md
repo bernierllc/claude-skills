@@ -1,6 +1,6 @@
 ---
 name: api-verification
-version: 1.0.8
+version: 1.0.9
 dependencies:
   skills:
     - name: api-verification-writer
@@ -19,7 +19,7 @@ Runs the access matrix. Docs say who should get in (`access:` frontmatter, merge
 ## Prerequisites (halt with a clear message if missing)
 
 1. `docs/verification/access-manifest.json` exists and is current: `build-access-manifest.py --check`.
-2. `docs/verification/principals.json` maps each principal to roles/scopes and a `token_env` var **name**. Never tokens. An `anonymous` principal with no token is expected.
+2. `docs/verification/principals.json` maps each principal to roles/scopes and a `token_env` var **name**. Never tokens. Set `"mfa": true` on a principal that completes MFA; entries with `mfa_required` are expected to reject every other principal. An `anonymous` principal with no token is expected.
 3. A **local or test** base URL. `matrix.py guard <url>` refuses anything else; extra safe hosts go in `API_VERIFICATION_ALLOWED_HOSTS` (comma-separated). Never point this at production.
 
 ## Workflow

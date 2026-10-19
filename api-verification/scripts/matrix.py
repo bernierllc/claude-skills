@@ -71,13 +71,14 @@ def expected(entry: dict, principal: dict) -> bool:
             "permissions": principal.get("permissions") or []}
     required = {k: entry.get(k) or [] for k in held}
     tier = entry.get("tier")
-    gated = any(required.values()) or bool(tier)
+    mfa = entry.get("mfa_required") is True
+    gated = any(required.values()) or bool(tier) or mfa
     if not gated and entry["visibility"] == "public" and entry.get("public") is None:
         return True  # documented public, nothing gates it
     if not principal.get("token_env"):
         return False  # no token is sent, so this principal is anonymous whatever roles it lists
     return all(not required[k] or bool(set(required[k]) & set(held[k])) for k in held) and \
-        (not tier or principal.get("tier") == tier)
+        (not tier or principal.get("tier") == tier) and (not mfa or principal.get("mfa") is True)
 
 
 def load(path: str) -> dict:

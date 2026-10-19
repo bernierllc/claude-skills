@@ -49,6 +49,7 @@ access:
   auth_model: oauth-scope
   required_scopes: [events.read]
   tier: pro
+  mfa_required: true
   visibility: public""")  # publicly documented, authenticated API: valid
     write(root, "mcp/send-email.md", """surface: mcp
 tool: send_email
@@ -65,6 +66,15 @@ access:
 
 def by_id(manifest: dict) -> dict:
     return {e["id"]: e for e in manifest["entries"]}
+
+
+def test_mfa_requirement_reaches_the_manifest():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        fixture(root)
+        e = by_id(bam.build(root))
+        assert e["GET /v1/events"]["mfa_required"] is True
+        assert e["send_email"]["mfa_required"] is False
 
 
 def test_every_surface_lands_with_declared_visibility():

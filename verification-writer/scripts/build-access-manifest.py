@@ -180,6 +180,7 @@ def build_entry(
         "scopes": scopes,
         "permissions": permissions,
         "tier": tier,
+        "mfa_required": access.get("mfa_required") is True,
         "gated_by": as_list(access.get("gated_by")),
         "user_types": as_list(fm.get("user_types")),
         "affected_paths": as_list(fm.get("affected_paths")),

@@ -85,6 +85,13 @@ def test_documented_public_but_gated_and_tier():
     assert plan[("GET /t", "pro")] is True and plan[("GET /t", "free")] is False
 
 
+def test_mfa_requirement_needs_an_mfa_principal():
+    e = {"id": "POST /m", "visibility": "internal", "public": False, "scopes": ["w"], "mfa_required": True, "surface": "rest"}
+    p = {"principals": {"plain": {"scopes": ["w"], "token_env": "T"}, "mfa": {"scopes": ["w"], "token_env": "T", "mfa": True}}}
+    plan = {r["principal"]: r["expect_allowed"] for r in mx.make_plan({"entries": [e]}, p)}
+    assert plan == {"plain": False, "mfa": True}
+
+
 def test_absent_rows_fail_unless_skipped_or_surface_untested():
     plan = [{"surface": "rest", "id": "GET /a", "principal": "anonymous", "expect_allowed": True},
             {"surface": "rest", "id": "GET /a", "principal": "root", "expect_allowed": True},
