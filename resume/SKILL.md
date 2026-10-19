@@ -1,7 +1,7 @@
 ---
 name: resume
 description: Use at the start of a session in a repo with prior work in flight, or when the user says "resume", "/resume", "where were we", "pick up where we left off". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.
-version: 1.3.0
+version: 1.4.0
 author: Bernier LLC
 ---
 
@@ -49,6 +49,12 @@ acting on it. One line per drift found:
   evidence.
 - A tracker row with no branch, a branch with no row, or notes older than the branch's
   last commit → list it; these are the first things to resolve.
+- An in-flight run whose checkpoint is more than 7 days old → stale. Age = the file's
+  mtime for a working-tree `run-state.json` (`find <path> -mtime +7` prints it when
+  stale), or the commit date for a committed one
+  (`git log -1 --format=%cI <branch> -- <path>`). Say so in one line with the age and
+  handle it as a conflicting state (step 3): the world has likely moved on since it was
+  written, so never resume from it unasked.
 
 ## 3. Continue
 
@@ -59,6 +65,6 @@ acting on it. One line per drift found:
 - **No run in flight:** report clean state in ≤5 lines — current branch, last commit,
   any open tracker rows for this repo — and ask nothing; wait for direction unless the
   open rows make the next task obvious.
-- **Conflicting states** (two runs, or state contradicting git in a way you can't
-  resolve): present the conflict in a few lines and let the user pick. This is the only
-  case where resume pauses.
+- **Conflicting states** (two runs, a stale run, or state contradicting git in a way
+  you can't resolve): present the conflict in a few lines and let the user pick. This is
+  the only case where resume pauses.
