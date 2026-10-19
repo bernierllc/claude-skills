@@ -62,6 +62,18 @@ def test_expectations():
     assert not any(k[0] == "/" for k in plan)  # pages are not API surfaces
 
 
+def test_public_flag_and_permissions_drive_expectations():
+    entries = [
+        {"id": "GET /hook", "visibility": "draft", "public": True},
+        {"id": "GET /abac", "visibility": "internal", "permissions": ["billing.read"]}]
+    p = {"principals": {"anonymous": {}, "plain": {"token_env": "T"},
+                        "billing": {"token_env": "T", "permissions": ["billing.read"]}}}
+    plan = {(r["id"], r["principal"]): r["expect_allowed"]
+            for r in mx.make_plan({"entries": [dict(e, surface="rest") for e in entries]}, p)}
+    assert plan[("GET /hook", "anonymous")] is True
+    assert plan[("GET /abac", "plain")] is False and plan[("GET /abac", "billing")] is True
+
+
 def test_run_end_to_end_flags_leak_and_skips_mutating():
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
