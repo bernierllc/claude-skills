@@ -43,10 +43,11 @@ acting on it. One line per drift found:
 - **Staleness first:** an in-flight run whose newest activity is more than 7 days old
   is stale. Newest activity = the latest step `timestamp` in the file or the file's own
   age, whichever is more recent. File age, as epoch seconds compared with
-  `$(( $(date +%s) - 604800 ))`: for a file git tracks, its last commit,
+  `$(( $(date +%s) - 604800 ))`: for a file git tracks with no uncommitted changes
+  (`git diff --quiet HEAD -- <path>`), its last commit,
   `git log -1 --format=%ct [<branch>] -- <path>` (a clone or checkout resets the
   working-tree mtime, so mtime would make an old checkpoint look fresh); for an
-  untracked file, its mtime, `stat -f %m <path>` (macOS) or `stat -c %Y <path>` (Linux).
+  untracked or locally modified file, its mtime, `stat -f %m <path>` (macOS) or `stat -c %Y <path>` (Linux).
   Stale → say so in one line with the age and handle it as a conflicting state
   (step 3): no branch switch, no executing steps. The world has likely moved on since
   it was written, so never resume from it unasked.
