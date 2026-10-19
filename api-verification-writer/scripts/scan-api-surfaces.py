@@ -141,10 +141,19 @@ def scan_spec(spec: dict, source: str, findings: list[dict]) -> list[dict]:
     return ops
 
 
+MUTATING_RE = re.compile(r"^(delete|send|create|update|remove|drop|set|add|merge|publish|unpublish|verify|connect|reset|revoke)[_-]")
+MCP_DETAIL = {
+    "mcp-no-description": "tools without a description; agents choose tools by it",
+    "mcp-no-annotations": "no readOnlyHint/destructiveHint; clients cannot tell safe from destructive. Matters most for mutating_tools",
+    "mcp-no-output-schema": "no outputSchema (low priority)",
+}
+
+
 def scan_mcp(path: Path, findings: list[dict]) -> list[dict]:
     data = json.loads(path.read_text())
     tools = data.get("tools") if isinstance(data, dict) else data
     out = []
+    missing: dict[str, list[str]] = {k: [] for k in MCP_DETAIL}
     for t in tools or []:
         ann = t.get("annotations") or {}
         entry = {"surface": "mcp", "source": "tools/list", "file": str(path), "tool": t.get("name"),
@@ -153,12 +162,16 @@ def scan_mcp(path: Path, findings: list[dict]) -> list[dict]:
                  "has_output_schema": bool(t.get("outputSchema"))}
         out.append(entry)
         if not t.get("description"):
-            findings.append({"kind": "mcp-no-description", "id": t.get("name"), "detail": "tool has no description"})
+            missing["mcp-no-description"].append(t.get("name"))
         if not any(k in ann for k in ("readOnlyHint", "destructiveHint")):
-            findings.append({"kind": "mcp-no-annotations", "id": t.get("name"),
-                             "detail": "no readOnlyHint/destructiveHint; clients cannot tell safe from destructive"})
+            missing["mcp-no-annotations"].append(t.get("name"))
         if not t.get("outputSchema"):
-            findings.append({"kind": "mcp-no-output-schema", "id": t.get("name"), "detail": "no outputSchema (low)"})
+            missing["mcp-no-output-schema"].append(t.get("name"))
+    for kind, names in missing.items():
+        if names:
+            mutating = [n for n in names if MUTATING_RE.match(n or "")]
+            findings.append({"kind": kind, "id": f"{len(names)} tool(s)", "tools": names,
+                             "mutating_tools": mutating, "detail": MCP_DETAIL[kind]})
     return out
 
 

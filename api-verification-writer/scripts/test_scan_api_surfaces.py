@@ -53,12 +53,16 @@ def test_findings():
         root = Path(d)
         build_repo(root)
         res = run(root)
-        kinds = {(f["kind"], f["id"]) for f in res["findings"]}
+        mcp = {f["kind"]: f for f in res["findings"] if f["kind"].startswith("mcp-")}
+        assert mcp["mcp-no-description"]["tools"] == ["mystery"] and mcp["mcp-no-annotations"]["tools"] == ["mystery"]
+        assert "send_email" not in mcp["mcp-no-annotations"]["tools"]
+        assert mcp["mcp-no-output-schema"]["tools"] == ["send_email", "mystery"]  # empty outputSchema counts as missing
+        assert mcp["mcp-no-output-schema"]["mutating_tools"] == ["send_email"]
+        assert sas.MUTATING_RE.match("delete_sender") and not sas.MUTATING_RE.match("list_domains")
+        kinds = {(f["kind"], f["id"]) for f in res["findings"] if not f["kind"].startswith("mcp-")}
         assert ("undocumented-route", "POST /v1/secret/{id}") in kinds, kinds
         assert ("undocumented-route", "DELETE /v1/events/{id}") in kinds, kinds
         assert ("spec-without-route", "GET /v1/ghost") in kinds, kinds
-        assert ("mcp-no-description", "mystery") in kinds and ("mcp-no-annotations", "mystery") in kinds
-        assert not any(k == "mcp-no-annotations" and i == "send_email" for k, i in kinds)
         # /health in code matches the spec's /v1/health by suffix; global security covers /v1/events
         assert ("undocumented-route", "GET /health") not in kinds
         ops = {(o["method"], o["path"]): o for o in res["operations"]}
