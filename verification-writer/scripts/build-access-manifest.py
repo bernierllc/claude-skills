@@ -215,6 +215,25 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         else:
             seen[key] = e["file"]
 
+    by_paths: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for e in entries:
+        if e["affected_paths"]:
+            by_paths.setdefault(tuple(sorted(e["affected_paths"])), []).append(e)
+    for group in by_paths.values():
+        gates = {tuple(sorted(e["gated_by"])) for e in group}
+        if len(gates) > 1:
+            for e in group:
+                findings.append(
+                    {
+                        "kind": "gated-by-inconsistent",
+                        "id": e["id"],
+                        "file": e["file"],
+                        "detail": "shares identical affected_paths with "
+                        + ", ".join(o["id"] for o in group if o is not e)
+                        + " but declares a different gated_by",
+                    }
+                )
+
     entries.sort(key=lambda e: (e["surface"], e["id"], e["file"]))
     return entries, findings
 

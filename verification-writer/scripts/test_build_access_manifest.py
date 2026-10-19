@@ -135,6 +135,15 @@ def test_gated_by_flows_into_manifest():
         assert e["/inbound"]["gated_by"] == ["INBOUND_ROUTING_ENABLED"] and e["/plain"]["gated_by"] == []
 
 
+def test_sibling_entries_with_same_paths_must_agree_on_gated_by():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "pages/a.md", "path: /a\naffected_paths: [src/x.tsx]\naccess:\n  gated_by: [FLAG]")
+        write(root, "pages/b.md", "path: /b\naffected_paths: [src/x.tsx]\naccess:\n  public: true")
+        kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
+        assert kinds == {("gated-by-inconsistent", "/a"), ("gated-by-inconsistent", "/b")}, kinds
+
+
 def test_block_lists_crlf_bom_and_hash_in_quotes():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
