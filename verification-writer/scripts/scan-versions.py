@@ -49,6 +49,10 @@ CACHE_FILENAME = ".scan-cache.json"
 SCAN_VERSION = 2
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
+# API/MCP docs under docs/verification/{api,mcp}/ are produced by a sibling skill
+# with its own version line. They get the same integrity pass (item IDs, Format A)
+# but no verification-writer staleness verdict.
+SIBLING_STAMP_REGEX = re.compile(r"^api-verification-writer@\d+\.\d+\.\d+$")
 FORMAT_A_REGEX = re.compile(r"^- \[[ x]\] (\[\w+\] )?\*\*[A-Z][A-Z0-9-]+\*\*")
 CHECKLIST_LINE_REGEX = re.compile(r"^\s*- \[[ x]\] ")
 # ID charset matches playwright-test-generator's parser exactly. A stricter
@@ -316,6 +320,8 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
             m = STAMP_REGEX.match(stamp)
             if m:
                 skill_version = stamp
+            elif SIBLING_STAMP_REGEX.match(stamp):
+                pass  # stamped by api-verification-writer; not ours to version-check
             else:
                 issues.append("generated_by-malformed")
                 inferred_version = fingerprint_version(keys, text)

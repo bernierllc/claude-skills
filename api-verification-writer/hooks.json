@@ -1,0 +1,20 @@
+{
+  "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
+  "version": "1.0.0",
+  "hooks": [
+    {
+      "id": "avw-scan-on-edit",
+      "event": "on_file_edit",
+      "command": "aec run-script skill:api-verification-writer scan-api-surfaces.py --root . --no-code-scan",
+      "description": "After an OpenAPI spec changes, re-inventory operations and surface missing security declarations.",
+      "match": "openapi.json|openapi.yaml|openapi.yml|swagger.json|*/openapi.json|*/openapi.yaml|*/openapi.yml",
+      "blocking": false,
+      "timeout_ms": 10000,
+      "when": {
+        "repo_has": [
+          "docs/verification"
+        ]
+      }
+    }
+  ]
+}

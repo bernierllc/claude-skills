@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+build-access-manifest.py — Merge verification-doc `access:` frontmatter into one
+machine-readable audience manifest.
+
+Reads docs/verification/{pages,api,mcp,flows}/**/*.md and writes
+docs/verification/access-manifest.json. The manifest, not an agent's judgment,
+says what is public, internal, admin-only or still a draft. Consumers: the
+customer and internal docs agents, llms.txt / sitemap / MCP-index build steps,
+and CI.
+
+Rules (deliberately boring, so the output is predictable):
+  * `access.visibility` is read, never inferred. Absent => `draft`.
+  * `public | internal | admin | draft` are the only values; anything else is a
+    finding and the entry is treated as `draft`.
+  * A `public` entry whose own `access:` says otherwise (public: false, required
+    roles/permissions/scopes, a tier gate) is a finding: either the visibility
+    or the auth declaration is wrong. Neither is silently "fixed".
+  * Two docs claiming the same surface+id is a finding.
+
+Stdlib only; the frontmatter subset parsed here is the one verification-writer
+emits (scalars, inline lists, one nested mapping level).
+
+Exit codes: 0 ok · 1 fatal · 2 findings present and --fail-on-findings, or
+--check found the manifest stale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+VISIBILITIES = ("public", "internal", "admin", "draft")
+SURFACE_DIRS = {"pages": "page", "api": "rest", "mcp": "mcp", "flows": "flow"}
+MANIFEST_REL = "docs/verification/access-manifest.json"
+
+
+def split_frontmatter(text: str) -> str | None:
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    return text[3:end] if end != -1 else None
+
+
+def parse_scalar(raw: str) -> Any:
+    raw = raw.strip()
+    if raw in ("", "~", "null"):
+        return None
+    if raw in ("true", "false"):
+        return raw == "true"
+    if raw.startswith("[") and raw.endswith("]"):
+        inner = raw[1:-1].strip()
+        return [parse_scalar(p) for p in inner.split(",")] if inner else []
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def parse_frontmatter(body: str) -> dict[str, Any]:
+    """Top-level scalars/lists plus one nested mapping level (e.g. `access:`)."""
+    out: dict[str, Any] = {}
+    current: dict[str, Any] | None = None
+    for line in body.splitlines():
+        code = re.sub(r"\s+#.*$", "", line.rstrip())
+        if not code.strip() or code.lstrip().startswith("#"):
+            continue
+        indented = code[0] in " \t"
+        m = re.match(r"^\s*([A-Za-z0-9_-]+):\s*(.*)$", code)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        if indented and current is not None:
+            current[key] = parse_scalar(value)
+        elif not indented:
+            if value == "":
+                current = {}
+                out[key] = current
+            else:
+                current = None
+                out[key] = parse_scalar(value)
+    return out
+
+
+def as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else [str(value)]
+
+
+def entry_id(surface: str, fm: dict[str, Any], rel: Path) -> str:
+    if surface == "rest" and fm.get("method") and fm.get("path"):
+        return f"{str(fm['method']).upper()} {fm['path']}"
+    for key in ("tool", "path", "id"):
+        if fm.get(key):
+            return str(fm[key])
+    return rel.with_suffix("").as_posix()
+
+
+def build_entry(
+    surface: str, fm: dict[str, Any], rel: Path, findings: list[dict[str, str]]
+) -> dict[str, Any]:
+    access = fm.get("access") if isinstance(fm.get("access"), dict) else {}
+    eid = entry_id(surface, fm, rel)
+
+    visibility = access.get("visibility")
+    if visibility is None:
+        visibility = "draft"
+    elif visibility not in VISIBILITIES:
+        findings.append(
+            {
+                "kind": "invalid-visibility",
+                "id": eid,
+                "file": rel.as_posix(),
+                "detail": f"visibility {visibility!r} is not one of {'|'.join(VISIBILITIES)}; treated as draft",
+            }
+        )
+        visibility = "draft"
+
+    roles = as_list(access.get("required_roles"))
+    scopes = as_list(access.get("required_scopes"))
+    permissions = as_list(access.get("required_permissions"))
+    tier = access.get("tier")
+
+    if visibility == "public":
+        contradictions = []
+        if access.get("public") is False:
+            contradictions.append("access.public is false")
+        if roles or scopes or permissions:
+            contradictions.append("it declares required roles/scopes/permissions")
+        if tier:
+            contradictions.append(f"it is tier-gated ({tier})")
+        if contradictions:
+            findings.append(
+                {
+                    "kind": "visibility-contradicts-access",
+                    "id": eid,
+                    "file": rel.as_posix(),
+                    "detail": "visibility is public but " + " and ".join(contradictions),
+                }
+            )
+
+    return {
+        "surface": surface,
+        "id": eid,
+        "file": rel.as_posix(),
+        "visibility": visibility,
+        "auth_model": access.get("auth_model"),
+        "public": access.get("public"),
+        "roles": roles,
+        "scopes": scopes,
+        "permissions": permissions,
+        "tier": tier,
+        "user_types": as_list(fm.get("user_types")),
+        "affected_paths": as_list(fm.get("affected_paths")),
+    }
+
+
+def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    vroot = root / "docs" / "verification"
+    entries: list[dict[str, Any]] = []
+    findings: list[dict[str, str]] = []
+    for dirname, surface in SURFACE_DIRS.items():
+        base = vroot / dirname
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.md")):
+            if path.name.startswith(".") or path.name in ("index.md", "README.md"):
+                continue
+            rel = path.relative_to(root)
+            body = split_frontmatter(path.read_text(errors="replace"))
+            if body is None:
+                findings.append(
+                    {
+                        "kind": "frontmatter-missing",
+                        "id": rel.as_posix(),
+                        "file": rel.as_posix(),
+                        "detail": "no frontmatter; entry omitted from the manifest",
+                    }
+                )
+                continue
+            fm = parse_frontmatter(body)
+            entry_surface = str(fm.get("surface") or surface)
+            entries.append(build_entry(entry_surface, fm, rel, findings))
+
+    seen: dict[tuple[str, str], str] = {}
+    for e in entries:
+        key = (e["surface"], e["id"])
+        if key in seen:
+            findings.append(
+                {
+                    "kind": "duplicate-entry",
+                    "id": e["id"],
+                    "file": e["file"],
+                    "detail": f"also declared in {seen[key]}",
+                }
+            )
+        else:
+            seen[key] = e["file"]
+
+    entries.sort(key=lambda e: (e["surface"], e["id"], e["file"]))
+    return entries, findings
+
+
+def git_sha(root: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # best-effort: a non-git checkout or hung git must not block manifest generation
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def build(root: Path) -> dict[str, Any]:
+    entries, findings = collect(root)
+    return {"generated_from": git_sha(root), "entries": entries, "findings": findings}
+
+
+def comparable(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in manifest.items() if k != "generated_from"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--root", default=".", help="repo root (default: cwd)")
+    ap.add_argument("--check", action="store_true", help="fail if the committed manifest is stale; write nothing")
+    ap.add_argument("--fail-on-findings", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args(argv)
+
+    root = Path(args.root).resolve()
+    if not (root / "docs" / "verification").is_dir():
+        print("build-access-manifest: no docs/verification/ in " + str(root), file=sys.stderr)
+        return 1
+
+    manifest = build(root)
+    target = root / MANIFEST_REL
+
+    if args.check:
+        try:
+            current = json.loads(target.read_text())
+        except (OSError, json.JSONDecodeError):
+            print(f"{MANIFEST_REL} is missing or unreadable; run build-access-manifest.py", file=sys.stderr)
+            return 2
+        if comparable(current) != comparable(manifest):
+            print(f"{MANIFEST_REL} is stale; run build-access-manifest.py and commit it", file=sys.stderr)
+            return 2
+    else:
+        target.write_text(json.dumps(manifest, indent=2) + "\n")
+
+    if not args.quiet:
+        counts: dict[str, int] = {}
+        for e in manifest["entries"]:
+            counts[e["visibility"]] = counts.get(e["visibility"], 0) + 1
+        print(json.dumps({"entries": len(manifest["entries"]), "by_visibility": counts,
+                          "findings": manifest["findings"]}, indent=2))
+
+    return 2 if (args.fail_on_findings and manifest["findings"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
