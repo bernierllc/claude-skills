@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-10-19T17:04:08.661443+00:00",
+  "generatedAt": "2026-10-19T19:30:10.532834+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -89,7 +89,7 @@
       "author": "Bernier LLC"
     },
     "resume": {
-      "version": "1.3.0",
+      "version": "1.4.0",
       "description": "Use at the start of a session in a repo with prior work in flight, or when the user says \"resume\", \"/resume\", \"where were we\", \"pick up where we left off\". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.",
       "author": "Bernier LLC"
     },
