@@ -126,6 +126,15 @@ def test_fail_on_findings_exit_code():
         assert bam.main(["--root", str(root), "--quiet", "--fail-on-findings"]) == 2
 
 
+def test_gated_by_flows_into_manifest():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "pages/inbound.md", "path: /inbound\naccess:\n  public: true\n  gated_by: [INBOUND_ROUTING_ENABLED]\n  visibility: draft")
+        write(root, "pages/plain.md", "path: /plain\naccess:\n  public: true")
+        e = by_id(bam.build(root))
+        assert e["/inbound"]["gated_by"] == ["INBOUND_ROUTING_ENABLED"] and e["/plain"]["gated_by"] == []
+
+
 def test_block_lists_crlf_bom_and_hash_in_quotes():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.5.1
+version: 3.6.0
 author: Bernier LLC
 ---
 
@@ -164,6 +164,7 @@ access:
   required_scopes: [events.read]           # oauth-scope: OAuth scope strings
   mfa_required: false
   notes: ""               # free text for non-standard auth (custom model, conditional access, etc.)
+  gated_by: []            # optional: feature flags / env vars that must be on for a customer to reach this (e.g. [INBOUND_ROUTING_ENABLED]). Docs agents treat a gated surface as unreachable until the flag is confirmed on
   visibility: draft       # public | internal | admin | draft — who may SEE this documented. Default draft. Declared by a human or confirmed in review; never inferred from auth alone
   tier: null              # entitlement/plan gate (e.g. pro), if the feature is plan-limited
 
@@ -553,7 +554,7 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 
 `access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
 
-`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
 
 ```bash
 python3 verification-writer/scripts/build-access-manifest.py --root .          # write

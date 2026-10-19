@@ -167,6 +167,7 @@ def build_entry(
         "scopes": scopes,
         "permissions": permissions,
         "tier": tier,
+        "gated_by": as_list(access.get("gated_by")),
         "user_types": as_list(fm.get("user_types")),
         "affected_paths": as_list(fm.get("affected_paths")),
     }
@@ -271,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         counts: dict[str, int] = {}
         for e in manifest["entries"]:
             counts[e["visibility"]] = counts.get(e["visibility"], 0) + 1
+        if manifest["entries"] and set(counts) == {"draft"}:
+            print("note: every entry is draft; no visibility has been declared, so this is no data, not a verdict", file=sys.stderr)
         print(json.dumps({"entries": len(manifest["entries"]), "by_visibility": counts,
                           "findings": manifest["findings"]}, indent=2))
 
