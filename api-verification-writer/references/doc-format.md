@@ -11,7 +11,7 @@ surface: rest                       # rest | mcp
 method: get                         # rest only
 path: /v1/events                    # rest only; params as {id}
 # tool: send_email                  # mcp only
-generated_by: api-verification-writer@1.1.0
+generated_by: api-verification-writer@1.2.0
 generated_at: 2026-01-01
 affected_paths: [src/routes/events.ts]
 related: [mcp/list_events.md]       # REST/MCP counterpart, if any

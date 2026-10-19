@@ -1,6 +1,6 @@
 ---
 name: api-verification-writer
-version: 1.1.0
+version: 1.2.0
 dependencies:
   skills:
     - name: verification-writer
@@ -20,7 +20,8 @@ UI verification docs describe pages. This skill describes **operations**: REST e
 0. **Name the incumbent first.** Look for an existing drift gate (a `check-*spec*`/`openapi` script, a prebuild step, a CI job). If the repo already fails the build on spec/route drift, reuse it and skip the scanner's drift findings; the scanner still adds `no-security-declared` and the MCP checks.
 1. **Inventory.** `aec run-script skill:api-verification-writer scan-api-surfaces.py --root . --prefix /api/v1`
    - `--prefix` (repeatable) scopes to the public surface. Without it internal UI, auth-callback and webhook routes show up as "undocumented".
-   - Runtime-built spec (TS module, framework route)? Dump it (`curl http://localhost:PORT/api/v1/openapi.json > /tmp/spec.json`) and pass `--openapi /tmp/spec.json`; a local URL also works. A directory path is an error. If no code route matches any spec operation you get one `spec-code-mismatch` finding: wrong spec or wrong scope, not hundreds of real drifts.
+   - Runtime-built spec (TS module, framework route)? Dump it (`curl http://localhost:PORT/api/v1/openapi.json > /tmp/spec.json`) and pass `--openapi /tmp/spec.json`; a local URL also works. A directory path is an error. If the spec is built by a TS module, evaluate it directly (e.g. `tsx -e` calling the builder, with whatever env vars its config module requires set to dummy values); no server needed. If no code route matches any spec operation you get one `spec-code-mismatch` finding: wrong spec or wrong scope, not hundreds of real drifts.
+   - `--exclude /api/v1/mcp` (repeatable) marks routes intentionally absent from the spec (a JSON-RPC MCP transport, internal paths); cover those with the MCP checks instead. OPTIONS routes are ignored. Nested checkouts (a directory with its own `.git`, such as a worktree) are skipped and listed in `skipped_nested_repos`; routes are deduped on (method, path).
    - MCP: add `--mcp-tools tools.json`, a `tools/list` result from a running test server. Cleanest dump: the MCP Inspector CLI (`npx @modelcontextprotocol/inspector --cli <server-url> --method tools/list`; check `--help` for your transport), or `client.listTools()` from the MCP SDK saved as JSON. Without a dump the scan reports 0 tools.
    - Spec beats code scan; disagreement is a finding, not something to reconcile silently. Session-authed UI routes vs API-key routes are not distinguished; use `--prefix`.
 2. **Triage findings** (see `references/findings-format.md`). `no-security-declared` means someone must say whether the operation is public; do not guess.

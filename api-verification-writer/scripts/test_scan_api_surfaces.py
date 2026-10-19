@@ -104,6 +104,30 @@ def test_directory_spec_is_a_clear_error_and_remote_url_refused():
         assert scan(root, "--openapi", "https://api.example.com/openapi.json")[0] == 1
 
 
+def test_test_named_dir_is_scanned_nested_checkout_skipped_dupes_and_options_dropped():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/x/test": {"post": {}}}}))
+        (root / "app/api/v1/x/test").mkdir(parents=True)
+        (root / "app/api/v1/x/test/route.ts").write_text("export async function POST() {}\nexport async function OPTIONS() {}\n")
+        (root / "src").mkdir()
+        (root / "src/a.test.ts").write_text("app.get('/api/v1/from-test-file', h)\n")
+        (root / "src/mcp.ts").write_text("app.post('/api/v1/mcp', h)\n")
+        stale = root / ".claude/worktrees/old"
+        (stale / "app/api/v1/x/test").mkdir(parents=True)
+        (stale / ".git").write_text("gitdir: elsewhere")
+        (stale / "app/api/v1/x/test/route.ts").write_text("export async function POST() {}\n")
+        (stale / "app/api/v1/marketing").mkdir()
+        (stale / "app/api/v1/marketing/route.ts").write_text("export async function GET() {}\n")
+        _, res = scan(root)
+        assert res["skipped_nested_repos"] == [".claude/worktrees/old"]
+        assert [(r["method"], r["path"]) for r in res["code_routes"] if "x/test" in r["path"]] == [("POST", "/api/v1/x/test")]
+        assert not any("from-test-file" in r["path"] or "marketing" in r["path"] for r in res["code_routes"])
+        assert {f["id"] for f in res["findings"]} == {"POST /api/v1/mcp"}, res["findings"]
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

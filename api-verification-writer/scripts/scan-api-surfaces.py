@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -40,8 +41,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
-SKIP_DIRS = {".git", "node_modules", ".worktrees", "dist", "build", ".next", "__pycache__",
-             "venv", ".venv", "coverage", "tests", "test", "__tests__"}
+SKIP_DIRS = {".git", "node_modules", "dist", "build", ".next", "__pycache__", "venv", ".venv", "coverage",
+             "__tests__"}
+TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[a-z]+$|^test_.*\.py$|_test\.py$)")
 SPEC_NAMES = ("openapi.json", "openapi.yaml", "openapi.yml", "swagger.json",
               "docs/openapi.json", "docs/openapi.yaml", "docs/openapi.yml",
               "api/openapi.json", "api/openapi.yaml", "public/openapi.json")
@@ -147,16 +149,30 @@ def scan_mcp(path: Path, findings: list[dict]) -> list[dict]:
     return out
 
 
-def iter_code_files(root: Path):
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix in (".ts", ".tsx", ".js", ".mjs", ".py") \
-                and not any(part in SKIP_DIRS for part in p.relative_to(root).parts):
-            yield p
+def iter_code_files(root: Path, nested_repos: list[str]):
+    """Walk root, pruning dependency/build dirs and any nested checkout (a dir with its own
+    .git, e.g. a worktree or stale copy) so one route is not counted once per checkout.
+    A directory merely *named* test is real code; only test files and root-level tests/ are skipped."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        keep = []
+        for d in sorted(dirnames):
+            if d in SKIP_DIRS or (here == root and d in ("test", "tests")):
+                continue
+            if (here / d / ".git").exists():
+                nested_repos.append((here / d).relative_to(root).as_posix())
+                continue
+            keep.append(d)
+        dirnames[:] = keep
+        for f in sorted(filenames):
+            p = here / f
+            if p.suffix in (".ts", ".tsx", ".js", ".mjs", ".py") and not TEST_FILE_RE.search(f):
+                yield p
 
 
-def scan_code(root: Path) -> list[dict]:
+def scan_code(root: Path, nested_repos: list[str]) -> list[dict]:
     routes: list[dict] = []
-    for p in iter_code_files(root):
+    for p in iter_code_files(root, nested_repos):
         rel = p.relative_to(root).as_posix()
         try:
             text = p.read_text(errors="replace")
@@ -177,7 +193,12 @@ def scan_code(root: Path) -> list[dict]:
             for path, methods in FLASK_RE.findall(text):
                 for meth in re.findall(r"[A-Za-z]+", methods or "") or ["GET"]:
                     routes.append({"method": meth.upper(), "path": normalize(path), "file": rel, "framework": "flask"})
-    return routes
+    # one route, one entry: the same (method, path) can be registered from several files
+    seen: dict[tuple[str, str], dict] = {}
+    for r in routes:
+        if r["method"] != "OPTIONS":  # CORS preflight, never documented
+            seen.setdefault((r["method"], r["path"]), r)
+    return list(seen.values())
 
 
 def same_route(spec_path: str, code_path: str) -> bool:
@@ -210,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--openapi", action="append", default=[], help="spec path (repeatable); default: auto-discover")
     ap.add_argument("--mcp-tools", action="append", default=[], help="tools/list JSON dump (repeatable)")
     ap.add_argument("--prefix", action="append", default=[], help="only compare routes under this path prefix (repeatable)")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="path prefix intentionally absent from the spec (repeatable), e.g. a JSON-RPC MCP transport")
     ap.add_argument("--no-code-scan", action="store_true")
     ap.add_argument("--fail-on-findings", action="store_true")
     args = ap.parse_args(argv)
@@ -233,7 +256,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"scan-api-surfaces: cannot read a source file: {exc}", file=sys.stderr)
         return 1
 
-    code_routes = [] if args.no_code_scan else scan_code(root)
+    nested: list[str] = []
+    code_routes = [] if args.no_code_scan else scan_code(root, nested)
+    excluded = lambda path: any(path == e.rstrip("/") or path.startswith(e.rstrip("/") + "/") for e in args.exclude)
+    code_routes = [r for r in code_routes if not excluded(r["path"])]
     if args.prefix:
         under = lambda path: any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in args.prefix)
         spec_ops = [o for o in spec_ops if under(o["path"])]
@@ -243,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     drift(spec_ops, code_routes, findings)
-    print(json.dumps({"operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
+    print(json.dumps({"scanned_root": str(root), "skipped_nested_repos": nested, "operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))
     return 2 if (args.fail_on_findings and findings) else 0
 
