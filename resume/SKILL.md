@@ -40,6 +40,14 @@ re-plan** — a run that is already mapped gets picked up at its first non-done 
 For each claim in run-state / tracker rows, check it against git and the world before
 acting on it. One line per drift found:
 
+- **Staleness first:** an in-flight run whose newest activity is more than 7 days old
+  is stale. Newest activity = the latest step `timestamp` in the file or the file's own
+  age, whichever is more recent. File age: `find <path> -mmin +10080` prints the path
+  when the working-tree file is older than 7 days and nothing when it is newer; for a
+  checkpoint committed on another branch, `git log -1 --format=%cr <branch> -- <path>`.
+  Stale → say so in one line with the age and handle it as a conflicting state
+  (step 3): no branch switch, no executing steps. The world has likely moved on since
+  it was written, so never resume from it unasked.
 - run-state names a different branch than the checkout → the run belongs to the
   recorded branch: switch to it when the working tree is clean; dirty tree or any
   doubt → present it as a conflicting state (step 3) and pause. Never execute the
@@ -49,19 +57,13 @@ acting on it. One line per drift found:
   evidence.
 - A tracker row with no branch, a branch with no row, or notes older than the branch's
   last commit → list it; these are the first things to resolve.
-- An in-flight run whose checkpoint is more than 7 days old → stale. Age = the file's
-  mtime for a working-tree `run-state.json` (`find <path> -mtime +7` prints it when
-  stale), or the commit date for a committed one
-  (`git log -1 --format=%cI <branch> -- <path>`). Say so in one line with the age and
-  handle it as a conflicting state (step 3): the world has likely moved on since it was
-  written, so never resume from it unasked.
 
 ## 3. Continue
 
-- **In-flight run found:** state the run's objective in one line, then execute from the
-  first non-done step / `next_action`. Do not re-derive the plan. Keep the existing
-  checkpoint discipline: update run-state (and tracker, when configured) after every
-  completed step.
+- **In-flight run found, not stale, no conflict:** state the run's objective in one
+  line, then execute from the first non-done step / `next_action`. Do not re-derive the
+  plan. Keep the existing checkpoint discipline: update run-state (and tracker, when
+  configured) after every completed step.
 - **No run in flight:** report clean state in ≤5 lines — current branch, last commit,
   any open tracker rows for this repo — and ask nothing; wait for direction unless the
   open rows make the next task obvious.
