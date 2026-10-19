@@ -1,7 +1,7 @@
 ---
 name: typecheck-on-edit
 description: Use in any TypeScript repo where Claude Code edits files. Installs a PostToolUse hook that type-checks the project after every Edit or Write of a .ts/.tsx file (tsgo if installed, else the repo's tsc) and surfaces the first errors to the model as a blocking error, plus a SessionStart check that warns when the lockfile is newer than node_modules. Replaces hand-written `npx tsc --noEmit | head -20` hooks that ran on every edit of every file and whose output the model never saw.
-version: 1.0.0
+version: 1.0.1
 author: Bernier LLC
 ---
 
