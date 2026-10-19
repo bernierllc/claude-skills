@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.6.3
+version: 3.6.4
 author: Bernier LLC
 ---
 
@@ -565,7 +565,7 @@ Rules:
 
 - `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
 - Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
-- A `public` entry that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
+- A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
 - Regenerate the manifest after every run that writes or edits docs, and commit it with them. Never hand-edit it.
 - Report manifest findings in the findings report under "Access manifest".
 

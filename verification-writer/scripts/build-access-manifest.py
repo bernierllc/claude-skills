@@ -151,7 +151,7 @@ def build_entry(
     permissions = as_list(access.get("required_permissions"))
     tier = access.get("tier")
 
-    if visibility == "public":
+    if visibility == "public" and surface == "page":  # for REST/MCP, visibility is who reads the docs, not who may call
         contradictions = []
         if access.get("public") is False:
             contradictions.append("access.public is false")

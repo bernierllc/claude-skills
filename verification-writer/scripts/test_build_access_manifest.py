@@ -49,7 +49,7 @@ access:
   auth_model: oauth-scope
   required_scopes: [events.read]
   tier: pro
-  visibility: public""")  # contradicts itself on purpose
+  visibility: public""")  # publicly documented, authenticated API: valid
     write(root, "mcp/send-email.md", """surface: mcp
 tool: send_email
 access:
@@ -95,9 +95,11 @@ def test_findings_for_contradiction_invalid_value_and_duplicates():
         root = Path(d)
         fixture(root)
         write(root, "pages/home-copy.md", "path: /\naccess:\n  public: true")
+        write(root, "pages/members.md", "path: /members\naccess:\n  required_roles: [member]\n  visibility: public")
         findings = bam.build(root)["findings"]
         kinds = {(f["kind"], f["id"]) for f in findings}
-        assert ("visibility-contradicts-access", "GET /v1/events") in kinds, kinds
+        assert ("visibility-contradicts-access", "/members") in kinds, kinds
+        assert ("visibility-contradicts-access", "GET /v1/events") not in kinds, kinds  # docs-public authenticated API
         assert ("invalid-visibility", "onboarding") in kinds, kinds
         assert ("duplicate-entry", "/") in kinds, kinds
         assert by_id(bam.build(root))["onboarding"]["visibility"] == "draft"
@@ -160,7 +162,7 @@ def test_block_lists_crlf_bom_and_hash_in_quotes():
         e = m["entries"][0]
         assert e["surface"] == "rest" and e["id"] == "GET /s #1", e
         assert e["roles"] == ["admin", "ops"] and e["affected_paths"] == ["src/a.ts"], e
-        assert [f["kind"] for f in m["findings"]] == ["visibility-contradicts-access"], m["findings"]
+        assert m["findings"] == [], m["findings"]
 
 
 if __name__ == "__main__":

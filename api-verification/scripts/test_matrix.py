@@ -85,6 +85,16 @@ def test_documented_public_but_gated_and_tier():
     assert plan[("GET /t", "pro")] is True and plan[("GET /t", "free")] is False
 
 
+def test_absent_rows_fail_unless_skipped_or_surface_untested():
+    plan = [{"surface": "rest", "id": "GET /a", "principal": "anonymous", "expect_allowed": True},
+            {"surface": "rest", "id": "GET /a", "principal": "root", "expect_allowed": True},
+            {"surface": "rest", "id": "DELETE /a", "principal": "root", "expect_allowed": True},
+            {"surface": "mcp", "id": "tool", "principal": "root", "expect_allowed": True}]
+    got = [{"id": "GET /a", "principal": "anonymous", "status": 200}]
+    kinds = [(m["id"], m["kind"]) for m in mx.evaluate(plan, got, None, frozenset({"DELETE /a"}))]
+    assert kinds == [("GET /a", "missing-result")], kinds
+
+
 def test_run_end_to_end_flags_leak_and_skips_mutating():
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

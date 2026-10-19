@@ -142,13 +142,17 @@ def cmd_run(args) -> int:
     return 0
 
 
-def evaluate(plan: list[dict], results: list[dict], denied: set[int] | None = None) -> list[dict]:
+def evaluate(plan: list[dict], results: list[dict], denied: set[int] | None = None,
+             skipped: frozenset[str] = frozenset()) -> list[dict]:
     denied = denied or {401, 403}
     got = {(r["id"], r["principal"]): r["status"] for r in results}
+    tested = {row.get("surface") for row in plan if (row["id"], row["principal"]) in got}  # a surface never run is not a failure
     out = []
     for row in plan:
         key = (row["id"], row["principal"])
         if key not in got:
+            if row.get("surface") in tested and row["id"] not in skipped:
+                out.append({**row, "status": None, "kind": "missing-result"})
             continue
         if got[key] is None:
             out.append({**row, "status": None, "kind": "no-response"})
@@ -187,8 +191,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "plan":
             print(json.dumps(plan, indent=2))
             return 0
-        mismatches = evaluate(plan, load(args.results)["results"],
-                              {int(c) for c in args.denied_status.split(",")})
+        res = load(args.results)
+        mismatches = evaluate(plan, res["results"], {int(c) for c in args.denied_status.split(",")},
+                              frozenset(res.get("skipped_mutating", [])))
         print(json.dumps({"mismatches": mismatches}, indent=2))
         return 2 if mismatches else 0
     except (OSError, json.JSONDecodeError, KeyError) as exc:

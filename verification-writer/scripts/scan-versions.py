@@ -46,7 +46,7 @@ CACHE_FILENAME = ".scan-cache.json"
 # written by an older SCAN_VERSION are discarded wholesale — otherwise a fix
 # to an item regex is invisible for every doc whose bytes have not changed,
 # and the report keeps citing defects the current parser no longer finds.
-SCAN_VERSION = 2
+SCAN_VERSION = 3
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
 # API/MCP docs under docs/verification/{api,mcp}/ are produced by a sibling skill

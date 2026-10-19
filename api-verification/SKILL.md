@@ -1,6 +1,6 @@
 ---
 name: api-verification
-version: 1.0.6
+version: 1.0.7
 dependencies:
   skills:
     - name: api-verification-writer
@@ -38,6 +38,6 @@ Run via `aec run-script skill:api-verification matrix.py <subcommand> ...`.
 
 - A mismatch is never resolved by editing the expectation to match the server without checking intent. Over-permissive is code until proven otherwise.
 - A principal with no `token_env` is anonymous: no token is sent, whatever roles it lists.
-- An unreachable route is a `no-response` mismatch, not a pass.
+- An unreachable route is a `no-response` mismatch, not a pass. A planned row missing from the results file (and not listed in `skipped_mutating`) is a `missing-result` mismatch, for any surface that has at least one result.
 - Status 404/400 caused by the placeholder path id counts as allowed: the auth gate passed the request.
 - Do not log or print tokens; reports name principals only.
