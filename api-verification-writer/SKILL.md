@@ -1,6 +1,6 @@
 ---
 name: api-verification-writer
-version: 1.0.0
+version: 1.1.0
 dependencies:
   skills:
     - name: verification-writer
@@ -17,8 +17,12 @@ UI verification docs describe pages. This skill describes **operations**: REST e
 
 ## Workflow
 
-1. **Inventory.** `aec run-script skill:api-verification-writer scan-api-surfaces.py --root .`
-   Add `--mcp-tools tools.json` with a `tools/list` result captured from a running test server (MCP SDK client or Inspector CLI). The scanner never contacts a server. Spec beats code scan; disagreement is a finding, not something to reconcile silently.
+0. **Name the incumbent first.** Look for an existing drift gate (a `check-*spec*`/`openapi` script, a prebuild step, a CI job). If the repo already fails the build on spec/route drift, reuse it and skip the scanner's drift findings; the scanner still adds `no-security-declared` and the MCP checks.
+1. **Inventory.** `aec run-script skill:api-verification-writer scan-api-surfaces.py --root . --prefix /api/v1`
+   - `--prefix` (repeatable) scopes to the public surface. Without it internal UI, auth-callback and webhook routes show up as "undocumented".
+   - Runtime-built spec (TS module, framework route)? Dump it (`curl http://localhost:PORT/api/v1/openapi.json > /tmp/spec.json`) and pass `--openapi /tmp/spec.json`; a local URL also works. A directory path is an error. If no code route matches any spec operation you get one `spec-code-mismatch` finding: wrong spec or wrong scope, not hundreds of real drifts.
+   - MCP: add `--mcp-tools tools.json`, a `tools/list` result from a running test server. Cleanest dump: the MCP Inspector CLI (`npx @modelcontextprotocol/inspector --cli <server-url> --method tools/list`; check `--help` for your transport), or `client.listTools()` from the MCP SDK saved as JSON. Without a dump the scan reports 0 tools.
+   - Spec beats code scan; disagreement is a finding, not something to reconcile silently. Session-authed UI routes vs API-key routes are not distinguished; use `--prefix`.
 2. **Triage findings** (see `references/findings-format.md`). `no-security-declared` means someone must say whether the operation is public; do not guess.
 3. **Write one doc per operation** following `references/doc-format.md`. Front matter carries `surface`, `method`+`path` or `tool`, `generated_by: api-verification-writer@<version>`, and `access:` including `visibility`.
 4. **Regenerate the manifest:** `aec run-script skill:verification-writer build-access-manifest.py --root .`; commit it with the docs.

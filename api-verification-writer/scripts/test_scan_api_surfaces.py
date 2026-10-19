@@ -66,6 +66,44 @@ def test_findings():
         assert ops[("GET", "/v1/health")]["explicitly_public"] is True
 
 
+def scan(root: Path, *extra: str) -> tuple[int, dict]:
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        code = sas.main(["--root", str(root), *extra])
+    return code, (json.loads(buf.getvalue()) if buf.getvalue() else {})
+
+
+def test_wrong_spec_gives_one_finding_not_noise():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/legacy/a": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("".join(f"app.get('/api/v1/r{i}', h)\n" for i in range(5)))
+        _, res = scan(root)
+        assert [f["kind"] for f in res["findings"]] == ["spec-code-mismatch"], res["findings"]
+
+
+def test_prefix_scopes_out_internal_routes():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [{"k": []}], "paths": {"/api/v1/a": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/a', h)\napp.get('/api/staff/x', h)\napp.get('/api/v1/b', h)\n")
+        _, res = scan(root)
+        assert {f["id"] for f in res["findings"]} == {"GET /api/staff/x", "GET /api/v1/b"}
+        _, res = scan(root, "--prefix", "/api/v1")
+        assert {f["id"] for f in res["findings"]} == {"GET /api/v1/b"}, res["findings"]
+
+
+def test_directory_spec_is_a_clear_error_and_remote_url_refused():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "spec").mkdir()
+        assert scan(root, "--openapi", str(root / "spec"))[0] == 1
+        assert scan(root, "--openapi", "https://api.example.com/openapi.json")[0] == 1
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

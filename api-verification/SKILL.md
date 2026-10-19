@@ -1,10 +1,10 @@
 ---
 name: api-verification
-version: 1.0.0
+version: 1.0.1
 dependencies:
   skills:
     - name: api-verification-writer
-      min_version: "1.0.0"
+      min_version: "1.1.0"
       reason: "Reads the API/MCP verification docs and the access manifest it produces; findings feed back into its Cross-agent feedback section."
     - name: verification-writer
       min_version: "3.5.0"

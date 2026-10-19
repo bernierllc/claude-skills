@@ -7,8 +7,15 @@ Sources, most authoritative first:
   2. MCP `tools/list` dump (JSON) captured from a running test server
   3. Framework route scan (Next.js route files, Express-style, FastAPI/Flask)
 
-It never contacts a server. Capture the MCP listing with the MCP SDK client or
-Inspector CLI and pass the file via --mcp-tools.
+Files only by default. --openapi also accepts an http(s) URL on a loopback/private/
+.local/.test/.internal host (for specs built at runtime); prefer a pre-dumped JSON
+file. Capture the MCP listing with the MCP SDK client or Inspector CLI and pass the
+file via --mcp-tools.
+
+Scope: --prefix /api/v1 (repeatable) limits spec operations and code routes to the
+public surface; without it every route is compared, which is noisy when internal
+UI/webhook routes live beside the public API. If no code route matches any spec
+operation, ONE `spec-code-mismatch` finding replaces the per-route noise.
 
 Where sources disagree the disagreement is a finding, not something to hide:
   undocumented-route    route in code, absent from the spec
@@ -23,11 +30,14 @@ source file is unreadable (exit 1); --fail-on-findings exits 2 on any finding.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 SKIP_DIRS = {".git", "node_modules", ".worktrees", "dist", "build", ".next", "__pycache__",
@@ -54,7 +64,27 @@ def normalize(path: str) -> str:
     return p.rstrip("/") or "/"
 
 
+def local_host(host: str) -> bool:
+    if host == "localhost" or host.endswith((".local", ".localhost", ".test", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
+def fetch_spec(url: str) -> dict:
+    host = urlparse(url).hostname or ""
+    if not local_host(host):
+        raise ValueError(f"refusing to fetch {url}: {host!r} is not a local/test host; dump the spec to a file instead")
+    with urllib.request.urlopen(url, timeout=10) as r:
+        return json.loads(r.read())
+
+
 def load_spec(path: Path, findings: list[dict]) -> dict | None:
+    if path.is_dir():
+        raise ValueError(f"{path} is a directory; pass a spec file or URL (dump a runtime-built spec with curl)")
     text = path.read_text(errors="replace")
     if path.suffix == ".json":
         return json.loads(text)
@@ -158,6 +188,12 @@ def same_route(spec_path: str, code_path: str) -> bool:
 def drift(spec_ops: list[dict], code_routes: list[dict], findings: list[dict]) -> None:
     if not spec_ops or not code_routes:
         return
+    if not any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in spec_ops for r in code_routes):
+        findings.append({"kind": "spec-code-mismatch", "id": "*",
+                         "detail": f"none of {len(code_routes)} code routes match any of {len(spec_ops)} spec operations; "
+                                   "this is probably the wrong spec (a runtime-built spec? a legacy file?) or the wrong scope. "
+                                   "Pass the real spec via --openapi <file|url> and/or scope with --prefix. Per-route drift suppressed."})
+        return
     for r in code_routes:
         if not any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in spec_ops):
             findings.append({"kind": "undocumented-route", "id": f"{r['method']} {r['path']}", "file": r["file"],
@@ -173,25 +209,39 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=".")
     ap.add_argument("--openapi", action="append", default=[], help="spec path (repeatable); default: auto-discover")
     ap.add_argument("--mcp-tools", action="append", default=[], help="tools/list JSON dump (repeatable)")
+    ap.add_argument("--prefix", action="append", default=[], help="only compare routes under this path prefix (repeatable)")
     ap.add_argument("--no-code-scan", action="store_true")
     ap.add_argument("--fail-on-findings", action="store_true")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
 
     findings: list[dict] = []
-    spec_paths = [Path(p) for p in args.openapi] or [root / n for n in SPEC_NAMES if (root / n).is_file()]
+    sources = args.openapi or [str(root / n) for n in SPEC_NAMES if (root / n).is_file()]
     spec_ops: list[dict] = []
     try:
-        for sp in spec_paths:
-            spec = load_spec(sp, findings)
+        for src in sources:
+            if src.startswith(("http://", "https://")):
+                spec, label = fetch_spec(src), src
+            else:
+                sp = Path(src)
+                spec = load_spec(sp, findings)
+                label = str(sp.relative_to(root)) if sp.is_relative_to(root) else src
             if spec:
-                spec_ops += scan_spec(spec, str(sp.relative_to(root)) if sp.is_relative_to(root) else str(sp), findings)
+                spec_ops += scan_spec(spec, label, findings)
         mcp_tools = [t for mp in args.mcp_tools for t in scan_mcp(Path(mp), findings)]
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # JSONDecodeError is a ValueError
         print(f"scan-api-surfaces: cannot read a source file: {exc}", file=sys.stderr)
         return 1
 
     code_routes = [] if args.no_code_scan else scan_code(root)
+    if args.prefix:
+        under = lambda path: any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in args.prefix)
+        spec_ops = [o for o in spec_ops if under(o["path"])]
+        code_routes = [r for r in code_routes if under(r["path"])]
+        findings = [f for f in findings if f["kind"] != "no-security-declared" or under(f["id"].split(" ", 1)[1])]
+        if not spec_ops:
+            findings.append({"kind": "spec-code-mismatch", "id": "*",
+                             "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     drift(spec_ops, code_routes, findings)
     print(json.dumps({"operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))
