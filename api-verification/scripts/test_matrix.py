@@ -47,6 +47,7 @@ def test_guard():
     assert mx.guard("http://10.1.2.3") is None
     assert mx.guard("http://app.test") is None
     assert mx.guard("https://api.example.com") is not None
+    assert mx.guard("http://169.254.169.254/latest") is not None  # cloud metadata
     os.environ[mx.ALLOW_ENV] = "staging.example.com"
     try:
         assert mx.guard("https://staging.example.com") is None
@@ -72,6 +73,16 @@ def test_public_flag_and_permissions_drive_expectations():
             for r in mx.make_plan({"entries": [dict(e, surface="rest") for e in entries]}, p)}
     assert plan[("GET /hook", "anonymous")] is True
     assert plan[("GET /abac", "plain")] is False and plan[("GET /abac", "billing")] is True
+
+
+def test_documented_public_but_gated_and_tier():
+    gated = {"id": "GET /g", "visibility": "public", "public": None, "roles": ["admin"], "surface": "rest"}
+    tiered = {"id": "GET /t", "visibility": "internal", "tier": "pro", "surface": "rest"}
+    p = {"principals": {"anonymous": {}, "root": {"roles": ["admin"], "token_env": "T"},
+                        "pro": {"token_env": "T", "tier": "pro"}, "free": {"token_env": "T", "tier": "free"}}}
+    plan = {(r["id"], r["principal"]): r["expect_allowed"] for r in mx.make_plan({"entries": [gated, tiered]}, p)}
+    assert plan[("GET /g", "anonymous")] is False and plan[("GET /g", "root")] is True
+    assert plan[("GET /t", "pro")] is True and plan[("GET /t", "free")] is False
 
 
 def test_run_end_to_end_flags_leak_and_skips_mutating():

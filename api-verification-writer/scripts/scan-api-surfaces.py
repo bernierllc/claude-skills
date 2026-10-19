@@ -238,6 +238,11 @@ def same_route(spec_path: str, code_path: str) -> bool:
 
 
 def drift(spec_ops: list[dict], code_routes: list[dict], findings: list[dict]) -> None:
+    if code_routes and not spec_ops:
+        findings.append({"kind": "spec-missing", "id": "*",
+                         "detail": f"{len(code_routes)} code routes found but no OpenAPI operations were discovered; "
+                                   "pass the spec via --openapi <file|url> or document the routes."})
+        return
     if not spec_ops or not code_routes:
         return
     if not any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in spec_ops for r in code_routes):

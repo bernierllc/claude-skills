@@ -62,13 +62,26 @@ def parse_scalar(raw: str) -> Any:
     return raw
 
 
+def strip_comment(line: str) -> str:
+    """Drop a trailing ` # comment`, ignoring any # inside quotes."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
 def parse_frontmatter(body: str) -> dict[str, Any]:
     """Top-level scalars/lists plus one nested mapping level (e.g. `access:`)."""
     out: dict[str, Any] = {}
     current: dict[str, Any] | None = None
     last: tuple[dict[str, Any], str] | None = None  # key awaiting `- item` block-list lines
     for line in body.splitlines():
-        code = re.sub(r"\s+#.*$", "", line.rstrip()) if not re.search(r"""['"]""", line) else line.rstrip()
+        code = strip_comment(line)
         if not code.strip() or code.lstrip().startswith("#"):
             continue
         item = re.match(r"^\s*-\s+(.*)$", code)

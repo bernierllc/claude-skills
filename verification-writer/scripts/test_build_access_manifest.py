@@ -144,6 +144,11 @@ def test_sibling_entries_with_same_paths_must_agree_on_gated_by():
         assert kinds == {("gated-by-inconsistent", "/a"), ("gated-by-inconsistent", "/b")}, kinds
 
 
+def test_comment_after_quoted_scalar_is_stripped():
+    fm = bam.parse_frontmatter('path: "/v1/users" # route\nnote: "a # b"\n')
+    assert fm["path"] == "/v1/users" and fm["note"] == "a # b", fm
+
+
 def test_block_lists_crlf_bom_and_hash_in_quotes():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

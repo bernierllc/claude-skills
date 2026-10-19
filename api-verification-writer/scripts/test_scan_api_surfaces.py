@@ -88,6 +88,15 @@ def test_wrong_spec_gives_one_finding_not_noise():
         assert [f["kind"] for f in res["findings"]] == ["spec-code-mismatch"], res["findings"]
 
 
+def test_routes_without_any_spec_are_flagged():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/a', h)\n")
+        _, res = scan(root)
+        assert [f["kind"] for f in res["findings"]] == ["spec-missing"], res["findings"]
+
+
 def test_prefix_scopes_out_internal_routes():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

@@ -9,7 +9,7 @@ matrix.py — Role/scope access matrix for REST and MCP surfaces.
 
 Expectation, per entry and principal:
   visibility public                      -> allowed
-  access.public true                     -> allowed
+  access.public true (or documented public with no gate) -> allowed
   entry declares roles/scopes/permissions-> allowed iff the principal holds a match for each declared kind
   non-public, nothing specific declared  -> allowed iff the principal has a token (is not anonymous)
 Allowed = response status not in {401, 403}; denied = 401 or 403 (`--denied-status` widens it, e.g. 302 to a login
@@ -48,7 +48,7 @@ def host_is_local(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return ip.is_loopback or ip.is_private
+    return ip.is_loopback or (ip.is_private and not ip.is_link_local)  # 169.254.169.254 is a cloud metadata service
 
 
 def guard(base_url: str) -> str | None:
@@ -63,16 +63,19 @@ def guard(base_url: str) -> str | None:
 
 def expected(entry: dict, principal: dict) -> bool:
     # access.public is who may reach the operation; visibility only says who may read its docs
-    if entry.get("public") is True or entry["visibility"] == "public":
+    if entry.get("public") is True:
         return True
-    if not principal.get("token_env"):
-        return False  # no token is sent, so this principal is anonymous whatever roles it lists
     held = {"roles": principal.get("roles") or [], "scopes": principal.get("scopes") or [],
             "permissions": principal.get("permissions") or []}
     required = {k: entry.get(k) or [] for k in held}
-    if not any(required.values()):
-        return True
-    return all(not required[k] or bool(set(required[k]) & set(held[k])) for k in held)
+    tier = entry.get("tier")
+    gated = any(required.values()) or bool(tier)
+    if not gated and entry["visibility"] == "public" and entry.get("public") is None:
+        return True  # documented public, nothing gates it
+    if not principal.get("token_env"):
+        return False  # no token is sent, so this principal is anonymous whatever roles it lists
+    return all(not required[k] or bool(set(required[k]) & set(held[k])) for k in held) and \
+        (not tier or principal.get("tier") == tier)
 
 
 def load(path: str) -> dict:
