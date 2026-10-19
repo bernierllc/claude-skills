@@ -126,6 +126,20 @@ def test_fail_on_findings_exit_code():
         assert bam.main(["--root", str(root), "--quiet", "--fail-on-findings"]) == 2
 
 
+def test_block_lists_crlf_bom_and_hash_in_quotes():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        p = root / "docs/verification/api/x.md"
+        p.parent.mkdir(parents=True)
+        p.write_bytes(("\ufeff---\r\nsurface: api\r\nmethod: get\r\npath: \"/s #1\"\r\naffected_paths:\r\n  - src/a.ts\r\n"
+                       "access:\r\n  public: false\r\n  required_roles:\r\n    - admin\r\n    - ops\r\n  visibility: public\r\n---\r\n").encode())
+        m = bam.build(root)
+        e = m["entries"][0]
+        assert e["surface"] == "rest" and e["id"] == "GET /s #1", e
+        assert e["roles"] == ["admin", "ops"] and e["affected_paths"] == ["src/a.ts"], e
+        assert [f["kind"] for f in m["findings"]] == ["visibility-contradicts-access"], m["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

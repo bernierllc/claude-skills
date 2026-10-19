@@ -128,6 +128,20 @@ def test_test_named_dir_is_scanned_nested_checkout_skipped_dupes_and_options_dro
         assert res["findings"] == [], res["findings"]
 
 
+def test_param_names_next_groups_non_dict_spec_and_client_calls():
+    assert sas.normalize("(api)/v1/users/[id]/@modal") == "/v1/users/{id}"
+    assert sas.same_route("/v1/users/{userId}", "/v1/users/{id}")
+    assert sas.local_host("127.0.0.1") and not sas.local_host("169.254.169.254")
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text("[]")
+        assert scan(root)[0] == 1
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/u": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/c.ts").write_text("const r = await api.get('/u2')\napp.get('/u', h)\n")
+        assert scan(root)[1]["findings"] == []
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

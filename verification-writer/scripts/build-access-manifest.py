@@ -41,6 +41,7 @@ MANIFEST_REL = "docs/verification/access-manifest.json"
 
 
 def split_frontmatter(text: str) -> str | None:
+    text = text.lstrip("\ufeff").replace("\r\n", "\n")
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
@@ -65,9 +66,17 @@ def parse_frontmatter(body: str) -> dict[str, Any]:
     """Top-level scalars/lists plus one nested mapping level (e.g. `access:`)."""
     out: dict[str, Any] = {}
     current: dict[str, Any] | None = None
+    last: tuple[dict[str, Any], str] | None = None  # key awaiting `- item` block-list lines
     for line in body.splitlines():
-        code = re.sub(r"\s+#.*$", "", line.rstrip())
+        code = re.sub(r"\s+#.*$", "", line.rstrip()) if not re.search(r"""['"]""", line) else line.rstrip()
         if not code.strip() or code.lstrip().startswith("#"):
+            continue
+        item = re.match(r"^\s*-\s+(.*)$", code)
+        if item and last is not None:
+            container, key = last
+            if not isinstance(container.get(key), list):
+                container[key] = []
+            container[key].append(parse_scalar(item.group(1)))
             continue
         indented = code[0] in " \t"
         m = re.match(r"^\s*([A-Za-z0-9_-]+):\s*(.*)$", code)
@@ -76,18 +85,21 @@ def parse_frontmatter(body: str) -> dict[str, Any]:
         key, value = m.group(1), m.group(2)
         if indented and current is not None:
             current[key] = parse_scalar(value)
+            last = (current, key) if value == "" else None
         elif not indented:
             if value == "":
                 current = {}
                 out[key] = current
+                last = (out, key)  # becomes a list if `- item` lines follow, else stays a mapping
             else:
                 current = None
                 out[key] = parse_scalar(value)
+                last = None
     return out
 
 
 def as_list(value: Any) -> list[str]:
-    if value is None:
+    if value is None or value == {}:
         return []
     return [str(v) for v in value] if isinstance(value, list) else [str(value)]
 
@@ -184,7 +196,7 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                 )
                 continue
             fm = parse_frontmatter(body)
-            entry_surface = str(fm.get("surface") or surface)
+            entry_surface = {"api": "rest"}.get(str(fm.get("surface") or surface), str(fm.get("surface") or surface))
             entries.append(build_entry(entry_surface, fm, rel, findings))
 
     seen: dict[tuple[str, str], str] = {}

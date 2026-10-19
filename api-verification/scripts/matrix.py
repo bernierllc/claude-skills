@@ -11,7 +11,8 @@ Expectation, per entry and principal:
   visibility public                      -> allowed
   entry declares roles / scopes          -> allowed iff the principal holds a match for each declared kind
   non-public, nothing specific declared  -> allowed iff the principal has a token (is not anonymous)
-Allowed = response status not in {401, 403}; denied = 401 or 403. A 404/400 from a
+Allowed = response status not in {401, 403}; denied = 401 or 403 (`--denied-status` widens it, e.g. 302 to a login
+page: redirects are never followed). No answer at all is a `no-response` mismatch. A 404/400 from a
 placeholder path id still proves the auth gate let the request through.
 
 principals.json holds env var NAMES only, never tokens:
@@ -36,7 +37,7 @@ from urllib.parse import urlparse
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 LOCAL_SUFFIXES = (".local", ".localhost", ".test", ".internal")
 ALLOW_ENV = "API_VERIFICATION_ALLOWED_HOSTS"
-DENIED = {401, 403}
+DEFAULT_DENIED = "401,403"
 
 
 def host_is_local(host: str) -> bool:
@@ -63,6 +64,8 @@ def expected(entry: dict, principal: dict) -> bool:
     if entry["visibility"] == "public":
         return True
     roles, scopes = entry.get("roles") or [], entry.get("scopes") or []
+    if not principal.get("token_env"):
+        return False  # no token is sent, so this principal is anonymous whatever roles it lists
     if roles or scopes:
         return (not roles or bool(set(roles) & set(principal.get("roles") or []))) and \
                (not scopes or bool(set(scopes) & set(principal.get("scopes") or [])))
@@ -84,17 +87,29 @@ def make_plan(manifest: dict, principals: dict) -> list[dict]:
     return rows
 
 
-def probe(base_url: str, entry_id: str, token: str | None) -> int:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Report a 30x as-is: following it could re-send the token to a host the guard never checked."""
+    def redirect_request(self, *a, **kw):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def probe(base_url: str, entry_id: str, token: str | None) -> int | None:
+    """HTTP status, or None when the server did not answer."""
     method, path = entry_id.split(" ", 1)
     url = base_url.rstrip("/") + re.sub(r"\{[^}]+\}", "verify-probe", path)
     req = urllib.request.Request(url, method=method)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with OPENER.open(req, timeout=10) as r:
             return r.status
     except urllib.error.HTTPError as exc:
         return exc.code
+    except (urllib.error.URLError, OSError):
+        return None  # recorded as no-response by evaluate; one dead route must not discard the rest
 
 
 def cmd_run(args) -> int:
@@ -121,14 +136,18 @@ def cmd_run(args) -> int:
     return 0
 
 
-def evaluate(plan: list[dict], results: list[dict]) -> list[dict]:
+def evaluate(plan: list[dict], results: list[dict], denied: set[int] | None = None) -> list[dict]:
+    denied = denied or {401, 403}
     got = {(r["id"], r["principal"]): r["status"] for r in results}
     out = []
     for row in plan:
         key = (row["id"], row["principal"])
         if key not in got:
             continue
-        allowed = got[key] not in DENIED
+        if got[key] is None:
+            out.append({**row, "status": None, "kind": "no-response"})
+            continue
+        allowed = got[key] not in denied
         if allowed != row["expect_allowed"]:
             out.append({**row, "status": got[key],
                         "kind": "over-permissive" if allowed else "over-restrictive"})
@@ -148,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
             s.add_argument("--allow-mutating", action="store_true", help="also probe POST/PUT/PATCH/DELETE")
         if name == "evaluate":
             s.add_argument("--results", required=True)
+            s.add_argument("--denied-status", default=DEFAULT_DENIED,
+                           help="statuses meaning 'denied' (default 401,403; add 302 for cookie apps that redirect to /login)")
     args = ap.parse_args(argv)
     try:
         if args.cmd == "guard":
@@ -160,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "plan":
             print(json.dumps(plan, indent=2))
             return 0
-        mismatches = evaluate(plan, load(args.results)["results"])
+        mismatches = evaluate(plan, load(args.results)["results"],
+                              {int(c) for c in args.denied_status.split(",")})
         print(json.dumps({"mismatches": mismatches}, indent=2))
         return 2 if mismatches else 0
     except (OSError, json.JSONDecodeError, KeyError) as exc:

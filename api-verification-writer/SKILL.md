@@ -1,10 +1,10 @@
 ---
 name: api-verification-writer
-version: 1.2.0
+version: 1.2.1
 dependencies:
   skills:
     - name: verification-writer
-      min_version: "3.5.0"
+      min_version: "3.5.1"
       reason: "Shares the docs/verification/ layout, the access: frontmatter contract and build-access-manifest.py. API and MCP docs feed the same access manifest as page docs."
 description: Writes verification docs for REST endpoints and MCP tools, one operation per doc, under docs/verification/api/ and docs/verification/mcp/. Inventories surfaces from OpenAPI, an MCP tools/list dump and framework route scans, flags spec/code drift, missing auth declarations and thin MCP tool metadata, and records who may call each operation in access frontmatter. Use when an API route, OpenAPI spec or MCP server changes, when documenting API/MCP behavior for customers or agents, or when the access manifest needs API/MCP entries. Companion to verification-writer (UI) and api-verification (runs the access matrix).
 ---
@@ -21,6 +21,7 @@ UI verification docs describe pages. This skill describes **operations**: REST e
 1. **Inventory.** `aec run-script skill:api-verification-writer scan-api-surfaces.py --root . --prefix /api/v1`
    - `--prefix` (repeatable) scopes to the public surface. Without it internal UI, auth-callback and webhook routes show up as "undocumented".
    - Runtime-built spec (TS module, framework route)? Dump it (`curl http://localhost:PORT/api/v1/openapi.json > /tmp/spec.json`) and pass `--openapi /tmp/spec.json`; a local URL also works. A directory path is an error. If the spec is built by a TS module, evaluate it directly (e.g. `tsx -e` calling the builder, with whatever env vars its config module requires set to dummy values); no server needed. If no code route matches any spec operation you get one `spec-code-mismatch` finding: wrong spec or wrong scope, not hundreds of real drifts.
+   - `--prefix` matches full paths, so for routers mounted under a prefix in code (`router.get('/users')` at `/api/v1`) omit it or the code routes are filtered out. Receivers other than `app|router|server|fastify` (e.g. `api.get`, an HTTP client) are not treated as routes.
    - `--exclude /api/v1/mcp` (repeatable) marks routes intentionally absent from the spec (a JSON-RPC MCP transport, internal paths); cover those with the MCP checks instead. OPTIONS routes are ignored. Nested checkouts (a directory with its own `.git`, such as a worktree) are skipped and listed in `skipped_nested_repos`; routes are deduped on (method, path).
    - MCP: add `--mcp-tools tools.json`, a `tools/list` result from a running test server. Cleanest dump: the MCP Inspector CLI (`npx @modelcontextprotocol/inspector --cli <server-url> --method tools/list`; check `--help` for your transport), or `client.listTools()` from the MCP SDK saved as JSON. Without a dump the scan reports 0 tools.
    - Spec beats code scan; disagreement is a finding, not something to reconcile silently. Session-authed UI routes vs API-key routes are not distinguished; use `--prefix`.

@@ -49,7 +49,7 @@ SPEC_NAMES = ("openapi.json", "openapi.yaml", "openapi.yml", "swagger.json",
               "api/openapi.json", "api/openapi.yaml", "public/openapi.json")
 
 EXPRESS_RE = re.compile(
-    r"""\b(?:app|router|server|fastify|api|route[sr]?)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]""")
+    r"""\b(?:app|router|server|fastify)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]""")
 PY_RE = re.compile(r"""@\s*\w+\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]""")
 FLASK_RE = re.compile(r"""@\s*\w+\s*\.route\s*\(\s*['"]([^'"]+)['"](?:[^)]*methods\s*=\s*\[([^\]]*)\])?""")
 NEXT_METHOD_RE = re.compile(
@@ -57,7 +57,9 @@ NEXT_METHOD_RE = re.compile(
 
 
 def normalize(path: str) -> str:
-    p = re.sub(r"\[\.\.\.(\w+)\]", r"{\1}", path)      # [...slug]
+    path = path if path.startswith("/") else "/" + path
+    p = re.sub(r"/(?:\([^/)]*\)|@[^/]+)(?=/|$)", "", path)     # Next (group) and @slot segments
+    p = re.sub(r"\[\.\.\.(\w+)\]", r"{\1}", p)      # [...slug]
     p = re.sub(r"\[(\w+)\]", r"{\1}", p)                # [id]
     p = re.sub(r"<(?:\w+:)?(\w+)>", r"{\1}", p)         # <int:id>
     p = re.sub(r"(?<![{\w]):(\w+)", r"{\1}", p)         # :id
@@ -73,15 +75,26 @@ def local_host(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return ip.is_loopback or ip.is_private
+    return (ip.is_loopback or ip.is_private) and not ip.is_link_local  # 169.254.x.x is cloud metadata
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):  # a redirect could leave the hosts checked above
+        return None
 
 
 def fetch_spec(url: str) -> dict:
     host = urlparse(url).hostname or ""
     if not local_host(host):
         raise ValueError(f"refusing to fetch {url}: {host!r} is not a local/test host; dump the spec to a file instead")
-    with urllib.request.urlopen(url, timeout=10) as r:
-        return json.loads(r.read())
+    with urllib.request.build_opener(_NoRedirect).open(url, timeout=10) as r:
+        return _as_spec(json.loads(r.read()), url)
+
+
+def _as_spec(data: Any, where: Any) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError(f"{where} is not an OpenAPI document (top level is {type(data).__name__}, expected an object)")
+    return data
 
 
 def load_spec(path: Path, findings: list[dict]) -> dict | None:
@@ -89,7 +102,7 @@ def load_spec(path: Path, findings: list[dict]) -> dict | None:
         raise ValueError(f"{path} is a directory; pass a spec file or URL (dump a runtime-built spec with curl)")
     text = path.read_text(errors="replace")
     if path.suffix == ".json":
-        return json.loads(text)
+        return _as_spec(json.loads(text), path)
     try:
         import yaml  # type: ignore
     except ImportError:
@@ -97,7 +110,7 @@ def load_spec(path: Path, findings: list[dict]) -> dict | None:
                          "detail": "YAML spec found but PyYAML is not installed; "
                                    "export it to JSON or `pip install pyyaml`"})
         return None
-    return yaml.safe_load(text)
+    return _as_spec(yaml.safe_load(text), path)
 
 
 def scan_spec(spec: dict, source: str, findings: list[dict]) -> list[dict]:
@@ -201,9 +214,14 @@ def scan_code(root: Path, nested_repos: list[str]) -> list[dict]:
     return list(seen.values())
 
 
+def canon(path: str) -> str:
+    return re.sub(r"\{[^}]*\}", "{}", path)  # {id} and {userId} are the same route
+
+
 def same_route(spec_path: str, code_path: str) -> bool:
     """Code paths often omit a mount prefix, so accept a suffix match on segment boundaries."""
-    return spec_path == code_path or spec_path.endswith(code_path if code_path != "/" else "\0")
+    spec_path, code_path = canon(spec_path), canon(code_path)
+    return spec_path == code_path or (code_path != "/" and spec_path.endswith(code_path))
 
 
 def drift(spec_ops: list[dict], code_routes: list[dict], findings: list[dict]) -> None:

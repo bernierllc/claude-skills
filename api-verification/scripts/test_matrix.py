@@ -84,6 +84,30 @@ def test_run_end_to_end_flags_leak_and_skips_mutating():
             srv.shutdown()
 
 
+class Redirecting(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302); self.send_header("Location", "http://127.0.0.1:1/login"); self.end_headers()
+    def log_message(self, *a): pass
+
+
+def test_redirects_not_followed_no_response_recorded_and_tokenless_role_is_anonymous():
+    plan = {(r["id"], r["principal"]): r["expect_allowed"]
+            for r in mx.make_plan(MANIFEST, {"principals": {"ghost": {"roles": ["admin"]}}})}
+    assert plan[("GET /admin", "ghost")] is False  # no token_env => no token sent => anonymous
+    srv = HTTPServer(("127.0.0.1", 0), Redirecting)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{srv.server_port}"
+        assert mx.probe(base, "GET /admin", None) == 302
+        assert mx.probe("http://127.0.0.1:1", "GET /admin", None) is None
+    finally:
+        srv.shutdown()
+    row = [{"id": "GET /admin", "principal": "anonymous", "expect_allowed": False}]
+    assert mx.evaluate(row, [{"id": "GET /admin", "principal": "anonymous", "status": 302}])[0]["kind"] == "over-permissive"
+    assert mx.evaluate(row, [{"id": "GET /admin", "principal": "anonymous", "status": 302}], {302}) == []
+    assert mx.evaluate(row, [{"id": "GET /admin", "principal": "anonymous", "status": None}])[0]["kind"] == "no-response"
+
+
 def test_run_refuses_remote_host():
     code, _, err = cli(["run", "--base-url", "https://api.example.com"])
     assert code == 2 and "refusing" in err
