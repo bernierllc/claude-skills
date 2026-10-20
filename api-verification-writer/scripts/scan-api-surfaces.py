@@ -294,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
 
     nested: list[str] = []
     code_routes = [] if args.no_code_scan else scan_code(root, nested)
-    excluded = lambda path: any(path == e.rstrip("/") or path.startswith(e.rstrip("/") + "/") for e in args.exclude)
+    # a server-relative spec path (/mcp) also matches the full --exclude (/api/v1/mcp), as same_route does for code paths
+    excluded = lambda path: any(path == e.rstrip("/") or path.startswith(e.rstrip("/") + "/") or same_route(e, path) for e in args.exclude)
     code_routes = [r for r in code_routes if not excluded(r["path"])]
     if args.prefix:
         under = lambda path: any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in args.prefix)
@@ -306,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     drift(spec_ops, code_routes, findings)
-    findings = [f for f in findings if f["kind"] != "spec-without-route" or not excluded(f["id"].split(" ", 1)[1])]
+    findings = [f for f in findings if f["kind"] not in ("spec-without-route", "no-security-declared") or not excluded(f["id"].split(" ", 1)[1])]
     print(json.dumps({"scanned_root": str(root), "skipped_nested_repos": nested, "operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))
     return 2 if (args.fail_on_findings and findings) else 0

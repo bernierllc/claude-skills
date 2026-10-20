@@ -186,3 +186,14 @@ def test_exclude_silences_spec_without_route_for_that_path():
         assert [f["id"] for f in res["findings"]] == ["GET /api/v1/openapi.json"], res["findings"]
         _, res = scan(root, "--exclude", "/api/v1/openapi.json")
         assert res["findings"] == [], res["findings"]
+
+
+def test_exclude_matches_a_server_relative_spec_path_and_drops_its_security_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"paths": {"/mcp": {"post": {}}}}))
+        (root / "src").mkdir()
+        _, res = scan(root)
+        assert {f["kind"] for f in res["findings"]} == {"no-security-declared"}, res["findings"]
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]

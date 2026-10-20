@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = make_plan(load(args.manifest), load(args.principals))
         if args.cmd == "plan":
             if not plan:
-                print("0 rest/mcp entries in the manifest: nothing to plan (write API/MCP docs with api-verification-writer first)", file=sys.stderr)
+                print("plan is empty: no rest/mcp entries in the manifest (write API/MCP docs with api-verification-writer first) or no principals in the principals file", file=sys.stderr)
             print(json.dumps(plan, indent=2))
             return 0
         res = load(args.results)

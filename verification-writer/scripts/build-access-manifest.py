@@ -182,9 +182,9 @@ def build_entry(
             )
 
     gates = as_list(access.get("gated_by"))
-    if visibility == "public" and gates:
+    if visibility == "public" and gates and access.get("gates_confirmed_on") is not True:
         findings.append({"kind": "public-gated-by-flag", "id": eid, "file": rel.as_posix(),
-                         "detail": f"visibility is public but it is gated_by {gates}; confirm every gate is on in production, otherwise set visibility internal"})
+                         "detail": f"visibility is public but it is gated_by {gates}; confirm every gate is on in production, then set access.gates_confirmed_on: true, otherwise set visibility internal"})
 
     return {
         "surface": surface,

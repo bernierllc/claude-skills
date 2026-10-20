@@ -12,7 +12,7 @@ Scanner kinds (from `scan-api-surfaces.py`):
 | `mcp-no-output-schema` | no `outputSchema` | low priority |
 | `yaml-spec-unreadable` | YAML spec, no PyYAML | export JSON or install PyYAML |
 
-Manifest kinds (from `build-access-manifest.py`): `invalid-visibility`, `visibility-contradicts-access`, `duplicate-entry`, `frontmatter-missing`.
+Manifest kinds (from `build-access-manifest.py`): `invalid-visibility`, `visibility-contradicts-access`, `duplicate-entry`, `frontmatter-missing`, `invalid-mfa-required`, `mfa-contradicts-public`, `public-gated-by-flag` (set `access.gates_confirmed_on: true` once the flag is confirmed on in production).
 
 ## Report shape
 

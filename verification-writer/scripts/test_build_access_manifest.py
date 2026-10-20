@@ -94,8 +94,10 @@ def test_public_entry_behind_a_flag_is_a_finding():
         root = Path(d)
         write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: public")
         write(root, "api/d.md", "surface: rest\nmethod: get\npath: /d\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: internal")
+        write(root, "api/e.md", "surface: rest\nmethod: get\npath: /e\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  gates_confirmed_on: true\n  visibility: public")
         kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
         assert ("public-gated-by-flag", "GET /c") in kinds and ("public-gated-by-flag", "GET /d") not in kinds
+        assert ("public-gated-by-flag", "GET /e") not in kinds  # a recorded confirmation acknowledges the finding
 
 
 def test_every_surface_lands_with_declared_visibility():

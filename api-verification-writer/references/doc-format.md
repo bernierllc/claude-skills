@@ -23,6 +23,7 @@ access:
   tier: null
   mfa_required: false
   gated_by: []                      # feature flags/env vars that must be on in production for a customer to reach this
+  # gates_confirmed_on: true        # set only after confirming every gated_by flag is on in production; required to keep visibility: public
   visibility: draft                 # public | internal | admin | draft
 ---
 

@@ -564,7 +564,7 @@ python3 verification-writer/scripts/build-access-manifest.py --root . --check  #
 Rules:
 
 - `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
-- `visibility: public` on an entry with `gated_by` is a finding (`public-gated-by-flag`): a surface behind a flag that is off in production is not customer-facing, so confirm the gate is on or set `internal`.
+- `visibility: public` on an entry with `gated_by` is a finding (`public-gated-by-flag`): a surface behind a flag that is off in production is not customer-facing, so confirm the gate is on and record that with `access.gates_confirmed_on: true`, or set `internal`.
 - Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
 - A doc whose `surface:` is not rest|mcp|page|flow is an `invalid-surface` finding and is omitted.
 - A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
