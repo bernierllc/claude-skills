@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.1
+version: 3.7.2
 author: Bernier LLC
 ---
 
@@ -566,7 +566,8 @@ Rules:
 - `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
 - `visibility: public` on an entry with `gated_by` is a finding (`public-gated-by-flag`): a surface behind a flag that is off in production is not customer-facing, so confirm the gate is on and record that with `access.gates_confirmed_on: true`, or set `internal`.
 - Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
-- A doc whose `surface:` is not rest|mcp|page|flow is an `invalid-surface` finding and is omitted.
+- A doc whose `surface:` is not rest|mcp|page is an `invalid-surface` finding and is omitted.
+- A flow-style `affected_paths: [...]` or `related: [...]` is a `frontmatter-flow-list` finding: write block lists with quoted entries (unquoted `[id]` route segments are invalid YAML, and block-list readers see a flow list as empty).
 - A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
 - Regenerate the manifest after every run that writes or edits docs, and commit it with them. Never hand-edit it.
 - Report manifest findings in the findings report under "Access manifest".

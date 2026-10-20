@@ -13,8 +13,10 @@ path: /v1/events                    # rest only; params as {id}
 # tool: send_email                  # mcp only
 generated_by: api-verification-writer@1.2.2
 generated_at: 2026-01-01
-affected_paths: [src/routes/events.ts]
-related: [mcp/list_events.md]       # REST/MCP counterpart, if any; path relative to docs/verification/
+affected_paths:                     # block list, every entry quoted: unquoted [id] route segments break YAML and flow lists are skipped by block-list readers
+  - "src/routes/events.ts"
+related:                            # REST/MCP counterpart, if any; path relative to docs/verification/
+  - "mcp/list_events.md"
 access:
   public: false
   # endpoint: /api/v1/inbox/mcp      # only when this operation is served somewhere other than the surface default (e.g. a second MCP endpoint with its own token); the matrix plan carries it

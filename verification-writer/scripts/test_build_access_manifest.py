@@ -175,10 +175,19 @@ def test_gated_by_flows_into_manifest():
 def test_sibling_entries_with_same_paths_must_agree_on_gated_by():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        write(root, "pages/a.md", "path: /a\naffected_paths: [src/x.tsx]\naccess:\n  gated_by: [FLAG]")
-        write(root, "pages/b.md", "path: /b\naffected_paths: [src/x.tsx]\naccess:\n  public: true")
+        write(root, "pages/a.md", "path: /a\naffected_paths:\n  - \"src/x.tsx\"\naccess:\n  gated_by: [FLAG]")
+        write(root, "pages/b.md", "path: /b\naffected_paths:\n  - \"src/x.tsx\"\naccess:\n  public: true")
         kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
         assert kinds == {("gated-by-inconsistent", "/a"), ("gated-by-inconsistent", "/b")}, kinds
+
+
+def test_flow_style_path_lists_are_a_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naffected_paths: [src/app/[id]/route.ts]\naccess:\n  public: true")
+        write(root, "api/b.md", 'surface: rest\nmethod: get\npath: /b\naffected_paths:\n  - "src/app/[id]/route.ts"\naccess:\n  public: true')
+        kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
+        assert kinds == {("frontmatter-flow-list", "docs/verification/api/a.md")}, kinds
 
 
 def test_unsupported_surface_is_a_finding():
