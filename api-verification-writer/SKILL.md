@@ -4,7 +4,7 @@ version: 1.2.11
 dependencies:
   skills:
     - name: verification-writer
-      min_version: "3.6.7"
+      min_version: "3.7.6"
       reason: "Shares the docs/verification/ layout, the access: frontmatter contract and build-access-manifest.py. API and MCP docs feed the same access manifest as page docs."
 description: Writes verification docs for REST endpoints and MCP tools, one operation per doc, under docs/verification/api/ and docs/verification/mcp/. Inventories surfaces from OpenAPI, an MCP tools/list dump and framework route scans, flags spec/code drift, missing auth declarations and thin MCP tool metadata, and records who may call each operation in access frontmatter. Use when an API route, OpenAPI spec or MCP server changes, when documenting API/MCP behavior for customers or agents, or when the access manifest needs API/MCP entries. Companion to verification-writer (UI) and api-verification (runs the access matrix).
 ---
