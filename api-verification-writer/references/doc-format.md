@@ -21,6 +21,7 @@ access:
   required_scopes: [events.read]
   required_roles: []
   tier: null
+  mfa_required: false
   visibility: draft                 # public | internal | admin | draft
 ---
 

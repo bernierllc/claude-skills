@@ -554,7 +554,7 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 
 `access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
 
-`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, mfa_required, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
 
 ```bash
 python3 verification-writer/scripts/build-access-manifest.py --root .          # write

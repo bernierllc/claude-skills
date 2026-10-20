@@ -92,6 +92,14 @@ def test_mfa_requirement_needs_an_mfa_principal():
     assert plan == {"plain": False, "mfa": True}
 
 
+def test_mfa_only_and_documented_public_entries_still_gate():
+    only = {"id": "GET /o", "visibility": "public", "public": None, "mfa_required": True, "surface": "rest"}
+    p = {"principals": {"anonymous": {}, "plain": {"token_env": "T"}, "mfa": {"token_env": "T", "mfa": True},
+                        "str": {"token_env": "T", "mfa": "true"}}}
+    plan = {r["principal"]: r["expect_allowed"] for r in mx.make_plan({"entries": [only]}, p)}
+    assert plan == {"anonymous": False, "plain": False, "mfa": True, "str": False}
+
+
 def test_absent_rows_fail_unless_skipped_or_surface_untested():
     plan = [{"surface": "rest", "id": "GET /a", "principal": "anonymous", "expect_allowed": True},
             {"surface": "rest", "id": "GET /a", "principal": "root", "expect_allowed": True},

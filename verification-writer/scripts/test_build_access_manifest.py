@@ -77,6 +77,18 @@ def test_mfa_requirement_reaches_the_manifest():
         assert e["send_email"]["mfa_required"] is False
 
 
+def test_non_bool_mfa_keeps_the_gate_and_contradictions_are_findings():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naccess:\n  public: false\n  mfa_required: True")
+        write(root, "api/b.md", "surface: rest\nmethod: get\npath: /b\naccess:\n  public: true\n  mfa_required: true")
+        m = bam.build(root)
+        e = by_id(m)
+        assert e["GET /a"]["mfa_required"] is True and e["GET /b"]["mfa_required"] is True
+        kinds = {(f["kind"], f["id"]) for f in m["findings"]}
+        assert ("invalid-mfa-required", "GET /a") in kinds and ("mfa-contradicts-public", "GET /b") in kinds
+
+
 def test_every_surface_lands_with_declared_visibility():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

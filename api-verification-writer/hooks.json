@@ -1,6 +1,6 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "hooks": [
     {
       "id": "avw-scan-on-edit",
