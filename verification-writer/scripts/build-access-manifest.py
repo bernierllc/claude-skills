@@ -209,7 +209,7 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     vroot = root / "docs" / "verification"
     entries: list[dict[str, Any]] = []
     findings: list[dict[str, str]] = []
-    for dirname, surface in SURFACE_DIRS.items():
+    for dirname, surface in {**SURFACE_DIRS, "flows": None}.items():  # flows are linted but never become entries
         base = vroot / dirname
         if not base.is_dir():
             continue
@@ -233,6 +233,8 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                 if re.search(rf"^{key}:[ \t]*\[[ \t]*[^\]\s]", body, re.M):
                     findings.append({"kind": "frontmatter-flow-list", "id": rel.as_posix(), "file": rel.as_posix(),
                                      "detail": f"{key} is a flow-style list; write a block list with quoted entries"})
+            if surface is None:
+                continue
             entry_surface = {"api": "rest"}.get(str(fm.get("surface") or surface), str(fm.get("surface") or surface))
             if entry_surface not in SURFACE_DIRS.values():
                 findings.append({"kind": "invalid-surface", "id": rel.as_posix(), "file": rel.as_posix(),

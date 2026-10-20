@@ -169,6 +169,16 @@ def test_param_names_next_groups_non_dict_spec_and_client_calls():
         assert scan(root)[1]["findings"] == []
 
 
+def test_exclude_of_only_spec_operation_still_reports_other_code_routes():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/mcp": {"post": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/other', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert [f["kind"] for f in res["findings"]] == ["undocumented-route"], res["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -188,8 +188,12 @@ def test_flow_style_path_lists_are_a_finding():
         write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naffected_paths: [src/app/[id]/route.ts]\naccess:\n  public: true")
         write(root, "api/b.md", 'surface: rest\nmethod: get\npath: /b\naffected_paths:\n  - "src/app/[id]/route.ts"\naccess:\n  public: true')
         write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naffected_paths: []\naccess:\n  public: true")  # empty list is valid
-        kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
-        assert kinds == {("frontmatter-flow-list", "docs/verification/api/a.md")}, kinds
+        write(root, "flows/f.md", "id: f\naffected_paths: [src/app/[id]/page.tsx]")  # flows are linted too
+        m = bam.build(root)
+        kinds = {(f["kind"], f["id"]) for f in m["findings"]}
+        assert kinds == {("frontmatter-flow-list", "docs/verification/api/a.md"),
+                         ("frontmatter-flow-list", "docs/verification/flows/f.md")}, kinds
+        assert not any(e["id"] == "f" for e in m["entries"])
 
 
 def test_unsupported_surface_is_a_finding():

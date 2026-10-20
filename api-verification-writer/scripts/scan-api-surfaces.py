@@ -305,7 +305,12 @@ def main(argv: list[str] | None = None) -> int:
         if had_spec and not spec_ops:  # no spec at all is drift()'s spec-missing
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
-    drift(spec_ops, code_routes, findings)
+    compared = [o for o in spec_ops if not excluded(o["path"])]  # excluded operations stay in the inventory but never drive drift
+    if spec_ops and not compared:  # every spec operation is excluded: remaining code routes are undocumented, not "no spec"
+        findings += [{"kind": "undocumented-route", "id": f"{r['method']} {r['path']}", "file": r["file"],
+                      "detail": "route exists in code but not in the OpenAPI spec"} for r in code_routes]
+    else:
+        drift(compared, code_routes, findings)
     findings = [f for f in findings if f["kind"] not in ("spec-without-route", "no-security-declared") or not excluded(f["id"].split(" ", 1)[1])]
     print(json.dumps({"scanned_root": str(root), "skipped_nested_repos": nested, "operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))

@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.4
+version: 3.7.5
 author: Bernier LLC
 ---
 
@@ -611,7 +611,7 @@ When the skill version bumps, add a row describing what changes (if any) need to
 | 3.1.0 | 3.2.0 | none — preserve all existing IDs | add `id_namespace` field to frontmatter (derive from existing item prefix pattern); flag any items whose IDs don't match the namespace | no (automatic on first write) |
 | 3.2.0 | 3.3.0 | none — preserve all existing IDs | add `affected_paths` field to page and flow frontmatter (glob patterns allowed). On first write, run the path-suggestion pass: deterministic filename + route-table heuristics first, then prompt the user to confirm before persisting. Never silently auto-commit heuristic results. Existing docs that the skill is not actively touching are left as-is and reported by `scan-versions.py` as `no_affected_paths`. | no (automatic on first write) |
 | 3.3.0 | 3.4.0 | none — preserve all existing IDs | no frontmatter changes. `scan-versions.py` now scans the whole verification tree (previously only `pages/`, `flows/`, and `shared.md`) and runs an integrity pass; docs that were never scanned before may newly surface as `missing_frontmatter` / `no_affected_paths`, and duplicate IDs, duplicate `id_namespace` values, namespace mismatches, and malformed Format A lines are now reported. Fix reported defects before generating downstream tests — each one silently drops items. | no (automatic on first write) |
-| 3.4.0 | 3.6.x | none — preserve all existing IDs | `access` gains `gated_by`, `visibility`, `tier`, `mfa_required`, `auth_model`; flows get no `access` block. Docs you are not editing stay at their old stamp and are reported as `stale` by `scan-versions.py`; do not restamp a doc without a content change. Add the new fields only to docs you touch (frontmatter-only passes are fine: run steps 1-3 and 8, skip steps 4-7, and stamp `generated_by` only on the docs you edit). | no (automatic on first write) |
+| 3.4.0 | 3.7.x | none — preserve all existing IDs | `access` gains `gated_by`, `visibility`, `tier`, `mfa_required`, `auth_model`; flows get no `access` block. Every 3.5.x, 3.6.x and 3.7.x release is covered by this row (3.6.5 to 3.6.6, 3.6.7 to 3.7.x and so on need no document change beyond it). Docs you are not editing stay at their old stamp and are reported as `stale` by `scan-versions.py`; do not restamp a doc without a content change. Add the new fields only to docs you touch (frontmatter-only passes are fine: run steps 1-3 and 8, skip steps 4-7, and stamp `generated_by` only on the docs you edit). | no (automatic on first write) |
 
 When you add a new version row, be explicit: list exact ID-to-ID mappings for any renames. Do not describe renames as "update to match new convention" — that is not actionable by a future Claude. If you cannot list the mappings, the skill is not ready to rename IDs and the rename should be postponed to a later version where the mapping can be defined.
 
