@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-10-20T21:22:16.137434+00:00",
+  "generatedAt": "2026-10-20T21:23:04.764860+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -8,7 +8,7 @@
       "author": "Anthropic"
     },
     "api-verification": {
-      "version": "1.1.0",
+      "version": "1.1.1",
       "description": "Verifies who can call each REST endpoint and MCP tool by running a principal x operation access matrix against a local or test server and comparing responses to what the verification docs declare. Flags over-permissive and over-restrictive operations, and refuses non-local hosts by default. Use after API or MCP auth changes, before releases, or to check that docs and behavior agree on public vs gated surfaces. Companion to api-verification-writer; the API counterpart of browser-verification."
     },
     "api-verification-writer": {
