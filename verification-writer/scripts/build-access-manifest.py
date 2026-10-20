@@ -3,7 +3,7 @@
 build-access-manifest.py — Merge verification-doc `access:` frontmatter into one
 machine-readable audience manifest.
 
-Reads docs/verification/{pages,api,mcp,flows}/**/*.md and writes
+Reads docs/verification/{pages,api,mcp}/**/*.md and writes
 docs/verification/access-manifest.json. The manifest, not an agent's judgment,
 says what is public, internal, admin-only or still a draft. Consumers: the
 customer and internal docs agents, llms.txt / sitemap / MCP-index build steps,
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 VISIBILITIES = ("public", "internal", "admin", "draft")
-SURFACE_DIRS = {"pages": "page", "api": "rest", "mcp": "mcp", "flows": "flow"}
+SURFACE_DIRS = {"pages": "page", "api": "rest", "mcp": "mcp"}  # flows carry no access block, so they are not manifest entries
 MANIFEST_REL = "docs/verification/access-manifest.json"
 
 

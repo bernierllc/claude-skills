@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-check for build-access-manifest.py. Run: python3 test_build_access_manifest.py
 
-Behavior under test: given page, REST, MCP and flow docs, the manifest carries
+Behavior under test: given page, REST and MCP docs, the manifest carries
 each entry with the declared visibility; undeclared means draft; contradictions
 and duplicates surface as findings instead of being papered over.
 """
@@ -57,11 +57,12 @@ access:
   public: false
   auth_model: oauth-scope
   required_scopes: [mail.send]""")  # no visibility => draft
-    write(root, "flows/onboarding.md", """id: onboarding
+    write(root, "pages/onboarding.md", """path: onboarding
 user_types: [member]
 access:
   public: true
   visibility: bogus""")
+    write(root, "flows/checkout.md", "id: checkout\nuser_types: [member]")  # flows are not manifest entries
 
 
 def by_id(manifest: dict) -> dict:
@@ -113,6 +114,7 @@ def test_every_surface_lands_with_declared_visibility():
         assert e["send_email"]["surface"] == "mcp"
         assert e["/"]["affected_paths"] == ["app/page.tsx"]
         assert e["/"]["user_types"] == ["visitor"]
+        assert "checkout" not in e and not any(x["surface"] == "flow" for x in m["entries"])
 
 
 def test_undeclared_visibility_is_draft_not_inferred():
