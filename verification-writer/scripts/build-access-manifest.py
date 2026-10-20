@@ -192,6 +192,7 @@ def build_entry(
         "file": rel.as_posix(),
         "visibility": visibility,
         "auth_model": access.get("auth_model"),
+        "endpoint": access.get("endpoint"),
         "public": access.get("public"),
         "roles": roles,
         "scopes": scopes,

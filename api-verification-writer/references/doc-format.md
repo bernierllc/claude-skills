@@ -17,6 +17,7 @@ affected_paths: [src/routes/events.ts]
 related: [mcp/list_events.md]       # REST/MCP counterpart, if any; path relative to docs/verification/
 access:
   public: false
+  # endpoint: /api/v1/inbox/mcp      # only when this operation is served somewhere other than the surface default (e.g. a second MCP endpoint with its own token); the matrix plan carries it
   auth_model: oauth-scope           # none | api-key | oauth-scope | rbac | session (any OAuth token with scopes is oauth-scope; say the grant type under "Auth & access")
   required_scopes: [events.read]
   required_roles: []
