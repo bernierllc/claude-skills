@@ -169,12 +169,6 @@ def test_param_names_next_groups_non_dict_spec_and_client_calls():
         assert scan(root)[1]["findings"] == []
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-    print(f"ok — {len(tests)} tests passed")
-
 
 def test_exclude_silences_spec_without_route_for_that_path():
     with tempfile.TemporaryDirectory() as d:
@@ -195,3 +189,10 @@ def test_exclude_drops_security_finding_and_never_suffix_matches_short_paths():
         (root / "src").mkdir()
         _, res = scan(root, "--exclude", "/api/v1/mcp", "--exclude", "/api/v1/admin/users", "--exclude", "/api/v1/users/{id}")
         assert {f["id"] for f in res["findings"]} == {"GET /users", "GET /{id}"}, res["findings"]
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"ok — {len(tests)} tests passed")

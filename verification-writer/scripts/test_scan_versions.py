@@ -149,12 +149,6 @@ def test_narrative_api_doc_needs_no_id_namespace():
         assert "id_namespace-missing" in r.issues, r.issues
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-    print(f"ok — {len(tests)} tests passed")
-
 
 def test_current_version_defaults_to_the_skill_md_version():
     skill_md = Path(sv.__file__).resolve().parent.parent / "SKILL.md"
@@ -175,3 +169,10 @@ def test_skill_version_tolerates_a_v_prefix_and_prerelease_tag():
             assert sv.skill_version() == "3.6.6"
         finally:
             sv.__file__ = real
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"ok — {len(tests)} tests passed")
