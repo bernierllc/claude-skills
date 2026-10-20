@@ -89,6 +89,15 @@ def test_non_bool_mfa_keeps_the_gate_and_contradictions_are_findings():
         assert ("invalid-mfa-required", "GET /a") in kinds and ("mfa-contradicts-public", "GET /b") in kinds
 
 
+def test_public_entry_behind_a_flag_is_a_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: public")
+        write(root, "api/d.md", "surface: rest\nmethod: get\npath: /d\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: internal")
+        kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
+        assert ("public-gated-by-flag", "GET /c") in kinds and ("public-gated-by-flag", "GET /d") not in kinds
+
+
 def test_every_surface_lands_with_declared_visibility():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

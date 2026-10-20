@@ -7,6 +7,7 @@ verification item is visible to downstream consumers at all.
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -153,3 +154,12 @@ if __name__ == "__main__":
     for t in tests:
         t()
     print(f"ok — {len(tests)} tests passed")
+
+
+def test_current_version_defaults_to_the_skill_md_version():
+    skill_md = Path(sv.__file__).resolve().parent.parent / "SKILL.md"
+    declared = re.search(r"^version:\s*[\"']?([0-9][^\s\"']*)", skill_md.read_text(), re.M).group(1)
+    assert sv.skill_version() == declared
+    import json as _json
+    hooks = _json.loads((skill_md.parent / "hooks.json").read_text())
+    assert not any("--current-version" in h["command"] for h in hooks["hooks"])  # a pinned number goes stale

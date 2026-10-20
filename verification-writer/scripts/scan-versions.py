@@ -463,6 +463,15 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
     }
 
 
+def skill_version() -> str:
+    """Version of the installed skill: the `version:` line in the SKILL.md beside scripts/."""
+    text = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text()
+    m = re.search(r"^version:\s*[\"']?([0-9][^\s\"']*)", text, re.M)
+    if not m:
+        raise SystemExit("scan-versions: no version in SKILL.md; pass --current-version")
+    return m.group(1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -472,8 +481,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--current-version",
-        required=True,
-        help="Current verification-writer version (e.g., 3.3.0). The scanner reports drift against this.",
+        default=None,
+        help="Current verification-writer version (e.g., 3.3.0). Default: the version in this skill's own SKILL.md, so a hook never pins a stale number.",
     )
     parser.add_argument(
         "--quiet",
@@ -529,7 +538,7 @@ def main() -> int:
     }
     save_cache(cache_path, output)
 
-    summary = build_summary(results, args.current_version)
+    summary = build_summary(results, args.current_version or skill_version())
 
     if not args.quiet:
         json.dump(summary, sys.stdout, indent=2)

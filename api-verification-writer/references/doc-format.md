@@ -14,14 +14,15 @@ path: /v1/events                    # rest only; params as {id}
 generated_by: api-verification-writer@1.2.2
 generated_at: 2026-01-01
 affected_paths: [src/routes/events.ts]
-related: [mcp/list_events.md]       # REST/MCP counterpart, if any
+related: [mcp/list_events.md]       # REST/MCP counterpart, if any; path relative to docs/verification/
 access:
   public: false
-  auth_model: oauth-scope           # none | api-key | oauth-scope | rbac | session
+  auth_model: oauth-scope           # none | api-key | oauth-scope | rbac | session (any OAuth token with scopes is oauth-scope; say the grant type under "Auth & access")
   required_scopes: [events.read]
   required_roles: []
   tier: null
   mfa_required: false
+  gated_by: []                      # feature flags/env vars that must be on in production for a customer to reach this
   visibility: draft                 # public | internal | admin | draft
 ---
 

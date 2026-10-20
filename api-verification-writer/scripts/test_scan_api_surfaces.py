@@ -174,3 +174,15 @@ if __name__ == "__main__":
     for t in tests:
         t()
     print(f"ok — {len(tests)} tests passed")
+
+
+def test_exclude_silences_spec_without_route_for_that_path():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/a": {"get": {}}, "/api/v1/openapi.json": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/a', h)\n")
+        _, res = scan(root)
+        assert [f["id"] for f in res["findings"]] == ["GET /api/v1/openapi.json"], res["findings"]
+        _, res = scan(root, "--exclude", "/api/v1/openapi.json")
+        assert res["findings"] == [], res["findings"]

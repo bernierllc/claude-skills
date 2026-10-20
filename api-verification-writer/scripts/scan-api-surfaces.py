@@ -306,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     drift(spec_ops, code_routes, findings)
+    findings = [f for f in findings if f["kind"] != "spec-without-route" or not excluded(f["id"].split(" ", 1)[1])]
     print(json.dumps({"scanned_root": str(root), "skipped_nested_repos": nested, "operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))
     return 2 if (args.fail_on_findings and findings) else 0
