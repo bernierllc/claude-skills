@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-10-20T21:51:57.966279+00:00",
+  "generatedAt": "2026-10-20T21:52:33.337779+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -12,7 +12,7 @@
       "description": "Verifies who can call each REST endpoint and MCP tool by running a principal x operation access matrix against a local or test server and comparing responses to what the verification docs declare. Flags over-permissive and over-restrictive operations, and refuses non-local hosts by default. Use after API or MCP auth changes, before releases, or to check that docs and behavior agree on public vs gated surfaces. Companion to api-verification-writer; the API counterpart of browser-verification."
     },
     "api-verification-writer": {
-      "version": "1.2.7",
+      "version": "1.2.8",
       "description": "Writes verification docs for REST endpoints and MCP tools, one operation per doc, under docs/verification/api/ and docs/verification/mcp/. Inventories surfaces from OpenAPI, an MCP tools/list dump and framework route scans, flags spec/code drift, missing auth declarations and thin MCP tool metadata, and records who may call each operation in access frontmatter. Use when an API route, OpenAPI spec or MCP server changes, when documenting API/MCP behavior for customers or agents, or when the access manifest needs API/MCP entries. Companion to verification-writer (UI) and api-verification (runs the access matrix)."
     },
     "artifacts-builder": {
@@ -139,7 +139,7 @@
       "author": "Bernier LLC"
     },
     "verification-writer": {
-      "version": "3.7.2",
+      "version": "3.7.3",
       "description": "Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.",
       "author": "Bernier LLC"
     },

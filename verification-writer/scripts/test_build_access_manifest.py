@@ -34,7 +34,8 @@ access:
   auth_model: none
   visibility: public
 user_types: [visitor]
-affected_paths: [app/page.tsx]""")
+affected_paths:
+  - app/page.tsx""")
     write(root, "pages/admin.md", """path: /admin
 access:
   public: false
@@ -186,6 +187,7 @@ def test_flow_style_path_lists_are_a_finding():
         root = Path(d)
         write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naffected_paths: [src/app/[id]/route.ts]\naccess:\n  public: true")
         write(root, "api/b.md", 'surface: rest\nmethod: get\npath: /b\naffected_paths:\n  - "src/app/[id]/route.ts"\naccess:\n  public: true')
+        write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naffected_paths: []\naccess:\n  public: true")  # empty list is valid
         kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
         assert kinds == {("frontmatter-flow-list", "docs/verification/api/a.md")}, kinds
 

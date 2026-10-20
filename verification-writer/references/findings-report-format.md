@@ -47,7 +47,7 @@ Use the current date. If multiple runs happen in a day, append a sequence number
 Output of `scripts/build-access-manifest.py` (omit if no manifest was built):
 
 - Entries by visibility: public X · internal X · admin X · draft X
-- Findings: [each `visibility-contradicts-access`, `invalid-visibility`, `duplicate-entry`, `frontmatter-missing` with id and file, or "none"]
+- Findings: [each `visibility-contradicts-access`, `invalid-visibility`, `duplicate-entry`, `frontmatter-missing`, `frontmatter-flow-list` with id and file, or "none"]
 - Docs still `draft` that look customer-facing and need a human visibility decision: [list]
 
 ## Cross-agent feedback

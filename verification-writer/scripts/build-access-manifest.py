@@ -230,7 +230,7 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                 continue
             fm = parse_frontmatter(body)
             for key in ("affected_paths", "related"):
-                if re.search(rf"^{key}:\s*\[", body, re.M):
+                if re.search(rf"^{key}:[ \t]*\[[ \t]*[^\]\s]", body, re.M):
                     findings.append({"kind": "frontmatter-flow-list", "id": rel.as_posix(), "file": rel.as_posix(),
                                      "detail": f"{key} is a flow-style list; write a block list with quoted entries"})
             entry_surface = {"api": "rest"}.get(str(fm.get("surface") or surface), str(fm.get("surface") or surface))
