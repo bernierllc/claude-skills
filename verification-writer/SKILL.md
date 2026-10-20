@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.3
+version: 3.7.4
 author: Bernier LLC
 ---
 
@@ -333,7 +333,7 @@ affected_paths:
 ---
 ```
 
-Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs, and they are not access-manifest entries. A flow's `environment.feature_flags` should include the `gated_by` flags of every page it lists: derive them from those pages rather than declaring a gate of its own, and a flow is only as public as its least-public page. The `generated_by` stamp and `affected_paths` field behave the same way as on page docs: see "Skill Version Tracking and Migration" and the page-level `affected_paths` rules above.
+Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs, and they are not access-manifest entries. A flow's `environment.feature_flags` lists only the flags that every step requires (take them from the referenced pages' `gated_by`). A flag that only some steps need goes on those steps as an inline `**Needs:** `FLAG`` line, never on the flow, because a flow-level flag marks every step unavailable when the flag is off. The manifest has no flow entries, so nothing reads a step-level flag; a flow is only as public as its least-public page. The `generated_by` stamp and `affected_paths` field behave the same way as on page docs: see "Skill Version Tracking and Migration" and the page-level `affected_paths` rules above.
 
 ##### Flow content example
 
