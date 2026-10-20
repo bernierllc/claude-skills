@@ -224,13 +224,13 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                         "kind": "frontmatter-missing",
                         "id": rel.as_posix(),
                         "file": rel.as_posix(),
-                        "detail": "no frontmatter; entry omitted from the manifest",
+                        "detail": "no frontmatter" + ("" if surface is None else "; entry omitted from the manifest"),
                     }
                 )
                 continue
             fm = parse_frontmatter(body)
             for key in ("affected_paths", "related"):
-                if re.search(rf"^{key}:[ \t]*\[[ \t]*[^\]\s]", body, re.M):
+                if re.search(rf"^{key}:[ \t]*\[(?![ \t]*\])", body, re.M):
                     findings.append({"kind": "frontmatter-flow-list", "id": rel.as_posix(), "file": rel.as_posix(),
                                      "detail": f"{key} is a flow-style list; write a block list with quoted entries"})
             if surface is None:

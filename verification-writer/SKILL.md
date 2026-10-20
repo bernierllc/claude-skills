@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.5
+version: 3.7.6
 author: Bernier LLC
 ---
 
@@ -383,6 +383,7 @@ Admin, Promoter, Artist
 ### Step 2: Promoter receives magic link
 **Page:** magic-link-landing.md
 **User type:** Promoter
+**Needs:** `INBOUND_ROUTING_ENABLED`  <!-- only this step needs the flag; flow feature_flags stays empty -->
 **Setup:** Retrieve magic link from Mailpit for the promoter associated with the new event.
 **Run items:** MLK-LND-PRO-01 through MLK-LND-PRO-04
 **After this step:** Verify promoter can see event details.

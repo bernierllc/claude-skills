@@ -306,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
     compared = [o for o in spec_ops if not excluded(o["path"])]  # excluded operations stay in the inventory but never drive drift
+    excluded_ops = [o for o in spec_ops if excluded(o["path"])]  # code often omits the mount prefix, so match excluded ops by suffix too
+    code_routes = [r for r in code_routes if not any(same_route(o["path"], r["path"]) for o in excluded_ops)]
     if spec_ops and not compared:  # every spec operation is excluded: remaining code routes are undocumented, not "no spec"
         findings += [{"kind": "undocumented-route", "id": f"{r['method']} {r['path']}", "file": r["file"],
                       "detail": "route exists in code but not in the OpenAPI spec"} for r in code_routes]

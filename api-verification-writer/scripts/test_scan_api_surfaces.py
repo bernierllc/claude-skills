@@ -179,6 +179,16 @@ def test_exclude_of_only_spec_operation_still_reports_other_code_routes():
         assert [f["kind"] for f in res["findings"]] == ["undocumented-route"], res["findings"]
 
 
+def test_exclude_also_drops_mount_prefixed_code_route_of_excluded_spec_op():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/mcp": {"post": {}}, "/api/v1/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/mcp', h)\napp.get('/api/v1/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
