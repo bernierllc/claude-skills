@@ -294,8 +294,7 @@ def main(argv: list[str] | None = None) -> int:
 
     nested: list[str] = []
     code_routes = [] if args.no_code_scan else scan_code(root, nested)
-    # a server-relative spec path (/mcp) also matches the full --exclude (/api/v1/mcp), as same_route does for code paths
-    excluded = lambda path: any(path == e.rstrip("/") or path.startswith(e.rstrip("/") + "/") or same_route(e, path) for e in args.exclude)
+    excluded = lambda path: any(path == e.rstrip("/") or path.startswith(e.rstrip("/") + "/") for e in args.exclude)
     code_routes = [r for r in code_routes if not excluded(r["path"])]
     if args.prefix:
         under = lambda path: any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in args.prefix)

@@ -466,6 +466,7 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
 def skill_version() -> str:
     """Version of the installed skill: the `version:` line in the SKILL.md beside scripts/."""
     text = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text()
+    # a prerelease suffix is dropped on purpose: the hook compares release numbers only
     m = re.search(r"^version:\s*[\"']?v?([0-9][0-9.]*)", text, re.M)
     if not m:
         raise SystemExit("scan-versions: no version in SKILL.md; pass --current-version")
