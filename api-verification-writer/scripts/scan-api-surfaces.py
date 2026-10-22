@@ -310,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
     compared = [o for o in spec_ops if not excluded(o["path"])]  # excluded operations stay in the inventory but never drive drift
     excluded_ops = [o for o in spec_ops if excluded(o["path"])]  # code often omits the mount prefix, so match excluded ops by suffix too
     literal = lambda path: any(seg and not seg.startswith("{") for seg in path.split("/"))  # a bare /{id} suffix-matches nearly anything
+    mount_of = lambda path: literal(path) and any(e.rstrip("/").endswith(path.rstrip("/")) for e in args.exclude)  # code mounts under a prefix the spec omits: /mcp for --exclude /api/v1/mcp
+    code_routes = [r for r in code_routes if not mount_of(r["path"])]
     code_routes = [r for r in code_routes if not (literal(r["path"]) and any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in excluded_ops))
                    or any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in compared)]  # a route a kept op documents stays
     if spec_ops and not compared:  # every spec operation is excluded: remaining code routes are undocumented, not "no spec"

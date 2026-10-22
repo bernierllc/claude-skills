@@ -189,6 +189,16 @@ def test_exclude_also_drops_mount_prefixed_code_route_of_excluded_spec_op():
         assert res["findings"] == [], res["findings"]
 
 
+def test_exclude_drops_mounted_code_route_when_the_spec_omits_it():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/mcp', h)\napp.get('/api/v1/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]
+
+
 def test_exclude_keeps_code_route_that_a_kept_spec_op_documents():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
