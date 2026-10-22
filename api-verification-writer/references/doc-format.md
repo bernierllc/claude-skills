@@ -40,6 +40,6 @@ access:
 ## Unverified (claims not yet observed)
 ```
 
-**Body schema rules.** Resolve `$ref` first. The Request section always has a field table (name, type, required, constraints) for the body; a body with no table reads as fieldless. For `allOf`, merge the members into one table. For `oneOf`/`anyOf`, give each branch its own table under a "One of" heading and name the branch (for example "single contact" and "array of up to 1000 contacts"); for an array branch, tabulate the item schema and state the `minItems`/`maxItems`. Never emit an empty table or skip a branch because it is a union.
+**Body schema rules.** Resolve `$ref` first. The Request section always has a field table (name, type, required, constraints) for the body; a body with no table reads as fieldless. For `allOf`, merge the members into one table. For `oneOf` (exactly one branch applies), give each branch its own table under a "One of" heading; for `anyOf` (any one or more of the listed branches may apply), use an "Any of" heading and say the branches can be combined. Name each branch (for example "single contact" and "array of up to 1000 contacts"); for an array branch, tabulate the item schema and state the `minItems`/`maxItems`. Never emit an empty table or skip a branch because it is a union.
 
 MCP docs replace Request/Responses with **Input schema**, **Output**, **Annotations** (`readOnlyHint`, `destructiveHint`), and **Errors**.
