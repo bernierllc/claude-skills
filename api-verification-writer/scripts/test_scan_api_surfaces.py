@@ -209,6 +209,22 @@ def test_exclude_matches_by_method_so_other_methods_stay_undocumented():
         assert [(f["kind"], f["id"]) for f in res["findings"]] == [("undocumented-route", "POST /users")], res["findings"]
 
 
+def test_exclude_keeps_bare_param_route_and_rejects_empty_prefix():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/{id}": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/{id}', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert [(f["kind"], f["id"]) for f in res["findings"]] == [("undocumented-route", "GET /{id}")], res["findings"]
+        try:
+            scan(root, "--exclude", "/")
+        except SystemExit as e:
+            assert e.code == 2
+        else:
+            raise AssertionError("--exclude / must be rejected")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
