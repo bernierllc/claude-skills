@@ -149,6 +149,28 @@ def test_narrative_api_doc_needs_no_id_namespace():
         assert "id_namespace-missing" in r.issues, r.issues
 
 
+
+def test_current_version_defaults_to_the_skill_md_version():
+    skill_md = Path(sv.__file__).resolve().parent.parent / "SKILL.md"
+    declared = re.search(r"^version:\s*[\"']?([0-9][^\s\"']*)", skill_md.read_text(), re.M).group(1)
+    assert sv.skill_version() == declared
+    import json as _json
+    hooks = _json.loads((skill_md.parent / "hooks.json").read_text())
+    assert not any("--current-version" in h["command"] for h in hooks["hooks"])  # a pinned number goes stale
+
+
+def test_skill_version_tolerates_a_v_prefix_and_prerelease_tag():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "scripts").mkdir()
+        (Path(d) / "SKILL.md").write_text("---\nname: x\nversion: v3.6.6-beta\n---\n")
+        real = sv.__file__
+        sv.__file__ = str(Path(d) / "scripts" / "scan-versions.py")
+        try:
+            assert sv.skill_version() == "3.6.6"
+        finally:
+            sv.__file__ = real
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
