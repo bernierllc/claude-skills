@@ -235,13 +235,6 @@ def test_exclude_keeps_bare_param_route_and_rejects_empty_prefix():
             raise AssertionError("--exclude / must be rejected")
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-    print(f"ok — {len(tests)} tests passed")
-
-
 def test_exclude_silences_spec_without_route_for_that_path():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -261,3 +254,20 @@ def test_exclude_drops_security_finding_and_never_suffix_matches_short_paths():
         (root / "src").mkdir()
         _, res = scan(root, "--exclude", "/api/v1/mcp", "--exclude", "/api/v1/admin/users", "--exclude", "/api/v1/users/{id}")
         assert {f["id"] for f in res["findings"]} == {"GET /users", "GET /{id}"}, res["findings"]
+
+
+def test_exclude_of_a_mount_prefix_keeps_route_a_kept_spec_op_documents():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/users": {"get": {}}, "/a": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/users', h)\napp.get('/a', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin/users")
+        assert res["findings"] == [], res["findings"]  # the kept GET /users documents the mounted route; not a spec-without-route
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"ok — {len(tests)} tests passed")
