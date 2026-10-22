@@ -48,6 +48,7 @@ CACHE_FILENAME = ".scan-cache.json"
 # and the report keeps citing defects the current parser no longer finds.
 SCAN_VERSION = 3
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
+VERIFICATION_PREFIX = "docs/verification/"  # rel_key is repo-relative, so area checks must skip this
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
 # API/MCP docs under docs/verification/{api,mcp}/ are produced by a sibling skill
 # with its own version line. They get the same integrity pass (item IDs, Format A)
@@ -315,7 +316,7 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         id_namespace = scalars.get("id_namespace")
         stamp = scalars.get("generated_by")
         # narrative API/MCP docs carry a sibling stamp and no checklist namespace
-        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.split("/")[0] in ("api", "mcp")
+        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.removeprefix(VERIFICATION_PREFIX).split("/")[0] in ("api", "mcp")
         if not id_namespace and not sibling:
             issues.append("id_namespace-missing")
         if stamp:
@@ -465,7 +466,10 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
 
 def skill_version() -> str:
     """Version of the installed skill: the `version:` line in the SKILL.md beside scripts/."""
-    text = (Path(__file__).resolve().parent.parent / "SKILL.md").read_text()
+    skill_md = Path(__file__).resolve().parent.parent / "SKILL.md"
+    if not skill_md.is_file():  # scripts vendored without SKILL.md
+        raise SystemExit("scan-versions: no SKILL.md beside scripts/; pass --current-version")
+    text = skill_md.read_text()
     # a prerelease suffix is dropped on purpose: the hook compares release numbers only
     m = re.search(r"^version:\s*[\"']?v?([0-9][0-9.]*)", text, re.M)
     if not m:
