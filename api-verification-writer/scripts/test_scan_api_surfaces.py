@@ -189,6 +189,16 @@ def test_exclude_also_drops_mount_prefixed_code_route_of_excluded_spec_op():
         assert res["findings"] == [], res["findings"]
 
 
+def test_exclude_keeps_code_route_that_a_kept_spec_op_documents():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/users": {"get": {}}, "/users": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/users', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert res["findings"] == [], res["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -1,6 +1,6 @@
 ---
 name: api-verification-writer
-version: 1.2.11
+version: 1.2.12
 dependencies:
   skills:
     - name: verification-writer
