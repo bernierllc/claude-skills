@@ -199,6 +199,16 @@ def test_exclude_keeps_code_route_that_a_kept_spec_op_documents():
         assert res["findings"] == [], res["findings"]
 
 
+def test_exclude_matches_by_method_so_other_methods_stay_undocumented():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/users": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/users', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert [(f["kind"], f["id"]) for f in res["findings"]] == [("undocumented-route", "POST /users")], res["findings"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

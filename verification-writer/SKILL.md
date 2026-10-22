@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.6
+version: 3.7.7
 author: Bernier LLC
 ---
 
@@ -1183,7 +1183,7 @@ HTML visualization: [flow-views | sitemap | both | none]
 | Not tracing submit handlers for stale references | Read the submit handler payload construction — a hidden field's stale value in state can cause FK violations even when the UI looks correct |
 | Marking all state dependency items as [deep] | FK constraint violations and data corruption failure modes get elevated to [standard] — these are not edge cases |
 | Missing STATE-DEPENDENCY annotations | Every state dependency item needs a `<!-- STATE-DEPENDENCY -->` annotation with all five fields (trigger, affected_fields, expected_cascade, code_ref, failure_mode) |
-| Page doc missing frontmatter | Every page doc MUST have YAML frontmatter with version, generated_by, path, access, and page fields; every flow doc MUST have version, generated_by, id and affected_paths (no `access` block). Docs without frontmatter break downstream consumers |
+| Page doc missing frontmatter | Every page doc MUST have YAML frontmatter with version, generated_by, path, access, and page fields; every flow doc MUST have version, generated_by, id_namespace and affected_paths (no `access` block). Docs without frontmatter break downstream consumers |
 | Not bumping version on doc changes | Every edit to a verification doc must bump the frontmatter version. Downstream consumers depend on version changes to detect staleness |
 | Not stamping `generated_by` on write | Every write must set `generated_by: "verification-writer@<current-semver>"` — future skill versions rely on this stamp to pick the correct migration, and downstream skills rely on it to detect when their manifest is out of sync |
 | Reminting existing item IDs | Preserve every existing ID verbatim on subsequent runs. The naming convention is for new IDs only. Renaming requires `--migrate-ids` AND a matching migration-table row |
