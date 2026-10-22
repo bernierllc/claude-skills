@@ -1,6 +1,6 @@
 ---
 name: api-verification
-version: 1.1.1
+version: 1.1.2
 dependencies:
   skills:
     - name: api-verification-writer
@@ -34,7 +34,7 @@ Runs the access matrix. Docs say who should get in (`access:` frontmatter, merge
    - `flag-off-reachable`: only with `--flags-off NAME,...` on `plan`/`evaluate`. Entries `gated_by` a flag that is off in this environment must answer 404 or a denied status; anything else means the flag does not gate the route (add 302 to `--denied-status` for apps that redirect to a login page).
 5. Write the report to `docs/verification/findings/api-verification-<date>.md` (the scanners skip `findings/`) with a **Cross-agent feedback** section (what docs agents and test runs told you, what changed). Fixes to wrong docs go through `api-verification-writer`, then regenerate the manifest.
 
-Run via `aec run-script skill:api-verification matrix.py <subcommand> ...`.
+Run via `aec run-script skill:api-verification matrix.py -- <subcommand> ...` (script flags such as `--base-url` go after `--`).
 
 ## Rules
 

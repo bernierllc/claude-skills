@@ -133,7 +133,7 @@ def test_api_verification_writer_stamp_is_not_malformed():
         doc = Path(d) / "list-events.md"
         doc.write_text("---\nid_namespace: EVT\ngenerated_by: api-verification-writer@1.0.0\n---\n"
                        "- [ ] [smoke] **EVT-01** Call it --- It works. *Expected: success*\n")
-        r = sv.scan_file(doc, {}, "api/list-events.md")
+        r = sv.scan_file(doc, {}, "docs/verification/api/list-events.md")
         assert "generated_by-malformed" not in r.issues, r.issues
         assert r.skill_version is None  # not ours to version-check
         assert r.item_ids == ["EVT-01"], r.item_ids
@@ -143,9 +143,9 @@ def test_narrative_api_doc_needs_no_id_namespace():
     with tempfile.TemporaryDirectory() as d:
         doc = Path(d) / "list-events.md"
         doc.write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# List events\n")
-        r = sv.scan_file(doc, {}, "api/list-events.md")
+        r = sv.scan_file(doc, {}, "docs/verification/api/list-events.md")
         assert "id_namespace-missing" not in r.issues, r.issues
-        r = sv.scan_file(doc, {}, "pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
+        r = sv.scan_file(doc, {}, "docs/verification/pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
         assert "id_namespace-missing" in r.issues, r.issues
 
 
@@ -167,6 +167,39 @@ def test_skill_version_tolerates_a_v_prefix_and_prerelease_tag():
         sv.__file__ = str(Path(d) / "scripts" / "scan-versions.py")
         try:
             assert sv.skill_version() == "3.6.6"
+        finally:
+            sv.__file__ = real
+
+
+def test_sibling_docs_are_recognised_in_a_real_run():
+    import contextlib, io
+    with tempfile.TemporaryDirectory() as d:
+        api = Path(d) / "docs" / "verification" / "api" / "events"
+        api.mkdir(parents=True)
+        (api / "get-events.md").write_text("---\ngenerated_by: api-verification-writer@1.0.0\naffected_paths:\n  - \"src/a.ts\"\n---\n# GET /events\n")
+        out = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["scan-versions", "--root", d, "--current-version", "3.7.8"]
+        try:
+            with contextlib.redirect_stdout(out):
+                sv.main()
+        finally:
+            sys.argv = argv
+        report = json.loads(out.getvalue())
+        assert report["integrity"]["missing_id_namespace"] == [], report["integrity"]
+        assert report["summary"]["stale"] == 0, report["summary"]
+
+
+def test_missing_skill_md_asks_for_current_version():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "scripts").mkdir()
+        real = sv.__file__
+        sv.__file__ = str(Path(d) / "scripts" / "scan-versions.py")
+        try:
+            sv.skill_version()
+            raise AssertionError("expected SystemExit")
+        except SystemExit as e:
+            assert "--current-version" in str(e), e
         finally:
             sv.__file__ = real
 

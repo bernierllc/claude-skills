@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.7
+version: 3.7.9
 author: Bernier LLC
 ---
 
@@ -38,6 +38,8 @@ Run it manually:
 ```bash
 python3 verification-writer/scripts/scan-versions.py --root .
 ```
+
+The scanner reads its own version from the `SKILL.md` beside `scripts/`. A repo that vendors only `scripts/` must pass `--current-version <x.y.z>`, or it exits with `no version in SKILL.md`.
 
 The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `no_affected_paths` plus per-file lists. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
 
@@ -556,6 +558,8 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 `access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
 
 `scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp}/` (flows are not entries: they have no `access` block) into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, endpoint, roles, scopes, permissions, tier, mfa_required, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+
+Manifests built before 3.7 carried placeholder `flow` rows with `visibility: draft`. They are gone, so a consumer keyed on `surface: flow` must read the flow docs instead.
 
 ```bash
 python3 verification-writer/scripts/build-access-manifest.py --root .          # write
