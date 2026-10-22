@@ -170,6 +170,27 @@ def test_run_refuses_remote_host():
     assert code == 2 and "refusing" in err
 
 
+def test_auth_model_mismatch_flags_off_server_error_and_endpoint():
+    mcp = {"surface": "mcp", "id": "send_email", "visibility": "public", "auth_model": "oauth-scope",
+           "endpoint": "/api/v1/inbox/mcp", "gated_by": ["INBOX_ENABLED"]}
+    rest = {"surface": "rest", "id": "GET /v1/x", "visibility": "admin", "auth_model": "api-key", "roles": [], "scopes": []}
+    pr = {"principals": {"apikey": {"token_env": "T", "auth_model": "api-key"},
+                         "oauth": {"token_env": "T", "auth_model": "oauth-scope"},
+                         "untyped": {"token_env": "T"}}}
+    plan = {(r["id"], r["principal"]): r for r in mx.make_plan({"entries": [mcp, rest]}, pr, frozenset({"INBOX_ENABLED"}))}
+    assert plan[("GET /v1/x", "apikey")]["expect_allowed"] is True
+    assert plan[("GET /v1/x", "oauth")]["expect_allowed"] is False  # wrong key kind
+    assert plan[("GET /v1/x", "untyped")]["expect_allowed"] is True  # no auth_model declared: no check
+    assert plan[("send_email", "oauth")]["endpoint"] == "/api/v1/inbox/mcp" and plan[("send_email", "oauth")]["flag_off"]
+    assert "flag_off" not in plan[("GET /v1/x", "apikey")]
+    flag_row = [plan[("send_email", "oauth")]]
+    res = lambda st: [{"id": "send_email", "principal": "oauth", "status": st}]
+    assert mx.evaluate(flag_row, res(404)) == [] and mx.evaluate(flag_row, res(403)) == []
+    assert mx.evaluate(flag_row, res(200))[0]["kind"] == "flag-off-reachable"
+    row = [{"id": "GET /a", "principal": "p", "expect_allowed": True}]
+    assert mx.evaluate(row, [{"id": "GET /a", "principal": "p", "status": 500}])[0]["kind"] == "server-error"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
