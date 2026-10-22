@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.6.5
+version: 3.6.6
 author: Bernier LLC
 ---
 
@@ -36,7 +36,7 @@ It walks the **entire** verification root, excluding only `findings/`, `logs/`, 
 Run it manually:
 
 ```bash
-python3 verification-writer/scripts/scan-versions.py --root . --current-version 3.4.0
+python3 verification-writer/scripts/scan-versions.py --root .
 ```
 
 The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `no_affected_paths` plus per-file lists. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
@@ -554,7 +554,7 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 
 `access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
 
-`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, mfa_required, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
 
 ```bash
 python3 verification-writer/scripts/build-access-manifest.py --root .          # write
@@ -564,6 +564,7 @@ python3 verification-writer/scripts/build-access-manifest.py --root . --check  #
 Rules:
 
 - `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
+- `visibility: public` on an entry with `gated_by` is a finding (`public-gated-by-flag`): a surface behind a flag that is off in production is not customer-facing, so confirm the gate is on and record that with `access.gates_confirmed_on: true`, or set `internal`.
 - Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
 - A doc whose `surface:` is not rest|mcp|page|flow is an `invalid-surface` finding and is omitted.
 - A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.

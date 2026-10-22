@@ -49,6 +49,7 @@ access:
   auth_model: oauth-scope
   required_scopes: [events.read]
   tier: pro
+  mfa_required: true
   visibility: public""")  # publicly documented, authenticated API: valid
     write(root, "mcp/send-email.md", """surface: mcp
 tool: send_email
@@ -65,6 +66,38 @@ access:
 
 def by_id(manifest: dict) -> dict:
     return {e["id"]: e for e in manifest["entries"]}
+
+
+def test_mfa_requirement_reaches_the_manifest():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        fixture(root)
+        e = by_id(bam.build(root))
+        assert e["GET /v1/events"]["mfa_required"] is True
+        assert e["send_email"]["mfa_required"] is False
+
+
+def test_non_bool_mfa_keeps_the_gate_and_contradictions_are_findings():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naccess:\n  public: false\n  mfa_required: True")
+        write(root, "api/b.md", "surface: rest\nmethod: get\npath: /b\naccess:\n  public: true\n  mfa_required: true")
+        m = bam.build(root)
+        e = by_id(m)
+        assert e["GET /a"]["mfa_required"] is True and e["GET /b"]["mfa_required"] is True
+        kinds = {(f["kind"], f["id"]) for f in m["findings"]}
+        assert ("invalid-mfa-required", "GET /a") in kinds and ("mfa-contradicts-public", "GET /b") in kinds
+
+
+def test_public_entry_behind_a_flag_is_a_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: public")
+        write(root, "api/d.md", "surface: rest\nmethod: get\npath: /d\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  visibility: internal")
+        write(root, "api/e.md", "surface: rest\nmethod: get\npath: /e\naccess:\n  public: false\n  gated_by: [CAMPAIGNS_ENABLED]\n  gates_confirmed_on: true\n  visibility: public")
+        kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
+        assert ("public-gated-by-flag", "GET /c") in kinds and ("public-gated-by-flag", "GET /d") not in kinds
+        assert ("public-gated-by-flag", "GET /e") not in kinds  # a recorded confirmation acknowledges the finding
 
 
 def test_every_surface_lands_with_declared_visibility():

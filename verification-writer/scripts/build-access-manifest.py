@@ -151,6 +151,16 @@ def build_entry(
     permissions = as_list(access.get("required_permissions"))
     tier = access.get("tier")
 
+    mfa = access.get("mfa_required")
+    if mfa is not None and not isinstance(mfa, bool):  # "True"/"yes" must not silently drop a security gate
+        findings.append({"kind": "invalid-mfa-required", "id": eid, "file": rel.as_posix(),
+                         "detail": f"mfa_required {mfa!r} is not a lowercase true/false; treated as true so the gate is not lost"})
+        mfa = True
+    mfa = bool(mfa)
+    if mfa and access.get("public") is True:
+        findings.append({"kind": "mfa-contradicts-public", "id": eid, "file": rel.as_posix(),
+                         "detail": "access.public is true but mfa_required is true; the matrix cannot expect both"})
+
     if visibility == "public" and surface == "page":  # for REST/MCP, visibility is who reads the docs, not who may call
         contradictions = []
         if access.get("public") is False:
@@ -159,6 +169,8 @@ def build_entry(
             contradictions.append("it declares required roles/scopes/permissions")
         if tier:
             contradictions.append(f"it is tier-gated ({tier})")
+        if mfa:
+            contradictions.append("it requires MFA")
         if contradictions:
             findings.append(
                 {
@@ -168,6 +180,11 @@ def build_entry(
                     "detail": "visibility is public but " + " and ".join(contradictions),
                 }
             )
+
+    gates = as_list(access.get("gated_by"))
+    if visibility == "public" and gates and access.get("gates_confirmed_on") is not True:
+        findings.append({"kind": "public-gated-by-flag", "id": eid, "file": rel.as_posix(),
+                         "detail": f"visibility is public but it is gated_by {gates}; confirm every gate is on in production, then set access.gates_confirmed_on: true, otherwise set visibility internal"})
 
     return {
         "surface": surface,
@@ -180,6 +197,7 @@ def build_entry(
         "scopes": scopes,
         "permissions": permissions,
         "tier": tier,
+        "mfa_required": mfa,
         "gated_by": as_list(access.get("gated_by")),
         "user_types": as_list(fm.get("user_types")),
         "affected_paths": as_list(fm.get("affected_paths")),
