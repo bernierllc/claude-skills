@@ -272,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-code-scan", action="store_true")
     ap.add_argument("--fail-on-findings", action="store_true")
     args = ap.parse_args(argv)
+    if any(not e.strip().rstrip("/") for e in args.exclude):
+        ap.error("--exclude needs a path prefix such as /api/v1/mcp; '/' or '' would hide every route")
     root = Path(args.root).resolve()
 
     findings: list[dict] = []
@@ -305,7 +307,17 @@ def main(argv: list[str] | None = None) -> int:
         if had_spec and not spec_ops:  # no spec at all is drift()'s spec-missing
             findings.append({"kind": "spec-code-mismatch", "id": "*",
                              "detail": f"no spec operation under {args.prefix}; the spec found does not cover the scoped surface"})
-    drift(spec_ops, code_routes, findings)
+    compared = [o for o in spec_ops if not excluded(o["path"])]  # excluded operations stay in the inventory but never drive drift
+    excluded_ops = [o for o in spec_ops if excluded(o["path"])]  # code often omits the mount prefix, so match excluded ops by suffix too
+    literal = lambda path: any(seg and not seg.startswith("{") for seg in path.split("/"))  # a bare /{id} suffix-matches nearly anything
+    mount_of = lambda path: literal(path) and any(e.rstrip("/").endswith(path.rstrip("/")) for e in args.exclude)  # code mounts under a prefix the spec omits: /mcp for --exclude /api/v1/mcp
+    code_routes = [r for r in code_routes if not (mount_of(r["path"]) or literal(r["path"]) and any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in excluded_ops))
+                   or any(o["method"] == r["method"] and same_route(o["path"], r["path"]) for o in compared)]  # a route a kept op documents stays, even under an excluded mount
+    if spec_ops and not compared:  # every spec operation is excluded: remaining code routes are undocumented, not "no spec"
+        findings += [{"kind": "undocumented-route", "id": f"{r['method']} {r['path']}", "file": r["file"],
+                      "detail": "route exists in code but not in the OpenAPI spec"} for r in code_routes]
+    else:
+        drift(compared, code_routes, findings)
     findings = [f for f in findings if f["kind"] not in ("spec-without-route", "no-security-declared") or not excluded(f["id"].split(" ", 1)[1])]
     print(json.dumps({"scanned_root": str(root), "skipped_nested_repos": nested, "operations": spec_ops, "code_routes": code_routes, "mcp_tools": mcp_tools,
                       "findings": findings}, indent=2))

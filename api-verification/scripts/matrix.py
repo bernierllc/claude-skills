@@ -18,7 +18,8 @@ placeholder path id still proves the auth gate let the request through.
 
 principals.json holds env var NAMES only, never tokens:
   {"principals": {"anonymous": {}, "viewer": {"roles": ["viewer"], "token_env": "VERIFY_VIEWER_TOKEN"}}}
-A principal may add "auth": {"kind": "header", "name": "X-API-Key"} or {"kind": "cookie", "name": "session"};
+A principal may add "auth_model" (same vocabulary as the entry's: api-key, oauth-scope, session, ...); it is
+denied every entry whose auth_model differs. A principal may add "auth": {"kind": "header", "name": "X-API-Key"} or {"kind": "cookie", "name": "session"};
 the default is "Authorization: Bearer <token>".
 
 Stdlib only. Exit: 0 ok · 1 usage/IO · 2 guard refused or mismatches found.
@@ -67,6 +68,9 @@ def expected(entry: dict, principal: dict) -> bool:
     # access.public is who may reach the operation; visibility only says who may read its docs
     if entry.get("public") is True:
         return True
+    # a key of one kind never opens an entry of another (an API key on an MCP-key endpoint is 403 by design)
+    if principal.get("auth_model") and entry.get("auth_model") and principal["auth_model"] != entry["auth_model"]:
+        return False
     held = {"roles": principal.get("roles") or [], "scopes": principal.get("scopes") or [],
             "permissions": principal.get("permissions") or []}
     required = {k: entry.get(k) or [] for k in held}
@@ -85,14 +89,18 @@ def load(path: str) -> dict:
     return json.loads(Path(path).read_text())
 
 
-def make_plan(manifest: dict, principals: dict) -> list[dict]:
+def make_plan(manifest: dict, principals: dict, flags_off: frozenset[str] = frozenset()) -> list[dict]:
     rows = []
     for e in manifest["entries"]:
         if e["surface"] not in ("rest", "mcp"):
             continue
         for name, p in sorted(principals["principals"].items()):
-            rows.append({"surface": e["surface"], "id": e["id"], "principal": name,
-                         "expect_allowed": expected(e, p)})
+            row = {"surface": e["surface"], "id": e["id"], "principal": name, "expect_allowed": expected(e, p)}
+            if e.get("endpoint"):
+                row["endpoint"] = e["endpoint"]  # MCP tools on a second endpoint are probed there, not on the main one
+            if flags_off & set(e.get("gated_by") or []):
+                row["flag_off"] = True  # the gate is off in this environment: the route must not answer
+            rows.append(row)
     return rows
 
 
@@ -132,6 +140,10 @@ def probe(base_url: str, entry_id: str, token: str | None, auth: dict | None = N
         return None  # recorded as no-response by evaluate; one dead route must not discard the rest
 
 
+def flags_off(args) -> frozenset[str]:
+    return frozenset(f.strip() for f in args.flags_off.split(",") if f.strip())
+
+
 def cmd_run(args) -> int:
     refusal = guard(args.base_url)
     if refusal:
@@ -139,7 +151,7 @@ def cmd_run(args) -> int:
         return 2
     principals = load(args.principals)
     results, skipped = [], []
-    for row in make_plan(load(args.manifest), principals):
+    for row in make_plan(load(args.manifest), principals, flags_off(args)):
         if row["surface"] != "rest":
             continue
         if row["id"].split(" ", 1)[0] not in SAFE_METHODS and not args.allow_mutating:
@@ -172,6 +184,13 @@ def evaluate(plan: list[dict], results: list[dict], denied: set[int] | None = No
         if got[key] is None:
             out.append({**row, "status": None, "kind": "no-response"})
             continue
+        if got[key] >= 500:  # a 5xx proves nothing about the gate: surface it, never count it as allowed
+            out.append({**row, "status": got[key], "kind": "server-error"})
+            continue
+        if row.get("flag_off"):
+            if got[key] not in denied | {404}:
+                out.append({**row, "status": got[key], "kind": "flag-off-reachable"})
+            continue
         allowed = got[key] not in denied
         if allowed != row["expect_allowed"]:
             out.append({**row, "status": got[key],
@@ -187,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         s = sub.add_parser(name)
         s.add_argument("--manifest", default="docs/verification/access-manifest.json")
         s.add_argument("--principals", default="docs/verification/principals.json")
+        s.add_argument("--flags-off", default="",
+                       help="comma-separated feature flags that are off here: entries gated_by them must answer 404 or a denied status")
         if name == "run":
             s.add_argument("--base-url", required=True)
             s.add_argument("--allow-mutating", action="store_true", help="also probe POST/PUT/PATCH/DELETE")
@@ -202,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2 if msg else 0
         if args.cmd == "run":
             return cmd_run(args)
-        plan = make_plan(load(args.manifest), load(args.principals))
+        plan = make_plan(load(args.manifest), load(args.principals), flags_off(args))
         if args.cmd == "plan":
             if not plan:
                 print("plan is empty: no rest/mcp entries in the manifest (write API/MCP docs with api-verification-writer first) or no principals in the principals file", file=sys.stderr)

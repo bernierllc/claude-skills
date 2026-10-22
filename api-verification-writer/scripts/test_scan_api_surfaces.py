@@ -169,6 +169,71 @@ def test_param_names_next_groups_non_dict_spec_and_client_calls():
         assert scan(root)[1]["findings"] == []
 
 
+def test_exclude_of_only_spec_operation_still_reports_other_code_routes():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/mcp": {"post": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/api/v1/other', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert [f["kind"] for f in res["findings"]] == ["undocumented-route"], res["findings"]
+
+
+def test_exclude_also_drops_mount_prefixed_code_route_of_excluded_spec_op():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/mcp": {"post": {}}, "/api/v1/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/mcp', h)\napp.get('/api/v1/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]
+
+
+def test_exclude_drops_mounted_code_route_when_the_spec_omits_it():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/mcp', h)\napp.get('/api/v1/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/mcp")
+        assert res["findings"] == [], res["findings"]
+
+
+def test_exclude_keeps_code_route_that_a_kept_spec_op_documents():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/users": {"get": {}}, "/users": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/users', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert res["findings"] == [], res["findings"]
+
+
+def test_exclude_matches_by_method_so_other_methods_stay_undocumented():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/users": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.post('/users', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert [(f["kind"], f["id"]) for f in res["findings"]] == [("undocumented-route", "POST /users")], res["findings"]
+
+
+def test_exclude_keeps_bare_param_route_and_rejects_empty_prefix():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/api/v1/admin/{id}": {"get": {}}, "/ok": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/{id}', h)\napp.get('/ok', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin")
+        assert [(f["kind"], f["id"]) for f in res["findings"]] == [("undocumented-route", "GET /{id}")], res["findings"]
+        try:
+            scan(root, "--exclude", "/")
+        except SystemExit as e:
+            assert e.code == 2
+        else:
+            raise AssertionError("--exclude / must be rejected")
+
 
 def test_exclude_silences_spec_without_route_for_that_path():
     with tempfile.TemporaryDirectory() as d:
@@ -189,6 +254,16 @@ def test_exclude_drops_security_finding_and_never_suffix_matches_short_paths():
         (root / "src").mkdir()
         _, res = scan(root, "--exclude", "/api/v1/mcp", "--exclude", "/api/v1/admin/users", "--exclude", "/api/v1/users/{id}")
         assert {f["id"] for f in res["findings"]} == {"GET /users", "GET /{id}"}, res["findings"]
+
+
+def test_exclude_of_a_mount_prefix_keeps_route_a_kept_spec_op_documents():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "openapi.json").write_text(json.dumps({"security": [], "paths": {"/users": {"get": {}}, "/a": {"get": {}}}}))
+        (root / "src").mkdir()
+        (root / "src/r.ts").write_text("app.get('/users', h)\napp.get('/a', h)\n")
+        _, res = scan(root, "--exclude", "/api/v1/admin/users")
+        assert res["findings"] == [], res["findings"]  # the kept GET /users documents the mounted route; not a spec-without-route
 
 
 if __name__ == "__main__":

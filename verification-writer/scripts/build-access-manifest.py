@@ -3,7 +3,7 @@
 build-access-manifest.py — Merge verification-doc `access:` frontmatter into one
 machine-readable audience manifest.
 
-Reads docs/verification/{pages,api,mcp,flows}/**/*.md and writes
+Reads docs/verification/{pages,api,mcp}/**/*.md and writes
 docs/verification/access-manifest.json. The manifest, not an agent's judgment,
 says what is public, internal, admin-only or still a draft. Consumers: the
 customer and internal docs agents, llms.txt / sitemap / MCP-index build steps,
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 VISIBILITIES = ("public", "internal", "admin", "draft")
-SURFACE_DIRS = {"pages": "page", "api": "rest", "mcp": "mcp", "flows": "flow"}
+SURFACE_DIRS = {"pages": "page", "api": "rest", "mcp": "mcp"}  # flows carry no access block, so they are not manifest entries
 MANIFEST_REL = "docs/verification/access-manifest.json"
 
 
@@ -192,6 +192,7 @@ def build_entry(
         "file": rel.as_posix(),
         "visibility": visibility,
         "auth_model": access.get("auth_model"),
+        "endpoint": access.get("endpoint"),
         "public": access.get("public"),
         "roles": roles,
         "scopes": scopes,
@@ -208,7 +209,7 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     vroot = root / "docs" / "verification"
     entries: list[dict[str, Any]] = []
     findings: list[dict[str, str]] = []
-    for dirname, surface in SURFACE_DIRS.items():
+    for dirname, surface in {**SURFACE_DIRS, "flows": None}.items():  # flows are linted but never become entries
         base = vroot / dirname
         if not base.is_dir():
             continue
@@ -223,11 +224,17 @@ def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                         "kind": "frontmatter-missing",
                         "id": rel.as_posix(),
                         "file": rel.as_posix(),
-                        "detail": "no frontmatter; entry omitted from the manifest",
+                        "detail": "no frontmatter" + ("" if surface is None else "; entry omitted from the manifest"),
                     }
                 )
                 continue
             fm = parse_frontmatter(body)
+            for key in ("affected_paths", "related"):
+                if re.search(rf"^{key}:[ \t]*\[(?![ \t]*\])", body, re.M):
+                    findings.append({"kind": "frontmatter-flow-list", "id": rel.as_posix(), "file": rel.as_posix(),
+                                     "detail": f"{key} is a flow-style list; write a block list with quoted entries"})
+            if surface is None:
+                continue
             entry_surface = {"api": "rest"}.get(str(fm.get("surface") or surface), str(fm.get("surface") or surface))
             if entry_surface not in SURFACE_DIRS.values():
                 findings.append({"kind": "invalid-surface", "id": rel.as_posix(), "file": rel.as_posix(),

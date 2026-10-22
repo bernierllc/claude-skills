@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-check for build-access-manifest.py. Run: python3 test_build_access_manifest.py
 
-Behavior under test: given page, REST, MCP and flow docs, the manifest carries
+Behavior under test: given page, REST and MCP docs, the manifest carries
 each entry with the declared visibility; undeclared means draft; contradictions
 and duplicates surface as findings instead of being papered over.
 """
@@ -34,7 +34,8 @@ access:
   auth_model: none
   visibility: public
 user_types: [visitor]
-affected_paths: [app/page.tsx]""")
+affected_paths:
+  - app/page.tsx""")
     write(root, "pages/admin.md", """path: /admin
 access:
   public: false
@@ -57,11 +58,12 @@ access:
   public: false
   auth_model: oauth-scope
   required_scopes: [mail.send]""")  # no visibility => draft
-    write(root, "flows/onboarding.md", """id: onboarding
+    write(root, "pages/onboarding.md", """path: onboarding
 user_types: [member]
 access:
   public: true
   visibility: bogus""")
+    write(root, "flows/checkout.md", "id: checkout\nuser_types: [member]")  # flows are not manifest entries
 
 
 def by_id(manifest: dict) -> dict:
@@ -113,6 +115,7 @@ def test_every_surface_lands_with_declared_visibility():
         assert e["send_email"]["surface"] == "mcp"
         assert e["/"]["affected_paths"] == ["app/page.tsx"]
         assert e["/"]["user_types"] == ["visitor"]
+        assert "checkout" not in e and not any(x["surface"] == "flow" for x in m["entries"])
 
 
 def test_undeclared_visibility_is_draft_not_inferred():
@@ -173,10 +176,26 @@ def test_gated_by_flows_into_manifest():
 def test_sibling_entries_with_same_paths_must_agree_on_gated_by():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        write(root, "pages/a.md", "path: /a\naffected_paths: [src/x.tsx]\naccess:\n  gated_by: [FLAG]")
-        write(root, "pages/b.md", "path: /b\naffected_paths: [src/x.tsx]\naccess:\n  public: true")
+        write(root, "pages/a.md", "path: /a\naffected_paths:\n  - \"src/x.tsx\"\naccess:\n  gated_by: [FLAG]")
+        write(root, "pages/b.md", "path: /b\naffected_paths:\n  - \"src/x.tsx\"\naccess:\n  public: true")
         kinds = {(f["kind"], f["id"]) for f in bam.build(root)["findings"]}
         assert kinds == {("gated-by-inconsistent", "/a"), ("gated-by-inconsistent", "/b")}, kinds
+
+
+def test_flow_style_path_lists_are_a_finding():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        write(root, "api/a.md", "surface: rest\nmethod: get\npath: /a\naffected_paths: [src/app/[id]/route.ts]\naccess:\n  public: true")
+        write(root, "api/b.md", 'surface: rest\nmethod: get\npath: /b\naffected_paths:\n  - "src/app/[id]/route.ts"\naccess:\n  public: true')
+        write(root, "api/c.md", "surface: rest\nmethod: get\npath: /c\naffected_paths: []\naccess:\n  public: true")  # empty list is valid
+        write(root, "api/d.md", 'surface: rest\nmethod: get\npath: /d\naffected_paths: [\n  "src/a.ts"\n]\naccess:\n  public: true')  # multi-line flow list
+        write(root, "flows/f.md", "id: f\naffected_paths: [src/app/[id]/page.tsx]")  # flows are linted too
+        m = bam.build(root)
+        kinds = {(f["kind"], f["id"]) for f in m["findings"]}
+        assert kinds == {("frontmatter-flow-list", "docs/verification/api/a.md"),
+                         ("frontmatter-flow-list", "docs/verification/api/d.md"),
+                         ("frontmatter-flow-list", "docs/verification/flows/f.md")}, kinds
+        assert not any(e["id"] == "f" for e in m["entries"])
 
 
 def test_unsupported_surface_is_a_finding():

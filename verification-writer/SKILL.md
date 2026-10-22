@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.6.6
+version: 3.7.7
 author: Bernier LLC
 ---
 
@@ -333,7 +333,7 @@ affected_paths:
 ---
 ```
 
-Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs. The `generated_by` stamp and `affected_paths` field behave the same way as on page docs: see "Skill Version Tracking and Migration" and the page-level `affected_paths` rules above.
+Flow frontmatter is lighter than page frontmatter — flows don't have their own `access` block because access is defined per-step by the referenced page docs, and they are not access-manifest entries. A flow's `environment.feature_flags` lists only the flags that every step requires (take them from the referenced pages' `gated_by`). A flag that only some steps need goes on those steps as an inline `**Needs:** `FLAG`` line, never on the flow, because a flow-level flag marks every step unavailable when the flag is off. The manifest has no flow entries, so nothing reads a step-level flag; a flow is only as public as its least-public page. The `generated_by` stamp and `affected_paths` field behave the same way as on page docs: see "Skill Version Tracking and Migration" and the page-level `affected_paths` rules above.
 
 ##### Flow content example
 
@@ -383,6 +383,7 @@ Admin, Promoter, Artist
 ### Step 2: Promoter receives magic link
 **Page:** magic-link-landing.md
 **User type:** Promoter
+**Needs:** `INBOUND_ROUTING_ENABLED`  <!-- only this step needs the flag; flow feature_flags stays empty -->
 **Setup:** Retrieve magic link from Mailpit for the promoter associated with the new event.
 **Run items:** MLK-LND-PRO-01 through MLK-LND-PRO-04
 **After this step:** Verify promoter can see event details.
@@ -554,7 +555,7 @@ Do not block the update on frontmatter migration — add frontmatter to docs you
 
 `access:` frontmatter says what a page requires. `visibility` says who may be *told about* it. Customer-docs agents, `llms.txt`/sitemap build steps and CI must read that decision from data, not from an agent's judgment.
 
-`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp,flows}/` into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, roles, scopes, permissions, tier, mfa_required, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
+`scripts/build-access-manifest.py` merges the `access:` blocks of `docs/verification/{pages,api,mcp}/` (flows are not entries: they have no `access` block) into `docs/verification/access-manifest.json` (surface, id, visibility, auth_model, endpoint, roles, scopes, permissions, tier, mfa_required, gated_by, user_types, affected_paths, plus `findings`). API and MCP docs come from the `api-verification-writer` skill; this script is the one shared merge.
 
 ```bash
 python3 verification-writer/scripts/build-access-manifest.py --root .          # write
@@ -566,7 +567,8 @@ Rules:
 - `visibility` defaults to `draft`. Never set `public` because a page happens to be unauthenticated; a human confirms what is customer-facing.
 - `visibility: public` on an entry with `gated_by` is a finding (`public-gated-by-flag`): a surface behind a flag that is off in production is not customer-facing, so confirm the gate is on and record that with `access.gates_confirmed_on: true`, or set `internal`.
 - Entries with identical `affected_paths` but different `gated_by` are a finding (`gated-by-inconsistent`): siblings rendering the same gated component must declare the same gate.
-- A doc whose `surface:` is not rest|mcp|page|flow is an `invalid-surface` finding and is omitted.
+- A doc whose `surface:` is not rest|mcp|page is an `invalid-surface` finding and is omitted.
+- A flow-style `affected_paths: [...]` or `related: [...]` is a `frontmatter-flow-list` finding: write block lists with quoted entries (unquoted `[id]` route segments are invalid YAML, and block-list readers see a flow list as empty).
 - A `public` page that is role-gated, scope-gated or tier-gated is a finding (`visibility-contradicts-access`): fix the visibility or the auth declaration, never silently one of them.
 - Regenerate the manifest after every run that writes or edits docs, and commit it with them. Never hand-edit it.
 - Report manifest findings in the findings report under "Access manifest".
@@ -610,6 +612,7 @@ When the skill version bumps, add a row describing what changes (if any) need to
 | 3.1.0 | 3.2.0 | none — preserve all existing IDs | add `id_namespace` field to frontmatter (derive from existing item prefix pattern); flag any items whose IDs don't match the namespace | no (automatic on first write) |
 | 3.2.0 | 3.3.0 | none — preserve all existing IDs | add `affected_paths` field to page and flow frontmatter (glob patterns allowed). On first write, run the path-suggestion pass: deterministic filename + route-table heuristics first, then prompt the user to confirm before persisting. Never silently auto-commit heuristic results. Existing docs that the skill is not actively touching are left as-is and reported by `scan-versions.py` as `no_affected_paths`. | no (automatic on first write) |
 | 3.3.0 | 3.4.0 | none — preserve all existing IDs | no frontmatter changes. `scan-versions.py` now scans the whole verification tree (previously only `pages/`, `flows/`, and `shared.md`) and runs an integrity pass; docs that were never scanned before may newly surface as `missing_frontmatter` / `no_affected_paths`, and duplicate IDs, duplicate `id_namespace` values, namespace mismatches, and malformed Format A lines are now reported. Fix reported defects before generating downstream tests — each one silently drops items. | no (automatic on first write) |
+| 3.4.0 | 3.7.x | none — preserve all existing IDs | `access` gains `gated_by`, `visibility`, `tier`, `mfa_required`, `auth_model`; flows get no `access` block. Every 3.5.x, 3.6.x and 3.7.x release is covered by this row (3.6.5 to 3.6.6, 3.6.7 to 3.7.x and so on need no document change beyond it). Docs you are not editing stay at their old stamp and are reported as `stale` by `scan-versions.py`; do not restamp a doc without a content change. Add the new fields only to docs you touch (frontmatter-only passes are fine: run steps 1-3 and 8, skip steps 4-7, and stamp `generated_by` only on the docs you edit). | no (automatic on first write) |
 
 When you add a new version row, be explicit: list exact ID-to-ID mappings for any renames. Do not describe renames as "update to match new convention" — that is not actionable by a future Claude. If you cannot list the mappings, the skill is not ready to rename IDs and the rename should be postponed to a later version where the mapping can be defined.
 
@@ -1180,7 +1183,7 @@ HTML visualization: [flow-views | sitemap | both | none]
 | Not tracing submit handlers for stale references | Read the submit handler payload construction — a hidden field's stale value in state can cause FK violations even when the UI looks correct |
 | Marking all state dependency items as [deep] | FK constraint violations and data corruption failure modes get elevated to [standard] — these are not edge cases |
 | Missing STATE-DEPENDENCY annotations | Every state dependency item needs a `<!-- STATE-DEPENDENCY -->` annotation with all five fields (trigger, affected_fields, expected_cascade, code_ref, failure_mode) |
-| Page doc missing frontmatter | Every page and flow doc MUST have YAML frontmatter with version, generated_by, path, access, and page fields. Docs without frontmatter break downstream consumers |
+| Page doc missing frontmatter | Every page doc MUST have YAML frontmatter with version, generated_by, path, access, and page fields; every flow doc MUST have version, generated_by, id_namespace and affected_paths (no `access` block). Docs without frontmatter break downstream consumers |
 | Not bumping version on doc changes | Every edit to a verification doc must bump the frontmatter version. Downstream consumers depend on version changes to detect staleness |
 | Not stamping `generated_by` on write | Every write must set `generated_by: "verification-writer@<current-semver>"` — future skill versions rely on this stamp to pick the correct migration, and downstream skills rely on it to detect when their manifest is out of sync |
 | Reminting existing item IDs | Preserve every existing ID verbatim on subsequent runs. The naming convention is for new IDs only. Renaming requires `--migrate-ids` AND a matching migration-table row |
