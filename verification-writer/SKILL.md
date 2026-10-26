@@ -41,7 +41,7 @@ python3 verification-writer/scripts/scan-versions.py --root .
 
 The scanner reads its own version from the `SKILL.md` beside `scripts/`. A repo that vendors only `scripts/` must pass `--current-version <x.y.z>`, or it exits with `no version in SKILL.md`.
 
-The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `stamp_malformed` / `other_skill` (docs stamped by a sibling skill) / `no_affected_paths` plus per-file lists. `current + stale + other_skill + missing_frontmatter + stamp_missing + stamp_malformed` equals `total`. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
+The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `stamp_malformed` / `other_skill` (docs stamped by a sibling skill) / `no_affected_paths` plus per-file lists (each bucket except `current` has a path list). `current + stale + other_skill + missing_frontmatter + stamp_missing + stamp_malformed` equals `total`. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
 
 ### Integrity pass
 

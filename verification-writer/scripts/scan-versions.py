@@ -466,6 +466,8 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
             for r in stale
         ],
         "missing_frontmatter": [r.path for r in missing_frontmatter],
+        "stamp_malformed": [r.path for r in stamp_malformed],
+        "other_skill": [r.path for r in other_skill],
         "stamp_missing": [
             {"path": r.path, "inferred_version": r.inferred_version}
             for r in stamp_missing

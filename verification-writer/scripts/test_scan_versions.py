@@ -252,7 +252,10 @@ def test_summary_buckets_add_up_to_total():
                 sv.main()
         finally:
             sys.argv = argv
-        s = json.loads(out.getvalue())["summary"]
+        report = json.loads(out.getvalue())
+        s = report["summary"]
+        assert report["stamp_malformed"] == ["docs/verification/pages/bad.md"], report["stamp_malformed"]
+        assert report["other_skill"] == ["docs/verification/api/x.md"], report["other_skill"]
         parts = ("current", "stale", "other_skill", "missing_frontmatter", "stamp_missing", "stamp_malformed")
         assert sum(s[k] for k in parts) == s["total"] == 6, s
         assert (s["current"], s["stale"], s["other_skill"]) == (1, 1, 1), s
