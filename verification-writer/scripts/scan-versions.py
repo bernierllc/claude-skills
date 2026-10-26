@@ -433,6 +433,7 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
     missing_frontmatter = [r for r in results if "frontmatter-missing" in r.issues]
     stamp_missing = [r for r in results if "stamp-missing" in r.issues]
     stamp_malformed = [r for r in results if "generated_by-malformed" in r.issues]
+    # shortcut: sibling-skill stamps (api-verification-writer) leave no marker in issues, so this is "none of the other buckets"; add an issue marker and bump SCAN_VERSION if another unversioned kind appears
     # stamped by a sibling skill (api-verification-writer): not ours to version-check
     other_skill = [
         r for r in results
