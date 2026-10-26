@@ -5,7 +5,9 @@ Covers the integrity pass and doc discovery — the logic that decides whether a
 verification item is visible to downstream consumers at all.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import re
 import sys
@@ -228,6 +230,32 @@ def test_missing_skill_md_asks_for_current_version():
             assert "--current-version" in str(e), e
         finally:
             sv.__file__ = real
+
+
+def test_summary_buckets_add_up_to_total():
+    """Every doc lands in exactly one of current/stale/other_skill/missing/stamp buckets."""
+    with tempfile.TemporaryDirectory() as d:
+        v = Path(d) / "docs" / "verification"
+        (v / "api").mkdir(parents=True)
+        (v / "pages").mkdir()
+        item = "- [ ] [smoke] **{n}-01** Do it --- Works. *Expected: success*\n"
+        (v / "pages" / "cur.md").write_text("---\nid_namespace: CUR\ngenerated_by: verification-writer@3.7.10\n---\n" + item.format(n="CUR"))
+        (v / "pages" / "old.md").write_text("---\nid_namespace: OLD\ngenerated_by: verification-writer@3.4.4\n---\n" + item.format(n="OLD"))
+        (v / "pages" / "nostamp.md").write_text("---\nid_namespace: NOS\n---\n" + item.format(n="NOS"))
+        (v / "pages" / "bad.md").write_text("---\nid_namespace: BAD\ngenerated_by: nonsense\n---\n" + item.format(n="BAD"))
+        (v / "pages" / "nofm.md").write_text(item.format(n="NOF"))
+        (v / "api" / "x.md").write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# X\n")
+        out, argv = io.StringIO(), sys.argv
+        sys.argv = ["scan-versions", "--root", d, "--current-version", "3.7.10"]
+        try:
+            with contextlib.redirect_stdout(out):
+                sv.main()
+        finally:
+            sys.argv = argv
+        s = json.loads(out.getvalue())["summary"]
+        parts = ("current", "stale", "other_skill", "missing_frontmatter", "stamp_missing", "stamp_malformed")
+        assert sum(s[k] for k in parts) == s["total"] == 6, s
+        assert (s["current"], s["stale"], s["other_skill"]) == (1, 1, 1), s
 
 
 if __name__ == "__main__":

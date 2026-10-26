@@ -1,6 +1,6 @@
 {
   "$schema": "https://bernierllc.com/schemas/hooks/v1.json",
-  "version": "3.7.10",
+  "version": "3.7.11",
   "hooks": [
     {
       "id": "vw-scan-on-edit",
