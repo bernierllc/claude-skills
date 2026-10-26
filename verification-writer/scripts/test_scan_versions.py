@@ -103,7 +103,7 @@ def test_stale_scan_version_discards_whole_cache():
         cache_path = root / "docs" / "verification" / sv.CACHE_FILENAME
         rel = str(doc.relative_to(root))
         cache_path.write_text(json.dumps({
-            "scan_version": sv.SCAN_VERSION - 1,
+            "scan_version": 3,
             "scanned_at": "2999-01-01T00:00:00Z",
             "files": {rel: {
                 "sha256": sv.sha256_of(doc),
@@ -133,7 +133,7 @@ def test_api_verification_writer_stamp_is_not_malformed():
         doc = Path(d) / "list-events.md"
         doc.write_text("---\nid_namespace: EVT\ngenerated_by: api-verification-writer@1.0.0\n---\n"
                        "- [ ] [smoke] **EVT-01** Call it --- It works. *Expected: success*\n")
-        r = sv.scan_file(doc, {}, "api/list-events.md")
+        r = sv.scan_file(doc, {}, "docs/verification/api/list-events.md")
         assert "generated_by-malformed" not in r.issues, r.issues
         assert r.skill_version is None  # not ours to version-check
         assert r.item_ids == ["EVT-01"], r.item_ids
@@ -143,9 +143,9 @@ def test_narrative_api_doc_needs_no_id_namespace():
     with tempfile.TemporaryDirectory() as d:
         doc = Path(d) / "list-events.md"
         doc.write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# List events\n")
-        r = sv.scan_file(doc, {}, "api/list-events.md")
+        r = sv.scan_file(doc, {}, "docs/verification/api/list-events.md")
         assert "id_namespace-missing" not in r.issues, r.issues
-        r = sv.scan_file(doc, {}, "pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
+        r = sv.scan_file(doc, {}, "docs/verification/pages/list-events.md")  # the exemption is for api/ and mcp/ docs only
         assert "id_namespace-missing" in r.issues, r.issues
 
 
@@ -167,6 +167,65 @@ def test_skill_version_tolerates_a_v_prefix_and_prerelease_tag():
         sv.__file__ = str(Path(d) / "scripts" / "scan-versions.py")
         try:
             assert sv.skill_version() == "3.6.6"
+        finally:
+            sv.__file__ = real
+
+
+def test_sibling_docs_are_recognised_in_a_real_run():
+    import contextlib, io
+    with tempfile.TemporaryDirectory() as d:
+        api = Path(d) / "docs" / "verification" / "api" / "events"
+        api.mkdir(parents=True)
+        (api / "get-events.md").write_text("---\ngenerated_by: api-verification-writer@1.0.0\naffected_paths:\n  - \"src/a.ts\"\n---\n# GET /events\n")
+        out = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["scan-versions", "--root", d, "--current-version", "3.7.8"]
+        try:
+            with contextlib.redirect_stdout(out):
+                sv.main()
+        finally:
+            sys.argv = argv
+        report = json.loads(out.getvalue())
+        assert report["integrity"]["missing_id_namespace"] == [], report["integrity"]
+        assert report["summary"]["stale"] == 0, report["summary"]
+
+
+def test_cache_from_the_sibling_bug_is_discarded():
+    import contextlib, io
+
+    def run(root):
+        out, argv = io.StringIO(), sys.argv
+        sys.argv = ["scan-versions", "--root", root, "--current-version", "3.7.9"]
+        try:
+            with contextlib.redirect_stdout(out):
+                sv.main()
+        finally:
+            sys.argv = argv
+        return json.loads(out.getvalue())
+
+    with tempfile.TemporaryDirectory() as d:
+        vroot = Path(d) / "docs" / "verification"
+        (vroot / "api").mkdir(parents=True)
+        (vroot / "api" / "x.md").write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# X\n")
+        run(d)
+        cache_path = vroot / sv.CACHE_FILENAME
+        cache = json.loads(cache_path.read_text())
+        cache["scan_version"] = 3  # what the buggy release wrote
+        cache["files"]["docs/verification/api/x.md"]["issues"] = ["id_namespace-missing"]
+        cache_path.write_text(json.dumps(cache))
+        assert run(d)["integrity"]["missing_id_namespace"] == []
+
+
+def test_missing_skill_md_asks_for_current_version():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "scripts").mkdir()
+        real = sv.__file__
+        sv.__file__ = str(Path(d) / "scripts" / "scan-versions.py")
+        try:
+            sv.skill_version()
+            raise AssertionError("expected SystemExit")
+        except SystemExit as e:
+            assert "--current-version" in str(e), e
         finally:
             sv.__file__ = real
 
