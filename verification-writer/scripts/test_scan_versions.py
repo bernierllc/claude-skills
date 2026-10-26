@@ -103,7 +103,7 @@ def test_stale_scan_version_discards_whole_cache():
         cache_path = root / "docs" / "verification" / sv.CACHE_FILENAME
         rel = str(doc.relative_to(root))
         cache_path.write_text(json.dumps({
-            "scan_version": sv.SCAN_VERSION - 1,
+            "scan_version": 3,
             "scanned_at": "2999-01-01T00:00:00Z",
             "files": {rel: {
                 "sha256": sv.sha256_of(doc),
@@ -188,6 +188,32 @@ def test_sibling_docs_are_recognised_in_a_real_run():
         report = json.loads(out.getvalue())
         assert report["integrity"]["missing_id_namespace"] == [], report["integrity"]
         assert report["summary"]["stale"] == 0, report["summary"]
+
+
+def test_cache_from_the_sibling_bug_is_discarded():
+    import contextlib, io
+
+    def run(root):
+        out, argv = io.StringIO(), sys.argv
+        sys.argv = ["scan-versions", "--root", root, "--current-version", "3.7.9"]
+        try:
+            with contextlib.redirect_stdout(out):
+                sv.main()
+        finally:
+            sys.argv = argv
+        return json.loads(out.getvalue())
+
+    with tempfile.TemporaryDirectory() as d:
+        vroot = Path(d) / "docs" / "verification"
+        (vroot / "api").mkdir(parents=True)
+        (vroot / "api" / "x.md").write_text("---\ngenerated_by: api-verification-writer@1.0.0\n---\n# X\n")
+        run(d)
+        cache_path = vroot / sv.CACHE_FILENAME
+        cache = json.loads(cache_path.read_text())
+        cache["scan_version"] = 3  # what the buggy release wrote
+        cache["files"]["docs/verification/api/x.md"]["issues"] = ["id_namespace-missing"]
+        cache_path.write_text(json.dumps(cache))
+        assert run(d)["integrity"]["missing_id_namespace"] == []
 
 
 def test_missing_skill_md_asks_for_current_version():

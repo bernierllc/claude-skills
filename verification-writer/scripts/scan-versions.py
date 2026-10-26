@@ -46,7 +46,7 @@ CACHE_FILENAME = ".scan-cache.json"
 # written by an older SCAN_VERSION are discarded wholesale — otherwise a fix
 # to an item regex is invisible for every doc whose bytes have not changed,
 # and the report keeps citing defects the current parser no longer finds.
-SCAN_VERSION = 3
+SCAN_VERSION = 4
 GITIGNORE_ENTRY = "docs/verification/.scan-cache.json"
 VERIFICATION_PREFIX = "docs/verification/"  # rel_key is repo-relative, so area checks must skip this
 STAMP_REGEX = re.compile(r"^verification-writer@(\d+\.\d+\.\d+)$")
@@ -531,7 +531,7 @@ def main() -> int:
     new_file_cache: dict[str, Any] = {}
 
     for f in files:
-        rel = str(f.relative_to(repo_root))
+        rel = f.relative_to(repo_root).as_posix()
         r = scan_file(f, file_cache, rel)
         results.append(r)
         new_file_cache[rel] = result_to_cache(r)
