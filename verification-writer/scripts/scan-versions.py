@@ -432,6 +432,14 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
     stale = [r for r in stamped if r.skill_version != current_target]
     missing_frontmatter = [r for r in results if "frontmatter-missing" in r.issues]
     stamp_missing = [r for r in results if "stamp-missing" in r.issues]
+    stamp_malformed = [r for r in results if "generated_by-malformed" in r.issues]
+    # shortcut: sibling-skill stamps (api-verification-writer) leave no marker in issues, so this is "none of the other buckets"; add an issue marker and bump SCAN_VERSION if another unversioned kind appears
+    # stamped by a sibling skill (api-verification-writer): not ours to version-check
+    other_skill = [
+        r for r in results
+        if not r.skill_version
+        and not {"frontmatter-missing", "stamp-missing", "generated_by-malformed"} & set(r.issues)
+    ]
     no_affected_paths = [r for r in results if not r.has_affected_paths]
     integrity = build_integrity(results)
 
@@ -442,6 +450,8 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
             "stale": len(stale),
             "missing_frontmatter": len(missing_frontmatter),
             "stamp_missing": len(stamp_missing),
+            "stamp_malformed": len(stamp_malformed),
+            "other_skill": len(other_skill),
             "no_affected_paths": len(no_affected_paths),
             "current_skill_version": current_skill_version,
             "integrity_errors": integrity["error_count"],
@@ -456,6 +466,8 @@ def build_summary(results: list[FileResult], current_skill_version: str) -> dict
             for r in stale
         ],
         "missing_frontmatter": [r.path for r in missing_frontmatter],
+        "stamp_malformed": [r.path for r in stamp_malformed],
+        "other_skill": [r.path for r in other_skill],
         "stamp_missing": [
             {"path": r.path, "inferred_version": r.inferred_version}
             for r in stamp_missing

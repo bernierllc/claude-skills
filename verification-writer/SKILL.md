@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.10
+version: 3.7.11
 author: Bernier LLC
 ---
 
@@ -41,7 +41,7 @@ python3 verification-writer/scripts/scan-versions.py --root .
 
 The scanner reads its own version from the `SKILL.md` beside `scripts/`. A repo that vendors only `scripts/` must pass `--current-version <x.y.z>`, or it exits with `no version in SKILL.md`.
 
-The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `no_affected_paths` plus per-file lists. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
+The output is JSON: counts of `current` / `stale` / `missing_frontmatter` / `stamp_missing` / `stamp_malformed` / `other_skill` (docs stamped by a sibling skill) / `no_affected_paths` plus per-file lists (each bucket except `current` has a path list). `current + stale + other_skill + missing_frontmatter + stamp_missing + stamp_malformed` equals `total`. Use this at the start of any update pass to know which docs need migration. See `references/version-fingerprints.md` for how versions are inferred when a `generated_by` stamp is missing.
 
 ### Integrity pass
 
