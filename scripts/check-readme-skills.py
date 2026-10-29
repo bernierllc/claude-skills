@@ -9,12 +9,13 @@ checked this.
 from __future__ import annotations
 
 import re
+from collections import Counter
 import sys
 from pathlib import Path
 
 from frontmatter import frontmatter_field
 
-LINK = re.compile(r"\[\*\*([\w-]+)\*\*\]\(([^)\s]+)\)")
+LINK = re.compile(r"\[\*\*([\w-]+)\*\*\]\(([^)\s]*SKILL\.md)\)")
 SKIP = {"node_modules", ".worktrees", ".git"}
 
 
@@ -32,14 +33,16 @@ def skills_on_disk(root: Path) -> dict[str, str]:
 
 def problems(root: Path) -> list[str]:
     readme = (root / "README.md").read_text(encoding="utf-8")
-    linked = {name: path for name, path in LINK.findall(readme)}
-    errors = []
+    links = LINK.findall(readme)
+    linked = dict(links)
+    counts = Counter(name for name, _ in links)
+    errors = [f"{name}: listed more than once in README.md" for name, n in sorted(counts.items()) if n > 1]
     for name, path in skills_on_disk(root).items():
         if name not in linked:
             errors.append(f"{name}: not in README.md; add `[**{name}**]({path})` under its category")
         elif linked[name] != path:
             errors.append(f"{name}: README.md links {linked[name]}, but the skill is at {path}")
-    for name, path in linked.items():
+    for name, path in links:
         if not (root / path).is_file():
             errors.append(f"{name}: README.md links {path}, which does not exist")
     return errors

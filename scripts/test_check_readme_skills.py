@@ -50,6 +50,20 @@ class CheckReadmeSkills(unittest.TestCase):
             self.assertTrue(any("but the skill is at a/SKILL.md" in e for e in errs))
             self.assertTrue(any("old/SKILL.md, which does not exist" in e for e in errs))
 
+    def test_non_skill_bold_links_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = repo(tmp, "- [**a**](a/SKILL.md) - x\nSee [**Notion**](https://notion.so)\n",
+                        {"a": "a/SKILL.md"})
+            self.assertEqual(check.problems(root), [])
+
+    def test_duplicate_entry_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = repo(tmp, "- [**a**](old/SKILL.md) - x\n- [**a**](a/SKILL.md) - x\n",
+                        {"a": "a/SKILL.md"})
+            errs = check.problems(root)
+            self.assertIn("a: listed more than once in README.md", errs)
+            self.assertTrue(any("old/SKILL.md, which does not exist" in e for e in errs))
+
     def test_node_modules_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = repo(tmp, "- [**a**](a/SKILL.md) - x\n",
