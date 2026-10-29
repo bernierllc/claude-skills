@@ -73,6 +73,9 @@ jobs:
       - name: skills-manifest.json is current
         run: python3 scripts/generate-manifest.py --check
 
+      - name: README lists and links every skill
+        run: python3 scripts/check-readme-skills.py
+
       - name: Repo script tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 

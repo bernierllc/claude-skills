@@ -28,44 +28,52 @@ This repository includes a diverse collection of example skills demonstrating di
 **Legend:** 🅰️ = Anthropic-authored | ![Bernier LLC](assets/bernier-emoji-16.png) = Bernier LLC-authored
 
 ## Creative & Design
-- 🅰️ **algorithmic-art** - Create generative art using p5.js with seeded randomness, flow fields, and particle systems
-- 🅰️ **canvas-design** - Design beautiful visual art in .png and .pdf formats using design philosophies
-- 🅰️ **slack-gif-creator** - Create animated GIFs optimized for Slack's size constraints
+- 🅰️ [**algorithmic-art**](algorithmic-art/SKILL.md) - Create generative art using p5.js with seeded randomness, flow fields, and particle systems
+- 🅰️ [**canvas-design**](canvas-design/SKILL.md) - Design beautiful visual art in .png and .pdf formats using design philosophies
+- 🅰️ [**slack-gif-creator**](slack-gif-creator/SKILL.md) - Create animated GIFs optimized for Slack's size constraints
 
 ## Development & Technical
-- 🅰️ **artifacts-builder** - Build complex claude.ai HTML artifacts using React, Tailwind CSS, and shadcn/ui components
-- 🅰️ **mcp-builder** - Guide for creating high-quality MCP servers to integrate external APIs and services
-- 🅰️ **webapp-testing** - Test local web applications using Playwright for UI verification and debugging
+- 🅰️ [**artifacts-builder**](artifacts-builder/SKILL.md) - Build complex claude.ai HTML artifacts using React, Tailwind CSS, and shadcn/ui components
+- 🅰️ [**mcp-builder**](mcp-builder/SKILL.md) - Guide for creating high-quality MCP servers to integrate external APIs and services
+- 🅰️ [**webapp-testing**](webapp-testing/SKILL.md) - Test local web applications using Playwright for UI verification and debugging
 
 ## Testing & QA
-- ![Bernier LLC](assets/bernier-emoji-16.png) **browser-verification** - Manual QA verification of web application features in a browser using verification checklists
-- ![Bernier LLC](assets/bernier-emoji-16.png) **playwright-test-generator** - Convert verification docs to Playwright tests incrementally with support for auth-aware generation and hook-driven automation
-- ![Bernier LLC](assets/bernier-emoji-16.png) **playwright-test-runner** - Autonomous Playwright test execution, failure diagnosis, fix implementation, and environment teardown
-- ![Bernier LLC](assets/bernier-emoji-16.png) **ui-audit** - Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests
-- ![Bernier LLC](assets/bernier-emoji-16.png) **ux-audit** - Systematically identify user experience problems through browser inspection and code analysis with prioritized findings and WCAG 2.1 AA coverage
-- ![Bernier LLC](assets/bernier-emoji-16.png) **verification-writer** - Generate, update, and audit manual verification docs for browser-based QA from codebase routes, components, and user types
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**api-verification**](api-verification/SKILL.md) - Run a principal × operation access matrix against REST endpoints and MCP tools and flag over-permissive or over-restrictive operations
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**api-verification-writer**](api-verification-writer/SKILL.md) - Write one verification doc per REST endpoint and MCP tool, flagging spec/code drift and missing auth declarations
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**browser-verification**](browser-verification/SKILL.md) - Manual QA verification of web application features in a browser using verification checklists
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**playwright-test-generator**](playwright-test-generator/SKILL.md) - Convert verification docs to Playwright tests incrementally with support for auth-aware generation and hook-driven automation
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**playwright-test-runner**](playwright-test-runner/SKILL.md) - Autonomous Playwright test execution, failure diagnosis, fix implementation, and environment teardown
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**ui-audit**](ui-audit/SKILL.md) - Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**ux-audit**](ux-audit/SKILL.md) - Systematically identify user experience problems through browser inspection and code analysis with prioritized findings and WCAG 2.1 AA coverage
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**verification-writer**](verification-writer/SKILL.md) - Generate, update, and audit manual verification docs for browser-based QA from codebase routes, components, and user types
 
 ## Developer Workflow
-- ![Bernier LLC](assets/bernier-emoji-16.png) **commit** - Standardized commit workflow with commitlint validation, gitignore checks, and safe push procedures
-- ![Bernier LLC](assets/bernier-emoji-16.png) **feature-map-review** - Map every feature of a project, record every gap under a permanent id, re-cut plans and backlog by feature, then map the work graph and code boundaries to show what can run in parallel
-- ![Bernier LLC](assets/bernier-emoji-16.png) **plan-review** - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
-- ![Bernier LLC](assets/bernier-emoji-16.png) **seed-data** - Create, modify, or audit application data across environments with data classification, idempotency enforcement, and framework-aware workflow
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**commit**](commit/SKILL.md) - Standardized commit workflow with commitlint validation, gitignore checks, and safe push procedures
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**feature-map-review**](feature-map-review/SKILL.md) - Map every feature of a project, record every gap under a permanent id, re-cut plans and backlog by feature, then map the work graph and code boundaries to show what can run in parallel
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**git-conventions**](git-conventions/SKILL.md) - Enforce lowercase conventional commits through a commit-msg hook, no commitlint install needed
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**orchata**](orchata/SKILL.md) - Plan and execute a task end to end with multi-agent orchestration, involving the human only where their hands are needed
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**plan-review**](plan-review/SKILL.md) - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**pr-merge-flow**](pr-merge-flow/SKILL.md) - Keep parallel PRs from restarting each other's CI: hand merges to auto-merge and sync the base only on a real conflict
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**resume**](resume/SKILL.md) - Pick up in-flight work by reconciling run state, the activity log and the tracker against git
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**seed-data**](seed-data/SKILL.md) - Create, modify, or audit application data across environments with data classification, idempotency enforcement, and framework-aware workflow
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**ship**](ship/SKILL.md) - Close out a branch in one command: verify, commit, push, open the PR and sync the tracker
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**typecheck-on-edit**](typecheck-on-edit/SKILL.md) - Type-check a TypeScript repo after every edit through a blocking PostToolUse hook
 
 ## Enterprise & Communication
-- 🅰️ **brand-guidelines** - Apply Anthropic's official brand colors and typography to artifacts
-- 🅰️ **internal-comms** - Write internal communications like status reports, newsletters, and FAQs
-- 🅰️ **theme-factory** - Style artifacts with 10 pre-set professional themes or generate custom themes on-the-fly
+- 🅰️ [**brand-guidelines**](brand-guidelines/SKILL.md) - Apply Anthropic's official brand colors and typography to artifacts
+- 🅰️ [**internal-comms**](internal-comms/SKILL.md) - Write internal communications like status reports, newsletters, and FAQs
+- 🅰️ [**theme-factory**](theme-factory/SKILL.md) - Style artifacts with 10 pre-set professional themes or generate custom themes on-the-fly
 
 ## Meta Skills
-- 🅰️ **skill-creator** - Guide for creating effective skills that extend Claude's capabilities
-- 🅰️ **template-skill** - A basic template to use as a starting point for new skills
+- 🅰️ [**skill-creator**](skill-creator/SKILL.md) - Guide for creating effective skills that extend Claude's capabilities
+- 🅰️ [**template-skill**](template-skill/SKILL.md) - A basic template to use as a starting point for new skills
 
 # Document Skills
 
 Google Workspace document skills. For Word, PDF, PowerPoint, and Excel files, use the docx/pdf/pptx/xlsx skills that ship with Claude.
 
-- ![Bernier LLC](assets/bernier-emoji-16.png) **gdocs** - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
-- ![Bernier LLC](assets/bernier-emoji-16.png) **gslides** - Complete Google Slides solution with 6 phases: Foundation, Creation, Visual Design (WCAG compliance, brand guidelines), Data Visualization (11 chart types), AI-Powered Content Generation (FREE - no API key!), and Quality Assurance. Transform raw notes into beautiful, brand-compliant presentations in seconds
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**gdocs**](gdocs/SKILL.md) - Writes and updates Google Docs with intelligent content synthesis. Transforms raw content into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents and structure-aware insertion
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**gslides**](document-skills/gslides/SKILL.md) - Complete Google Slides solution with 6 phases: Foundation, Creation, Visual Design (WCAG compliance, brand guidelines), Data Visualization (11 chart types), AI-Powered Content Generation (FREE - no API key!), and Quality Assurance. Transform raw notes into beautiful, brand-compliant presentations in seconds
 
 # Try in Claude Code, Claude.ai, and the API
 
