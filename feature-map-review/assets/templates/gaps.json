@@ -1,0 +1,5 @@
+{
+  "$comment": "Every known gap, one per line. Ids are permanent: never renumber or reuse one; close a gap by setting status (fixed, duplicate with duplicate_of, wontfix) with closed_at and closed_by. feature is the gap's home; related lists every other feature it touches. The plans that close a gap name it in frontmatter gaps:. cause: scoped-out, parity, missing-guard, not-built, drift, debt, config, unplanned or regression. Add gaps with scripts/gaps.mjs add, which hands out ids from next_id.",
+  "next_id": 1,
+  "gaps": []
+}

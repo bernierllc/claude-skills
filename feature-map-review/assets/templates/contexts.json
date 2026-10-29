@@ -1,0 +1,12 @@
+{
+  "$comment": "The context map: the independent pieces of the product, what each owns and what it offers the others. Curated here; build-map.mjs computes file ownership, imports, table use, files used with no interface, reach-ins and safe parallel lanes from the code. scope: the source folders to walk. aliases: import path prefixes, as tsconfig paths ({\"@/\": \"src/\"}). schema: the one file that declares the tables (file, and table_pattern with one capture group for the table's name; the default reads Drizzle's pgTable, mysqlTable and sqliteTable); null when tables are not imported by name. contexts: id (kebab-case), name, kind (domain: a piece of the product; shared: the kernel every context may import, such as the db client, env, logging and UI kit; none: tooling outside the product), summary, areas (features.json areas it holds; every area sits in exactly one context), features (single features moved out of their area's context), owns.code (globs; the most specific match owns a file, a path with no * beats any pattern), owns.tables, interfaces ({path, status: defined, what} for a file other contexts may import, or {status: missing, what, ref} for one a plan must build, ref being that plan). Imports are read from JS and TS sources. See references/data-model.md, contexts.json.",
+  "taken_at": null,
+  "scope": ["src/"],
+  "aliases": {"@/": "src/"},
+  "schema": null,
+  "contexts": [
+    {"id": "kernel", "name": "Shared kernel", "kind": "shared", "summary": "Database client, config, logging and the UI kit. Every context may import it; it imports no context.", "areas": [], "owns": {"code": ["src/lib/**"], "tables": []}, "interfaces": []},
+    {"id": "access", "name": "Accounts and access", "kind": "domain", "summary": "Sign up, sign in and sessions.", "areas": ["access"], "owns": {"code": ["src/auth/**"], "tables": []}, "interfaces": [{"path": "src/auth/index.ts", "status": "defined", "what": "currentUser() and requireUser() for every other context."}]},
+    {"id": "core", "name": "Core product", "kind": "domain", "summary": "Projects and everything done inside one.", "areas": ["core"], "owns": {"code": ["src/projects/**"], "tables": []}, "interfaces": [{"status": "missing", "what": "exportProject(): the one way to read a whole project out.", "ref": "plans/2026-01-01-project-export.md"}]}
+  ]
+}

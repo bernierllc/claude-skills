@@ -1,0 +1,5 @@
+{
+  "$comment": "Per feature: a review of its plans and open gaps, with the gaps grouped into workstreams (permanent WS-NNN ids; a workstream is the unit a tracker row tracks, and each open gap sits in exactly one). One feature per line. health: solid, gaps or at-risk. plans: {plan, role: owns|touches|stale|conflicts, note}. workstreams: {id, title, why, gaps, features, owner (a plan path or <prefix>:<id>), new_plan, phase, size S|M|L, depends_on, row (its tracker row URL)}. plan_changes: {plan, change: merge-into|split|re-scope|close|move-phase|add-gaps, target, detail}.",
+  "reviewed_at": null,
+  "features": {}
+}

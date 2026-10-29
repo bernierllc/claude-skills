@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-10-26T17:43:18.772285+00:00",
+  "generatedAt": "2026-10-29T00:18:37.839344+00:00",
   "skills": {
     "algorithmic-art": {
       "version": "1.0.0",
@@ -43,6 +43,11 @@
     "gslides": {
       "version": "1.0.0",
       "description": "Google Slides skill for creating, editing, and enhancing Google Slides presentations programmatically.",
+      "author": "Bernier LLC"
+    },
+    "feature-map-review": {
+      "version": "1.0.0",
+      "description": "Map every feature of a software project, find its gaps, re-cut plans and backlog by feature, then map the work and the code's boundaries. Builds a feature registry with links, tags plans and tracker rows by feature, records every gap under a permanent id, reviews each feature against its plans, groups gaps into workstreams, writes a plan review, applies what the user accepts and makes one tracker row per workstream. Then types workstream dependencies (critical paths, linchpins, what waits on people, delivery data) and maps the code into contexts (owned files and tables, declared interfaces, imports reaching past them) to show which work can safely run in parallel. Use whenever someone wants a feature map, a gap audit of code against plans, unowned, stale or conflicting plans, a prioritised roadmap, the critical path, what to start next, what can run in parallel, or bounded contexts and interface boundaries, even if they only say \"what are we missing\", \"audit our plans\" or \"map this project\".",
       "author": "Bernier LLC"
     },
     "gdocs": {
