@@ -80,7 +80,7 @@ function close() {
   const g = t.gaps.find((x) => x.id === id);
   if (!g) die(`${id} is not in gaps.json`);
   if (status === "duplicate") {
-    if (!args["dup-of"] || !t.gaps.some((x) => x.id === args["dup-of"])) die("a duplicate needs --dup-of <an existing gap id>");
+    if (!args["dup-of"] || args["dup-of"] === id || !t.gaps.some((x) => x.id === args["dup-of"])) die("a duplicate needs --dup-of <another existing gap id>");
     g.duplicate_of = args["dup-of"];
   }
   g.status = status;

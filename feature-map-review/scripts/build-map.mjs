@@ -130,7 +130,7 @@ for (const g of gapTable.gaps ?? []) {
   if (!Array.isArray(g.evidence)) problems.push(`${where}: evidence must be a list`);
 }
 for (const g of gapTable.gaps ?? []) {
-  if (g.status === "duplicate" && !gapIds.has(g.duplicate_of)) problems.push(`gaps.json: ${g.id} is a duplicate of ${g.duplicate_of}, which is not a gap`);
+  if (g.status === "duplicate" && (!gapIds.has(g.duplicate_of) || g.duplicate_of === g.id)) problems.push(`gaps.json: ${g.id} is a duplicate of ${g.duplicate_of}, which is not another gap`);
 }
 for (const l of registry.links) {
   if (!featureIds.has(l.from) || !featureIds.has(l.to)) problems.push(`features.json: link ${l.from} -> ${l.to} names an unknown feature`);
@@ -203,6 +203,7 @@ const extIds = new Set((extPlans.pages ?? []).map((n) => n.id));
 const extKeyOk = (k) => !!EXT && typeof k === "string" && k.startsWith(`${EXT.key_prefix}:`) && extIds.has(k.slice(EXT.key_prefix.length + 1));
 for (const n of EXT ? extPlans.pages ?? [] : []) {
   const where = `external-plans.json: ${n.id}`;
+  if ((extPlans.pages ?? []).filter((m) => m.id === n.id).length > 1) problems.push(`${where}: listed more than once; merge the records`);
   if (!EXT_ID.test(n.id ?? "")) problems.push(`${where}: id does not match external.id_pattern ${EXT.id_pattern}`);
   if (!httpsOrNull(n.url)) problems.push(`${where}: url must be https`);
   if (!PHASES.some((ph) => ph.id === n.phase)) problems.push(`${where}: phase ${n.phase} is not one of ${PHASES.map((ph) => ph.id).join(", ")}`);

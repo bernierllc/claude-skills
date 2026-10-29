@@ -221,7 +221,7 @@ export function computeWork(work, workstreams, phaseIds = DEFAULT_PHASES) {
     const ready = !pre.blocks.get(id).length && !kinds.has("human") && !kinds.has("external") && !kinds.has("decision") && !kinds.has("date") && w.who !== "human";
     if (ready) c.add("ready");
     if (ready && w.who === "agent") c.add("agent-ready");
-    if (kinds.has("human") || w.who === "human") c.add("human");
+    if (kinds.has("human") || w.who !== "agent") c.add("human"); // agent+human has an owner step by definition
     for (const k of ["external", "date", "decision"]) if (kinds.has(k)) c.add(k);
     if (pre.blocks.get(id).some((p) => phaseIdx(byId.get(p).phase) > phaseIdx(byId.get(id).phase))) c.add("phase-inversion");
     ws[id].classSet = c;
