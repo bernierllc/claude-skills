@@ -218,7 +218,7 @@ export function computeWork(work, workstreams, phaseIds = DEFAULT_PHASES) {
     if (pre.blocks.get(id).length >= LINCHPIN_MIN) c.add("convergence");
     const noEdges = !pre.blocks.get(id).length && !pre.enables.get(id).length && !post.blocks.get(id).length && !post.enables.get(id).length;
     if (noEdges && !waits.length) c.add("leaf");
-    const ready = !pre.blocks.get(id).length && !kinds.has("human") && !kinds.has("external") && !kinds.has("decision") && w.who !== "human";
+    const ready = !pre.blocks.get(id).length && !kinds.has("human") && !kinds.has("external") && !kinds.has("decision") && !kinds.has("date") && w.who !== "human";
     if (ready) c.add("ready");
     if (ready && w.who === "agent") c.add("agent-ready");
     if (kinds.has("human") || w.who === "human") c.add("human");

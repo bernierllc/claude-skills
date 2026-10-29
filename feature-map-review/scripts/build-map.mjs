@@ -290,7 +290,7 @@ for (const g of gapTable.gaps ?? []) {
   const out = { ...g, tracker: rows, covered_by: [...(ownersOf.get(g.id) ?? []), ...rows.map((t) => t.url)], still_open: GAP_STATUS[g.status] ?? "unknown" };
   for (const fid of [g.feature, ...(g.related ?? [])]) if (featureIds.has(fid)) pageGaps.set(fid, [...(pageGaps.get(fid) ?? []), out]);
 }
-// ---- feature reviews: workstreams are the unit of work a row tracks; each open gap is in at most one.
+// ---- feature reviews: workstreams are the unit of work a row tracks; each open gap is in exactly one.
 const HEALTH = new Set(["solid", "gaps", "at-risk"]);
 const ROLES = new Set(["owns", "touches", "stale", "conflicts"]);
 const CHANGES = new Set(["merge-into", "split", "re-scope", "close", "move-phase", "add-gaps"]);
@@ -326,6 +326,10 @@ for (const [fid, r] of Object.entries(reviewFile.features ?? {})) {
     if (!planKeys.has(c.plan)) problems.push(`${where}: plan change names ${c.plan}, which is not a live plan`);
     if (!CHANGES.has(c.change)) problems.push(`${where}: plan change ${c.change}; use ${[...CHANGES].join(", ")}`);
   }
+}
+// Once any feature is reviewed (stage 3), every open gap must sit in a workstream, or it never gets an owner or a row.
+if (Object.keys(reviewFile.features ?? {}).length) {
+  for (const g of gapTable.gaps ?? []) if ((g.status === "open" || g.status === "unverified") && !wsOfGap.has(g.id)) problems.push(`reviews.json: ${g.id} (${g.feature}) is ${g.status} but in no workstream; add it to one in its feature's review`);
 }
 // A workstream is named on every gap it holds and on the plan that carries it.
 for (const list of pageGaps.values()) for (const g of list) g.workstream = wsOfGap.get(g.id) ?? null;
