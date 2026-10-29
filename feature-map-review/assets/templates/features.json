@@ -1,0 +1,24 @@
+{
+  "$comment": "Feature registry: every feature that exists or is planned, and the links between them. Plans name these ids in frontmatter (features: [adds:<id>]). statuses: what each feature status means and the tag the map shows. areas: map columns 0-3, or \"band\" for a full-width row; code is a 3-letter label. features: id (kebab-case, permanent), area, name, status, description, pages / api / code (where it lives), introduced_by (the plan that adds a planned feature, or <prefix>:<id> for an external plan, or introduced_by_tracker). links: from -> to with kind needs (from cannot work without to), gate (to checks or blocks from), trigger (from starts to), data (from sends data to to) or exposes (from is an API/SDK/CLI surface of to); partial: true when only part depends; note says why. Gaps live in gaps.json, not here.",
+  "version": 1,
+  "generated_from": "hand-written starter",
+  "statuses": {
+    "live": {"label": "Live", "tag": ""},
+    "flagged": {"label": "Built, switched off", "tag": "FLAG OFF"},
+    "internal": {"label": "Staff only", "tag": "STAFF"},
+    "planned": {"label": "Planned, not built", "tag": "PLANNED"}
+  },
+  "areas": [
+    {"id": "access", "code": "ACC", "name": "Accounts & access", "column": 0},
+    {"id": "core", "code": "COR", "name": "Core product", "column": 1}
+  ],
+  "features": [
+    {"id": "signup", "area": "access", "name": "Sign up and sign in", "status": "live", "description": "Email and password accounts with password reset.", "pages": ["/signup", "/login"], "introduced_by": null, "code": ["src/auth/"]},
+    {"id": "projects", "area": "core", "name": "Projects", "status": "live", "description": "A user creates projects and invites teammates.", "pages": ["/projects"], "introduced_by": null, "code": ["src/projects/"]},
+    {"id": "project-export", "area": "core", "name": "Project export", "status": "planned", "description": "Download a project and its history as a zip.", "pages": [], "introduced_by": "plans/2026-01-01-project-export.md", "code": []}
+  ],
+  "links": [
+    {"from": "projects", "to": "signup", "kind": "needs", "note": "Every project belongs to a signed-in user."},
+    {"from": "project-export", "to": "projects", "kind": "needs", "note": "Exports one project."}
+  ]
+}

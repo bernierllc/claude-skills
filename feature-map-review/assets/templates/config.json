@@ -1,0 +1,29 @@
+{
+  "$comment": "Feature map settings for this repo. Every key is optional. repo_url is the prefix for plan links (a GitHub blob URL ends in the branch: .../blob/main/). Phases: the timeline columns, in order; done plans always sit under 'now'. A phase with gate: true is a planning pause. plan_fields: the frontmatter keys that hold a plan's tracker and roadmap row URLs. external: plans that live outside the repo (a wiki, Notion, Confluence) listed in external-plans.json; drop it if every plan is a repo file. tracker: the issue tracker whose rows tracker-snapshot.json copies; id_pattern pulls a row id out of a row URL (one capture group); drop it if you have no tracker. owner_label: the person whose steps gate work, as the Work view names them (\"Waits on <owner_label>\"). branches: where work lands (integration) and where it is promoted (release, or null when nothing is promoted); the Work view's delivery numbers use them.",
+  "project": "Acme",
+  "repo_url": "https://github.com/acme/acme/blob/main/",
+  "plans_dir": "plans",
+  "plans_exclude": ["ROADMAP.md", "README.md"],
+  "archive_dir": "plans/archive",
+  "plans_exempt": [],
+  "plan_statuses": ["draft", "active", "blocked", "done", "archived"],
+  "phases": [
+    {"id": "now", "label": "Today"},
+    {"id": "1", "label": "Phase 1"},
+    {"id": "2", "label": "Phase 2"},
+    {"id": "3", "label": "Later"}
+  ],
+  "default_phase": "3",
+  "plan_fields": {"tracker": "tracker", "roadmap": "roadmap"},
+  "tracker": {
+    "label": "Tracker",
+    "roadmap_label": "Roadmap",
+    "id_pattern": "([0-9a-f]{32})\\b",
+    "closed_statuses": ["Done", "Duplicate", "Won't do"],
+    "done_status": "Done"
+  },
+  "owner_label": "the owner",
+  "branches": {"integration": "main", "release": null},
+  "default_feature": null,
+  "stale_days": 30
+}

@@ -47,6 +47,7 @@ This repository includes a diverse collection of example skills demonstrating di
 
 ## Developer Workflow
 - ![Bernier LLC](assets/bernier-emoji-16.png) **commit** - Standardized commit workflow with commitlint validation, gitignore checks, and safe push procedures
+- ![Bernier LLC](assets/bernier-emoji-16.png) **feature-map-review** - Map every feature of a project, record every gap under a permanent id, re-cut plans and backlog by feature, then map the work graph and code boundaries to show what can run in parallel
 - ![Bernier LLC](assets/bernier-emoji-16.png) **plan-review** - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
 - ![Bernier LLC](assets/bernier-emoji-16.png) **seed-data** - Create, modify, or audit application data across environments with data classification, idempotency enforcement, and framework-aware workflow
 

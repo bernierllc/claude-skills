@@ -1,0 +1,10 @@
+{
+  "$comment": "Work graph for the Work view: per workstream (every WS id in reviews.json needs a record), what it needs first, what it waits on outside the graph and who can do it. One workstream per line. needs: [{ws, kind, why}] where kind is blocks (cannot be built or shipped correctly before ws) or enables (could ship first, but is cheaper or safer after ws). waits: [{kind, what}] where kind is human (a step only the owner can take), external (a vendor, a customer, a third party), date (cannot start before a date) or decision (a product call nobody has made). who: agent (an agent end to end), agent+human (an agent, with one step from the owner) or human. size_days turns a workstream's size into days; wait_days adds days once per kind of wait a workstream has (a date adds none). milestones: the critical path is computed for each, over the workstreams in its phases plus everything they need first. git: delivery data measured from the repo, its PRs and CI (optional; see references/briefs.md, delivery data). See references/data-model.md, work.json.",
+  "taken_at": null,
+  "size_days": {"S": 1, "M": 3, "L": 8},
+  "size_days_basis": "Starter values. Anchor them on done plans: median days from a plan's first commit to its last merged PR, divided by the workstreams it carried.",
+  "wait_days": {"human": 2, "external": 5, "decision": 3},
+  "milestones": [{"id": "next-release", "label": "Next release", "phases": ["1"]}],
+  "git": null,
+  "workstreams": {}
+}
