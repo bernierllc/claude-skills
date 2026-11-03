@@ -79,6 +79,9 @@ jobs:
       - name: Repo script tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
+      - name: pr-merge-flow guard tests
+        run: python3 pr-merge-flow/tests/test_pr_guard.py
+
       - name: Changed skills bump their version
         if: github.event_name == 'pull_request'
         env:

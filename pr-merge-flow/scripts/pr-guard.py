@@ -16,6 +16,12 @@ text is what the agent sees.
    targets the UPSTREAM repo (a claude-skills PR landed on anthropics/skills
    this way, 2026-09-28). Blocked until the target is explicit.
 
+4. No ungated merge. `gh pr merge --admin` is always blocked; without `--auto` the merge
+   needs every check SUCCESS/SKIPPED/NEUTRAL (PR #325 merged on a CANCELLED check). The
+   wanted shape is `--auto`: GitHub merges when checks pass and nobody watches. Fails closed.
+5. No polling: `sleep` plus a `gh pr checks|view|status` / `gh run view|watch|list` query in
+   one command. Use `gh pr checks <n> --watch --fail-fast` in the background instead.
+
 Every tool call passes through here, so non-Bash input exits at once.
 """
 import json
@@ -300,8 +306,72 @@ def unpinned_fork(cwd):
     return None
 
 
+GREEN = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+MERGE_FLAGS_WITH_VALUE = {"-t", "-b", "-F", "-A", "-R", "--subject", "--body", "--body-file",
+                          "--author-email", "--match-head-commit", "--repo"}
+STATUS_QUERY = re.compile(r"^gh\b.*\b(pr (checks|view|status)|run (view|watch|list))\b")
+
+
+def merge_calls(cmd):
+    """Yield (ref, flags) for each `gh pr merge`; ref is '' when none is named."""
+    for argv in segments(cmd):
+        pr = gh_pr(argv)
+        if not pr or pr[0] != "merge":
+            continue
+        rest = argv[argv.index("merge") + 1:]
+        ref, flags, skip = "", set(), False
+        for a in rest:
+            if skip:
+                skip = False
+            elif a in MERGE_FLAGS_WITH_VALUE:
+                skip = True
+            elif a.startswith("-"):
+                flags.add(a.split("=")[0])
+            elif not ref:
+                ref = a
+        yield ref, flags
+
+
+def not_green(ref):
+    """Return '' when every check on the PR is green, else a description of why not."""
+    try:
+        out = subprocess.run(["gh", "pr", "view", *([ref] if ref else []), "--json",
+                              "statusCheckRollup,mergeStateStatus"],
+                             capture_output=True, text=True, timeout=8)
+        if out.returncode != 0:
+            return f"gh failed: {out.stderr.strip()}"
+        rollup = json.loads(out.stdout).get("statusCheckRollup") or []
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+        return f"gh failed: {e}"
+    if not rollup:
+        return "no checks reported yet"
+    # Check runs carry `conclusion` (empty while running); status contexts carry `state`.
+    bad = [f"{e.get('name') or e.get('context')}: {(e.get('conclusion') or e.get('state') or 'PENDING').upper()}"
+           for e in rollup if (e.get("conclusion") or e.get("state") or "").upper() not in GREEN]
+    return ", ".join(bad)
+
+
+def polls(cmd):
+    segs = list(segments(cmd))
+    return (any(a[0] == "sleep" for a in segs)
+            and any(STATUS_QUERY.match(" ".join(a)) for a in segs))
+
+
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
+    if polls(cmd):
+        return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
+                "and let the harness wake you, or `gh pr merge <n> --auto` and stop watching.")
+    for ref, flags in merge_calls(cmd):
+        if "--admin" in flags:
+            return "Blocked: never bypass required checks with --admin; fix the red check or ask Matt."
+        if "--auto" in flags:
+            continue
+        why = not_green(ref)
+        if why:
+            return (f"Blocked: checks are not all green for {ref or 'this branch'} ({why}): hand the merge "
+                    f"to GitHub with `gh pr merge {ref or '<n>'} --auto --squash` (promotions into main: "
+                    "`--merge`) and stop watching.")
     if draft_violation(cmd) and not draft_mode():
         return ("Blocked: PRs open ready for review, never as drafts. Drop --draft / --undo. "
                 "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`, "

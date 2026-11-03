@@ -104,4 +104,48 @@ for body, want in [({}, False), ({"settings": {}}, False), ({"settings": {"pr_op
     assert g.draft_mode(_prefs) is want, body
 _prefs.write_text("{not json")
 assert not g.draft_mode(_prefs)
+
+# Ungated merge and polling. Mock the gh call the way a green/red rollup would come back.
+class _R:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+def _gh(rc=0, rollup=None, err=""):
+    return lambda *a, **k: _R(rc, json.dumps({"statusCheckRollup": rollup}), err)
+
+_run = g.subprocess.run
+def merge(cmd, **kw):
+    g.subprocess.run = _gh(**kw)
+    try:
+        return g.check(cmd, "/r")
+    finally:
+        g.subprocess.run = _run
+
+ok = [{"name": "pytest", "conclusion": "SUCCESS"}, {"name": "lint", "conclusion": "skipped"},
+      {"context": "ci/x", "state": "SUCCESS"}, {"name": "n", "conclusion": "NEUTRAL"}]
+assert "--admin" in merge("gh pr merge 5 --admin --squash", rollup=ok)
+assert "never bypass" in merge("gh pr merge 5 --admin --auto", rollup=ok)
+assert merge("gh pr merge 5 --auto --squash", rollup=[]) is None
+assert merge("gh pr merge 5 --squash", rollup=ok) is None
+assert merge("gh pr merge https://github.com/o/r/pull/5 -t 'x y' --merge", rollup=ok) is None
+for bad, name in [({"name": "pytest", "conclusion": "CANCELLED"}, "pytest: CANCELLED"),
+                  ({"name": "pytest", "conclusion": ""}, "pytest: PENDING"),
+                  ({"name": "pytest", "conclusion": "FAILURE"}, "pytest: FAILURE"),
+                  ({"context": "ci/x", "state": "PENDING"}, "ci/x: PENDING"),
+                  ({"context": "ci/x", "state": "FAILURE"}, "ci/x: FAILURE")]:
+    m = merge("gh pr merge 5 --squash", rollup=ok + [bad])
+    assert m and name in m and "--auto --squash" in m, (bad, m)
+assert "no checks" in merge("gh pr merge 5 --squash", rollup=[])
+assert "no checks" in merge("gh pr merge 5", rollup=None)
+m = merge("gh pr merge 5", rc=1, err="no pull requests found")
+assert m and "no pull requests found" in m
+assert merge("gh pr view 5 && echo done", rollup=[]) is None
+
+for c in ["while true; do gh pr checks 12 | grep -q pending || break; sleep 30; done",
+          "sleep 60 && gh pr view 12", "gh run watch 9; sleep 1", "until gh run list; do sleep 5; done",
+          "for i in 1 2; do sleep 10\n gh pr status\n done"]:
+    assert "never poll" in (g.check(c, "/r") or ""), c
+for c in ["gh pr checks 12 --watch --fail-fast", "sleep 5", "gh pr view 12", "echo gh pr checks; sleep 5",
+          "sleep 5 # gh pr checks 12", "cat <<EOF\ngh pr checks 12\nEOF\nsleep 5"]:
+    assert g.check(c, "/r") is None, c
 print("ok")
