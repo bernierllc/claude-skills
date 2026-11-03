@@ -35,9 +35,9 @@ assert g.draft_violation("gh pr create --draft --title x")
 assert g.draft_violation("git push && gh pr create -d")
 assert g.draft_violation("gh pr ready 5 --undo")
 assert not g.draft_violation("gh pr create --title 'no draft here'")
-assert g.creates_pr_without_repo("git push && gh pr create --title x")
-assert not g.creates_pr_without_repo("gh pr create -R me/r --title x")
-assert not g.creates_pr_without_repo("gh pr create --repo=me/r")
+assert list(g.pr_create_dirs("git push && gh pr create --title x", "/r"))
+assert not list(g.pr_create_dirs("gh pr create -R me/r --title x", "/r"))
+assert not list(g.pr_create_dirs("gh pr create --repo=me/r", "/r"))
 # Codex P2s on #37: quoting, continuation, other ref spellings, gh aliases/inherited -R.
 assert calls('git merge -m "sync; base" origin/main') == [("/r", "merge", ["origin/main"])]
 assert calls("git merge \\\n  origin/staging") == [("/r", "merge", ["origin/staging"])]
@@ -51,8 +51,8 @@ assert g.draft_violation("gh pr create \\\n  --draft --title x")
 assert g.draft_violation("gh pr new --draft")
 assert g.draft_violation("gh -R owner/repo pr create --draft")
 assert not g.draft_violation('gh pr create --title "no --draft; here"')
-assert not g.creates_pr_without_repo("gh -R me/r pr create --title x")
-assert g.creates_pr_without_repo("gh pr new --title x")
+assert not list(g.pr_create_dirs("gh -R me/r pr create --title x", "/r"))
+assert list(g.pr_create_dirs("gh pr new --title x", "/r"))
 # Codex on #38: a comment ends at the newline, and `#` inside a word or quotes isn't one.
 assert g.draft_violation("echo ok # note\ngh pr create --draft")
 assert g.draft_violation("echo x#not-a-comment; gh pr create --draft")
@@ -74,8 +74,8 @@ assert g.draft_violation("cat <<'E'OF\nx\nEOF\ngh pr create --draft")
 assert g.draft_violation('cat <<"EOF"\nx\nEOF\ngh pr create --draft')
 # A heredoc whose terminator never appears drops nothing (fails toward checking).
 assert g.draft_violation("cat <<EOF\nx\ngh pr create --draft")
-assert not g.creates_pr_without_repo("gh -Rme/r pr create --title x")
-assert not g.creates_pr_without_repo("gh pr create -Rme/r")
+assert not list(g.pr_create_dirs("gh -Rme/r pr create --title x", "/r"))
+assert not list(g.pr_create_dirs("gh pr create -Rme/r", "/r"))
 # Codex round 3 (post-merge on #38): subshell cd scope, fail-closed fallback, $'..' delimiters.
 assert calls("(cd /tmp; :); git merge origin/main") == [("/r", "merge", ["origin/main"])]
 assert calls("(cd /tmp && git merge origin/main)") == [("/tmp", "merge", ["origin/main"])]
@@ -149,3 +149,15 @@ for c in ["gh pr checks 12 --watch --fail-fast", "sleep 5", "gh pr view 12", "ec
           "sleep 5 # gh pr checks 12", "cat <<EOF\ngh pr checks 12\nEOF\nsleep 5"]:
     assert g.check(c, "/r") is None, c
 print("ok")
+
+# Codex on prevost #332: the fork check uses the dir `gh pr create` runs in, not the hook cwd.
+seen = []
+g.unpinned_fork = lambda d: seen.append(d)
+def forks(c):
+    seen.clear()
+    assert g.check(c, "/hook") is None
+    return list(seen)
+assert forks("cd /some/fork && gh pr create --title x") == ["/some/fork"]
+assert forks("(cd /some/fork && gh pr create --title x) && gh pr create -R o/r --title y") == ["/some/fork"]
+assert forks("gh pr create --title x") == ["/hook"]
+assert forks('cd "$DIR" && gh pr create --title x') == []

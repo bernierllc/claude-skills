@@ -156,23 +156,30 @@ def segments(cmd):
             argv.append(t.translate(UNHIDE))
 
 
-def sync_calls(cmd, cwd):
-    """Yield (dir, subcommand, refs) for each git merge/pull/rebase that names a ref.
+def walk(cmd, cwd):
+    """Yield (dir, argv) for each non-cd segment, tracking `cd DIR` and subshell bounds.
 
-    Tracks `cd DIR` and `git -C DIR`. A dir containing `$` or a backtick can't be
-    resolved statically; it is yielded as-is so the caller can refuse it.
+    A dir containing `$` or a backtick can't be resolved statically; it is yielded
+    as-is so the caller can refuse or skip it.
     """
     stack = []
     for argv in segments(cmd):
         if argv == ["("]:
             stack.append(cwd)
-            continue
-        if argv == [")"]:
+        elif argv == [")"]:
             cwd = stack.pop() if stack else cwd
-            continue
-        if argv[0] == "cd" and len(argv) > 1:
+        elif argv[0] == "cd" and len(argv) > 1:
             cwd = argv[1] if "$" in argv[1] else os.path.join(cwd, os.path.expanduser(argv[1]))
-            continue
+        else:
+            yield cwd, argv
+
+
+def sync_calls(cmd, cwd):
+    """Yield (dir, subcommand, refs) for each git merge/pull/rebase that names a ref.
+
+    Tracks `cd DIR` (via walk) and `git -C DIR`.
+    """
+    for cwd, argv in walk(cmd, cwd):
         if argv[0] != "git":
             continue
         d, i = cwd, 1
@@ -285,8 +292,11 @@ def draft_mode(prefs=None):
         return False
 
 
-def creates_pr_without_repo(cmd):
-    return any((pr := gh_pr(argv)) and pr == ("create", False) for argv in segments(cmd))
+def pr_create_dirs(cmd, cwd):
+    """Yield the effective dir of each `gh pr create` that has no -R/--repo."""
+    for d, argv in walk(cmd, cwd):
+        if gh_pr(argv) == ("create", False):
+            yield d
 
 
 def unpinned_fork(cwd):
@@ -376,8 +386,9 @@ def check(cmd, cwd):
         return ("Blocked: PRs open ready for review, never as drafts. Drop --draft / --undo. "
                 "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`, "
                 "or set aec's pr_open_mode to draft.")
-    if creates_pr_without_repo(cmd):
-        fork = unpinned_fork(cwd)
+    for d in pr_create_dirs(cmd, cwd):
+        # A dir with $ or a backtick can't be resolved statically: skip, don't block.
+        fork = None if "$" in d or "`" in d else unpinned_fork(d)
         if fork:
             return (f"Blocked: {fork} has no `gh repo set-default`, so `gh pr create` would open the "
                     "PR on the upstream repo. Pass `-R <owner>/<repo>` or run "
