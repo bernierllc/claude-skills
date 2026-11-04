@@ -167,3 +167,6 @@ assert calls("env -u HOME git -C wt rebase origin/main") == [("/r/wt", "rebase",
 assert g.draft_violation("GH_TOKEN=x env gh pr create --draft")
 assert "--admin" in merge("GH_TOKEN=x gh pr merge 5 --admin", rollup=ok)
 assert calls("echo a=b; git merge origin/main") == [("/r", "merge", ["origin/main"])]  # only a leading assignment
+# Codex P2 on prevost #332: cd options and `--` come before the directory operand.
+assert calls("cd -P wt && git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]
+assert calls("cd -- wt && git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]

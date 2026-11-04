@@ -174,8 +174,11 @@ def walk(cmd, cwd):
             stack.append(cwd)
         elif argv == [")"]:
             cwd = stack.pop() if stack else cwd
-        elif argv[0] == "cd" and len(argv) > 1:
-            cwd = argv[1] if "$" in argv[1] else os.path.join(cwd, os.path.expanduser(argv[1]))
+        elif argv[0] == "cd":
+            # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word.
+            d = next((a for a in argv[1:] if not a.startswith("-")), None)
+            if d:
+                cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
         else:
             yield cwd, argv
 
