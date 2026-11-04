@@ -7,7 +7,7 @@ text is what the agent sees.
    nothing. Allowed when the PR is DIRTY (a real conflict) or BEHIND (the base
    requires up-to-date branches), and whenever there is no open PR or GitHub
    can't be asked. Override when a specific base commit is genuinely needed:
-   put `sync-base: <reason>` in the command (e.g. a trailing `# sync-base: ...`).
+   add a `# sync-base: <reason>` comment to the command.
 2. PRs open ready for review, never as drafts (`gh pr create --draft`,
    `gh pr ready --undo`), unless aec's `pr_open_mode` setting is `draft`
    (`~/.agents-environment-config/preferences.json`). Unset, unreadable or any
@@ -292,14 +292,23 @@ def gh_pr(argv):
     return GH_ALIASES.get(pos[1], pos[1]), has_repo
 
 
+def flag_on(argv, names):
+    """A gh (pflag) bool flag is on when bare (`--draft`, `-d`) or given a true value (`--draft=true`, `-d=1`)."""
+    for a in argv:
+        name, eq, value = a.partition("=")
+        if name in names and (not eq or value.lower() in ("true", "t", "1")):
+            return True
+    return False
+
+
 def draft_violation(cmd):
     for argv in segments(cmd):
         pr = gh_pr(argv)
         if not pr:
             continue
-        if pr[0] == "create" and any(a in ("--draft", "-d") or a.startswith("--draft=") for a in argv):
+        if pr[0] == "create" and flag_on(argv, ("--draft", "-d")):
             return True
-        if pr[0] == "ready" and "--undo" in argv:
+        if pr[0] == "ready" and flag_on(argv, ("--undo",)):
             return True
     return False
 
@@ -414,7 +423,7 @@ def check(cmd, cwd):
             return (f"Blocked: {fork} has no `gh repo set-default`, so `gh pr create` would open the "
                     "PR on the upstream repo. Pass `-R <owner>/<repo>` or run "
                     "`gh repo set-default <owner>/<repo>` first.")
-    if "sync-base:" in cmd:
+    if re.search(r"(^|\s)#\s*sync-base:", cmd):  # the documented override is a shell comment, not any substring
         return None
     for d, sub, refs in sync_calls(cmd, cwd):
         if "$" in d or "`" in d:

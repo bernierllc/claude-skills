@@ -178,3 +178,9 @@ assert calls("pushd wt && git merge origin/main") == [("$DIRSTACK", "merge", ["o
 assert calls("env -C wt git merge origin/main; git merge origin/main") == [("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
 assert calls("env --chdir=wt git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]
 assert g.draft_violation("env -C wt gh pr create --draft")
+# Codex P2s on prevost #332, round 6: pflag bool values on the draft flags, and the override is a comment, not a substring.
+assert g.draft_violation("gh pr create --draft=true") and g.draft_violation("gh pr create -d=1")
+assert g.draft_violation("gh pr ready 5 --undo=true")
+assert not g.draft_violation("gh pr create --draft=false") and not g.draft_violation("gh pr ready 5 --undo=false")
+assert g.check("git commit -m 'document sync-base: behavior' && git -C wt/$w merge origin/staging", "/r") is not None
+assert g.check("git -C wt/$w merge origin/staging # sync-base: need abc123", "/r") is None
