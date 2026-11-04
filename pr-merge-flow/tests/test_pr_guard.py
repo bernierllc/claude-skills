@@ -170,3 +170,11 @@ assert calls("echo a=b; git merge origin/main") == [("/r", "merge", ["origin/mai
 # Codex P2 on prevost #332: cd options and `--` come before the directory operand.
 assert calls("cd -P wt && git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]
 assert calls("cd -- wt && git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]
+# Codex P2s on prevost #332, round 5: directory changes the guard can't model fail closed instead of being ignored.
+assert calls("cd - && git merge origin/main") == [("$OLDPWD", "merge", ["origin/main"])]
+assert calls("cd && git merge origin/main") == [("$HOME", "merge", ["origin/main"])]
+assert calls("pushd wt && git merge origin/main") == [("$DIRSTACK", "merge", ["origin/main"])]
+# `env -C DIR cmd` runs that one command in DIR; the next command is back in the original directory.
+assert calls("env -C wt git merge origin/main; git merge origin/main") == [("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
+assert calls("env --chdir=wt git merge origin/main") == [("/r/wt", "merge", ["origin/main"])]
+assert g.draft_violation("env -C wt gh pr create --draft")

@@ -149,12 +149,18 @@ def segments(cmd):
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
                 argv.pop(0)
+            chdir = None
             if argv and argv[0] == "env":
                 argv.pop(0)
                 while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
-                    del argv[:2 if argv[0] == "-u" else 1]
+                    if argv[0] in ("-C", "--chdir") and len(argv) > 1:
+                        chdir = argv[1]
+                    elif argv[0].startswith("--chdir="):
+                        chdir = argv[0].split("=", 1)[1]
+                    del argv[:2 if argv[0] in ("-u", "-C", "--chdir") else 1]
             if argv:
-                yield argv
+                # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
+                yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")
@@ -174,11 +180,17 @@ def walk(cmd, cwd):
             stack.append(cwd)
         elif argv == [")"]:
             cwd = stack.pop() if stack else cwd
-        elif argv[0] == "cd":
-            # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word.
+        elif argv[0] in ("cd", "pushd", "popd"):
+            # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word. A bare `cd` ($HOME),
+            # `cd -` ($OLDPWD) and pushd/popd (the dir stack) go where the guard can't see: left unresolved.
             d = next((a for a in argv[1:] if not a.startswith("-")), None)
-            if d:
-                cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
+            if argv[0] != "cd":
+                d = "$DIRSTACK"
+            elif "-" in argv[1:]:
+                d = "$OLDPWD"
+            elif d is None:
+                d = "$HOME"
+            cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
         else:
             yield cwd, argv
 
