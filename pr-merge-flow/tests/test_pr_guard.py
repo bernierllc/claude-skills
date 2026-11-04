@@ -161,3 +161,9 @@ assert forks("cd /some/fork && gh pr create --title x") == ["/some/fork"]
 assert forks("(cd /some/fork && gh pr create --title x) && gh pr create -R o/r --title y") == ["/some/fork"]
 assert forks("gh pr create --title x") == ["/hook"]
 assert forks('cd "$DIR" && gh pr create --title x') == []
+# Codex P2 on prevost #332: `env` and NAME=value prefixes don't hide the command.
+assert calls("GIT_DIR=x env -i FOO=1 git merge origin/main") == [("/r", "merge", ["origin/main"])]
+assert calls("env -u HOME git -C wt rebase origin/main") == [("/r/wt", "rebase", ["origin/main"])]
+assert g.draft_violation("GH_TOKEN=x env gh pr create --draft")
+assert "--admin" in merge("GH_TOKEN=x gh pr merge 5 --admin", rollup=ok)
+assert calls("echo a=b; git merge origin/main") == [("/r", "merge", ["origin/main"])]  # only a leading assignment

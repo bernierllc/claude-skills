@@ -43,6 +43,7 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
+ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
@@ -145,8 +146,13 @@ def segments(cmd):
     argv = []
     for t in tokens + [";"]:
         if t and set(t) <= OPERATORS:
-            while argv and argv[0] in KEYWORDS:
+            # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
+            while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
                 argv.pop(0)
+            if argv and argv[0] == "env":
+                argv.pop(0)
+                while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
+                    del argv[:2 if argv[0] == "-u" else 1]
             if argv:
                 yield argv
             argv = []
