@@ -199,6 +199,14 @@ assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
 assert mg.extract_repo("gh pr merge 7 -Rowner/other --squash") == "owner/other"
 assert mg.extract_repo("gh -Rowner/other pr merge 7") == "owner/other"
+# -R inside --body text must not count as the repository flag
+assert mg.extract_repo("gh pr merge 7 --body 'note -R owner/safe'") is None
+segs, err = mg.iter_merge_segments(
+    "gh -R owner/safe pr merge 1 | gh -R owner/target pr merge 2", "/tmp"
+)
+assert err is None and len(segs) == 2
+assert segs[0][0] == "gh -R owner/safe pr merge 1"
+assert segs[1][0] == "gh -R owner/target pr merge 2"
 scoped = mg.check_command("env -C /workspace/other gh pr merge 42", cwd="/tmp")
 assert scoped and "command-scoped" in scoped
 _orig_one = mg.check_one

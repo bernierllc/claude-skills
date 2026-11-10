@@ -25,8 +25,6 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(
     r"\bgh(?:\s+-R(?:=\S+|\s+\S+|\S+)|\s+--repo(?:=\S+|\s+\S+))*\s+pr\s+merge\b"
 )
-# gh accepts `-R owner/repo`, `-R=owner/repo`, and attached `-Rowner/repo`.
-REPO_FLAG = re.compile(r"(?:(?:^|\s)-R(?:=|\s*)|--repo(?:=|\s+))(\S+)")
 PULL_URL = re.compile(
     r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
     re.I,
@@ -36,8 +34,8 @@ SCOPED_DIR_RE = re.compile(
     r"(?:(?:^|[\s;|&])env\s+-C\s|(?:^|[\s;|&])\(\s*cd\s)",
     re.I,
 )
-# Value-taking flags from `gh pr merge --help` — skip their args so they are not
-# mistaken for a branch/URL selector.
+# Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
+# Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
     {
         "--match-head-commit",
@@ -53,12 +51,43 @@ MERGE_VALUE_FLAGS = frozenset(
         "--repo",
     }
 )
+# Shell chain split: keep `||` distinct from `|` via lookaround.
+CHAIN_SPLIT = re.compile(r"\s*(?:&&|\|\||(?<!\|)\|(?!\|)|;|\n|&)\s*")
+
+
+def _shell_tokens(cmd: str) -> list[str]:
+    try:
+        return shlex.split(cmd, posix=True)
+    except ValueError:
+        return cmd.split()
 
 
 def extract_repo(cmd: str) -> str | None:
-    m_repo = REPO_FLAG.search(cmd)
-    if m_repo:
-        return m_repo.group(1).strip("'\"")
+    """Return -R/--repo from the argv, never from quoted flag values (e.g. --body)."""
+    tokens = _shell_tokens(cmd)
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("-R", "--repo"):
+            if i + 1 < len(tokens):
+                return tokens[i + 1]
+            return None
+        if tok.startswith("--repo="):
+            return tok.split("=", 1)[1]
+        if tok.startswith("-R") and tok != "-R":
+            return tok[2:]
+        if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+                continue
+            # Consume value-taking flags (including -R handled above).
+            base = tok
+            if base in MERGE_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
+            continue
+        i += 1
     return None
 
 
@@ -67,14 +96,20 @@ def extract_merge_selector(cmd: str) -> str | None:
     m = re.search(r"\bpr\s+merge\b(.*)$", cmd, re.S)
     if not m:
         return None
-    try:
-        tokens = shlex.split(m.group(1), posix=True)
-    except ValueError:
-        tokens = m.group(1).split()
+    tokens = _shell_tokens(m.group(1))
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith("-"):
+            if tok in ("-R", "--repo"):
+                i += 2
+                continue
+            if tok.startswith("-R") and tok != "-R":
+                i += 1
+                continue
+            if tok.startswith("--repo="):
+                i += 1
+                continue
             if "=" in tok:
                 i += 1
                 continue
@@ -83,7 +118,7 @@ def extract_merge_selector(cmd: str) -> str | None:
                 continue
             i += 1
             continue
-        return tok.strip("'\"")
+        return tok
     return None
 
 
@@ -203,15 +238,12 @@ def iter_merge_segments(
     cwd = start_cwd
     unresolved_cd = False
     out: list[tuple[str, str]] = []
-    for part in re.split(r"\s*(?:&&|\|\||;|\n|&)\s*", cmd):
+    for part in CHAIN_SPLIT.split(cmd):
         part = part.strip()
         if not part:
             continue
         if not MERGE_RE.search(part):
-            try:
-                first = shlex.split(part, posix=True)[:1]
-            except ValueError:
-                first = part.split()[:1]
+            first = _shell_tokens(part)[:1]
             if first and first[0] == "popd":
                 unresolved_cd = True
                 continue
@@ -226,11 +258,11 @@ def iter_merge_segments(
                 unresolved_cd = False
                 continue
         if MERGE_RE.search(part):
-            # Multiple merges left in one segment (unusual) → require -R.
-            if len(re.findall(r"\bpr\s+merge\b", part)) > 1 and not extract_repo(part):
+            # Multiple merges in one segment (should be rare after |/|| splits).
+            if len(re.findall(r"\bpr\s+merge\b", part)) > 1:
                 return [], (
                     "review-gate: multiple `gh pr merge` invocations in one shell "
-                    "segment; pass `-R owner/repo` on each or split the command"
+                    "segment; run them as separate commands"
                 )
             if unresolved_cd and not extract_repo(part):
                 return [], (
