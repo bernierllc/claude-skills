@@ -601,8 +601,18 @@ def _env_key_base(key: str) -> str:
     return key
 
 
+def _assignment_is_append(tok: str) -> bool:
+    """True when ``tok`` uses ``+=`` rather than plain ``=``."""
+    eq = tok.find("=")
+    return eq > 0 and tok[eq - 1] == "+"
+
+
 def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Strip leading VAR=value tokens; return (rest, assignments)."""
+    """Strip leading VAR=value tokens; return (rest, assignments).
+
+    Honors ``NAME+=value`` by concatenating onto a prior leading value for
+    the same name (Bash append behavior).
+    """
     env: dict[str, str] = {}
     i = 0
     while i < len(tokens):
@@ -611,7 +621,10 @@ def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, s
             break
         key = m.group(1)
         val = m.group(2)
-        env[key] = val
+        if _assignment_is_append(tokens[i]):
+            env[key] = env.get(key, "") + val
+        else:
+            env[key] = val
         i += 1
     return tokens[i:], env
 
@@ -662,7 +675,10 @@ def _env_wrapper_state(
         m_assign = ASSIGNMENT_RE.match(tok)
         if m_assign:
             key, val = m_assign.group(1), m_assign.group(2)
-            out[key] = val
+            if _assignment_is_append(tok):
+                out[key] = out.get(key, "") + val
+            else:
+                out[key] = val
             cleared.discard(key)
             cleared.discard(_env_key_base(key))
             i += 1
@@ -984,20 +1000,72 @@ def _part_fully_dynamic_merge_prefix(part: str) -> bool:
     return len(words) == 3 and all(_command_name_dynamic(w) for w in words)
 
 
+def _apply_concat_assignment(
+    concat: dict[str, str], assigned: set[str], tok: str
+) -> None:
+    """Update ``concat``/``assigned`` for one ``NAME=value`` / ``NAME+=value`` token."""
+    m = ASSIGNMENT_RE.match(tok)
+    if not m:
+        return
+    name, val = m.group(1), m.group(2)
+    plain = _dequote_shell_text(val.strip("'\""))
+    if _assignment_is_append(tok):
+        concat[name] = concat.get(name, "") + plain
+    else:
+        concat[name] = plain
+    word = _assignment_value_merge_word(concat[name])
+    if word:
+        assigned.add(word)
+
+
+def _part_apply_concat_assignments(
+    part: str, concat: dict[str, str], assigned: set[str]
+) -> None:
+    """Apply ``=`` / ``+=`` assignments in ``part`` onto concat state."""
+    tokens = _shell_tokens(part)
+    i = 0
+    while i < len(tokens) and ASSIGNMENT_RE.match(tokens[i]):
+        _apply_concat_assignment(concat, assigned, tokens[i])
+        i += 1
+    rest = tokens[i:]
+    j = 0
+    while j < len(rest) and rest[j] in SHELL_PREFIX_KEYWORDS:
+        j += 1
+    if j >= len(rest):
+        return
+    nested = _nested_case_or_arm_body(rest, j)
+    if nested is not None:
+        _part_apply_concat_assignments(nested, concat, assigned)
+        return
+    head = rest[j]
+    if ASSIGNMENT_RE.match(head):
+        _apply_concat_assignment(concat, assigned, head)
+        return
+    if head in ("export", "declare", "typeset", "local", "readonly"):
+        for tok in rest[j + 1 :]:
+            if tok.startswith("-") or (tok.startswith("+") and "=" not in tok):
+                continue
+            if ASSIGNMENT_RE.match(tok):
+                _apply_concat_assignment(concat, assigned, tok)
+
+
 def variable_assembled_merge(cmd: str) -> bool:
     """True when ``gh pr merge`` is assembled via variables across segments.
 
     Example: ``c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" 42 -R owner/repo`` —
     no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
     ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
-    Also covers ``printf -v c gh; …`` and ``read m <<< merge; …``.
+    Also covers ``printf -v c gh; …``, ``read m <<< merge; …``, and append
+    stitching such as ``c=g; c+=h; m=mer; m+=ge; …``.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(is_gh_pr_merge(p) for p in parts):
         return False
     assigned: set[str] = set()
+    concat: dict[str, str] = {}
     for part in parts:
         assigned |= _part_assigns_merge_assembly_words(part)
+        _part_apply_concat_assignments(part, concat, assigned)
     if not ({"gh", "pr", "merge"} <= assigned):
         return False
     return any(_part_fully_dynamic_merge_prefix(p) for p in parts)
