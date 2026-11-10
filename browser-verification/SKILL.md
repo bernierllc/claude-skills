@@ -1,7 +1,7 @@
 ---
 name: browser-verification
 description: Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes
-version: 2.4.0
+version: 2.4.1
 dependencies:
   skills:
     - name: verification-writer
@@ -663,5 +663,7 @@ Verification-writer will re-analyze the affected sections against current code a
 - Multiple failures in the same section suggest a systemic issue — consider logging instead of fixing individually
 
 ## Installed verification directory
+
+Runtime prerequisite: Python 3 must be available as `python3` on PATH. Preflight checks it explicitly before reading the directory configuration.
 
 Read `.aec/directories.json` before using verification docs. Its `verification` value is the shared directory selected during AEC setup; absent configuration defaults to `docs/verification`. All documentation paths in this skill are relative to that chosen root. The scripts read this configuration automatically; explicit API matrix file arguments still take precedence.

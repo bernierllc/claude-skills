@@ -29,6 +29,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '%s\n' "ERROR: $SKILL_NAME requires Python 3 to read the verification directory setting. Install Python 3 with python3 on PATH, then rerun preflight." >&2
+  exit 1
+fi
+
 VERIFICATION_DIR=$(python3 - "$ROOT" <<'PYTHON'
 import json
 import sys
