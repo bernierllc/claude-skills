@@ -462,6 +462,22 @@ assert mg.dynamic_merge_argv(dyn_repo_flag)
 dyn_repo_err = mg.check_command(dyn_repo_flag, cwd="/tmp")
 assert dyn_repo_err and "dynamic argv" in dyn_repo_err
 assert not mg.dynamic_merge_argv("gh -R owner/target pr merge 42 --auto")
+# Brace expansion can inject extra -R flags after the inspected ones
+brace_cmd = "gh -R owner/safe pr merge 1 {-Rowner/safe,-Rowner/target}"
+assert mg.dynamic_merge_argv(brace_cmd)
+brace_err = mg.check_command(brace_cmd, cwd="/tmp")
+assert brace_err and ("dynamic" in brace_err or "argv" in brace_err)
+assert mg.redefines_gh(
+    "alias -- gh='/usr/bin/gh -R owner/target pr merge 2'; "
+    "gh -R owner/safe pr merge 1"
+)
+alias_opt_err = mg.check_command(
+    "shopt -s expand_aliases; "
+    "alias -- gh='/usr/bin/gh -R owner/target pr merge 2'; "
+    "gh -R owner/safe pr merge 1",
+    cwd="/tmp",
+)
+assert alias_opt_err and ("alias" in alias_opt_err or "function" in alias_opt_err)
 blocked = mg.check_command(
     'x=pr; y=merge; gh "$x" "$y" 42 -R owner/target', cwd="/tmp"
 )

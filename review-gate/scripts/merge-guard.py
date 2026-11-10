@@ -36,7 +36,11 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
-GH_ALIAS_RE = re.compile(r"(?:^|[\n;&|])\s*alias\s+gh=", re.I)
+# ``alias gh=…`` / ``alias -- gh=…`` / ``alias -p gh=…``
+GH_ALIAS_RE = re.compile(
+    r"(?:^|[\n;&|])\s*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
+    re.I,
+)
 GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
 # Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
 SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time", "env"})
@@ -46,7 +50,8 @@ PREFIX_FUNC_RE = re.compile(
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*alias\s+(?:command|builtin|exec|time|env)=",
+    r"(?:^|[\n;&|])\s*alias(?:\s+(?:--|-[\w]+))*\s+"
+    r"(?:command|builtin|exec|time|env)=",
     re.I,
 )
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
@@ -610,8 +615,8 @@ def _command_name_dynamic(tok: str) -> bool:
     # `$…`, backticks, tilde, ANSI-C residue (`$\x67\x68` after shlex).
     if "$" in tok or "`" in tok or tok.startswith("~") or "\\" in tok:
         return True
-    # Pathname expansion: `./[g]h`, `gh*`, `?h`, …
-    if any(c in tok for c in "*?[]"):
+    # Pathname / brace expansion: `./[g]h`, `gh*`, `?h`, `{-Ra,-Rb}`, …
+    if any(c in tok for c in "*?[]{}"):
         return True
     return False
 
