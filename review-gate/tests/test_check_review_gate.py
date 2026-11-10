@@ -157,6 +157,14 @@ assert mg.extract_pr_and_repo("gh --repo owner/repo pr merge 5") == (5, "owner/r
 assert mg.MERGE_RE.search("gh pr merge 1 --squash")
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
+assert mg.has_override("gh pr merge 1  # review-gate-ok: matt said so")
+# Quoted body text must not count as the Bash escape comment
+assert not mg.has_override(
+    "gh pr merge 42 --body 'notes # review-gate-ok: placeholder'"
+)
+assert not mg.has_override(
+    'gh pr merge 42 --body "notes # review-gate-ok: placeholder"'
+)
 # cd before merge must resolve the target repo from the post-cd directory
 segs, err = mg.iter_merge_segments(
     "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
@@ -209,10 +217,54 @@ assert segs[0][0] == "gh -R owner/safe pr merge 1"
 assert segs[1][0] == "gh -R owner/target pr merge 2"
 scoped = mg.check_command("env -C /workspace/other gh pr merge 42", cwd="/tmp")
 assert scoped and "command-scoped" in scoped
+# -R on a later merge must not waive scoped-dir on an earlier merge segment
+segs, err = mg.iter_merge_segments(
+    "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"
+)
+assert segs == [] and err and "command-scoped" in err
+# Directory change behind shell control keywords fails closed without -R
+segs, err = mg.iter_merge_segments(
+    "if cd /workspace/other; then gh pr merge 42; fi", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+segs, err = mg.iter_merge_segments(
+    "if cd /workspace/other; then gh -R owner/r pr merge 42; fi", "/tmp/start"
+)
+assert err is None and len(segs) == 1
+assert mg.extract_repo(segs[0][0]) == "owner/r"
 _orig_one = mg.check_one
 mg.check_one = lambda segment, cwd=None: None
 try:
     assert mg.check_command("env -C /tmp gh -R owner/other pr merge 42", cwd="/tmp") is None
+    scoped_chain = mg.check_command(
+        "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2",
+        cwd="/tmp",
+    )
+    assert scoped_chain and "command-scoped" in scoped_chain
+    # Override in quotes must still run check_one; real comment must short-circuit
+    _called = {"n": 0}
+
+    def _count(segment, cwd=None):
+        _called["n"] += 1
+        return "blocked"
+
+    mg.check_one = _count
+    assert (
+        mg.check_command(
+            "gh pr merge 42 --body 'notes # review-gate-ok: placeholder'",
+            cwd="/tmp",
+        )
+        == "blocked"
+    )
+    assert _called["n"] == 1
+    assert (
+        mg.check_command(
+            "gh pr merge 42 --squash  # review-gate-ok: approved",
+            cwd="/tmp",
+        )
+        is None
+    )
+    assert _called["n"] == 1
 finally:
     mg.check_one = _orig_one
 

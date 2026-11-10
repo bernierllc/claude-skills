@@ -22,6 +22,8 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
+# Directory builtins appearing as a shell word (not first-token-only).
+DIR_WORD_RE = re.compile(r"(?:^|[\s;|&])(?:cd|pushd|popd)(?:\s|$)")
 MERGE_RE = re.compile(
     r"\bgh(?:\s+-R(?:=\S+|\s+\S+|\S+)|\s+--repo(?:=\S+|\s+\S+))*\s+pr\s+merge\b"
 )
@@ -60,6 +62,51 @@ def _shell_tokens(cmd: str) -> list[str]:
         return shlex.split(cmd, posix=True)
     except ValueError:
         return cmd.split()
+
+
+def shell_comments(cmd: str) -> list[str]:
+    """Return `#…` shell comments, ignoring `#` inside single/double quotes."""
+    comments: list[str] = []
+    i = 0
+    in_single = False
+    in_double = False
+    while i < len(cmd):
+        c = cmd[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < len(cmd):
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or cmd[i - 1].isspace()):
+            end = cmd.find("\n", i)
+            if end < 0:
+                end = len(cmd)
+            comments.append(cmd[i:end])
+            i = end
+            continue
+        i += 1
+    return comments
+
+
+def has_override(cmd: str) -> bool:
+    """True only when `# review-gate-ok:` appears in a real shell comment."""
+    return any(OVERRIDE.search(c) for c in shell_comments(cmd))
 
 
 def extract_repo(cmd: str) -> str | None:
@@ -257,12 +304,21 @@ def iter_merge_segments(
                 cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
                 unresolved_cd = False
                 continue
+            # `if cd …`, `then pushd …`, etc. — not first-token builtins we model.
+            if DIR_WORD_RE.search(part):
+                unresolved_cd = True
+                continue
         if MERGE_RE.search(part):
             # Multiple merges in one segment (should be rare after |/|| splits).
             if len(re.findall(r"\bpr\s+merge\b", part)) > 1:
                 return [], (
                     "review-gate: multiple `gh pr merge` invocations in one shell "
                     "segment; run them as separate commands"
+                )
+            if SCOPED_DIR_RE.search(part) and not extract_repo(part):
+                return [], (
+                    "review-gate: command-scoped directory change detected "
+                    "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
                 )
             if unresolved_cd and not extract_repo(part):
                 return [], (
@@ -298,20 +354,18 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if not MERGE_RE.search(cmd):
         return None
-    if OVERRIDE.search(cmd):
+    if has_override(cmd):
         return None
-    # After multiple review rounds on shell cwd parsing: fail closed for
-    # command-scoped dirs we don't model (env -C, `( cd … )`) unless `-R` is set.
-    if SCOPED_DIR_RE.search(cmd) and not extract_repo(cmd):
-        return (
-            "review-gate: command-scoped directory change detected "
-            "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
-        )
     start = cwd or os.getcwd()
     segments, seg_err = iter_merge_segments(cmd, start)
     if seg_err:
         return seg_err
     if not segments:
+        if SCOPED_DIR_RE.search(cmd) and not extract_repo(cmd):
+            return (
+                "review-gate: command-scoped directory change detected "
+                "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
+            )
         return check_one(cmd, start)
     for segment, seg_cwd in segments:
         err = check_one(segment, seg_cwd)
