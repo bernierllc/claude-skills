@@ -189,6 +189,20 @@ assert not mg.has_override(
 )
 assert not mg.has_override("# review-gate-ok: prior line\ngh pr merge 42")
 assert mg.has_override("gh pr merge 42  # review-gate-ok: attached")
+# Nested process-substitution comments are not outer-shell overrides
+assert not mg.segment_has_override(
+    "gh -R owner/target pr merge 42 --auto 3< <(printf x # review-gate-ok: fake\n)"
+)
+# GIT_DIR without -R fails closed; with -R is allowed through segment policy
+assert mg.sets_git_location("GIT_DIR=/workspace/target/.git gh pr merge 42")
+git_dir_err = mg.check_command(
+    "GIT_DIR=/workspace/target/.git gh pr merge 42", cwd="/tmp"
+)
+assert git_dir_err and "GIT_DIR" in git_dir_err
+segs, err = mg.iter_merge_segments(
+    "GIT_DIR=/workspace/target/.git gh -R owner/r pr merge 42", "/tmp"
+)
+assert err is None and len(segs) == 1
 # Override on one merge must not waive a second merge in the same command
 assert mg.segment_has_override("gh -R owner/safe pr merge 1  # review-gate-ok: approved")
 assert not mg.segment_has_override("gh -R owner/target pr merge 2")
@@ -564,16 +578,17 @@ finally:
 
 yml = (Path(__file__).parent.parent / "templates" / "review-gate.yml").read_text()
 assert "pull_request_target:" in yml
+assert "pull_request_review:" not in yml
+assert "pull_request_review_comment:" not in yml
 assert "contents/scripts/check-review-gate.py?ref=$ref" in yml
 assert "DEFAULT_BRANCH" in yml
 assert 'for ref in "$BASE_SHA" "$DEFAULT_BRANCH"' in yml
 assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml
-assert 'EVENT_NAME: ${{ github.event_name }}' in yml
-assert 'if [ "$EVENT_NAME" = "pull_request_target" ]' in yml
-assert "cancel-ci-on-finding" in yml
-assert "Not a P0/P1 finding" in yml
+assert "cancel-ci-on-finding" not in yml
+assert "gate-refresh-on-comment" not in yml
+assert "actions: write" not in yml
 
 skill = (Path(__file__).parent.parent / "SKILL.md").read_text()
 assert '$(aec path skill review-gate)/scripts/install-workflow.py' in skill

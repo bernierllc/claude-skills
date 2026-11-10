@@ -1,7 +1,7 @@
 ---
 name: review-gate
-description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.26
+description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
+version: 1.0.27
 author: Bernier LLC
 ---
 
@@ -45,24 +45,18 @@ aec run-script skill:review-gate doctor-review-gate.py
 
 ## What the workflow does
 
-### Job `cancel-ci-on-finding`
+Triggers **only** `pull_request_target` so the workflow YAML always comes from the PR **base** (trusted). Same-repo `pull_request_review` / `pull_request_review_comment` would execute PR-modified workflow code with write tokens — not used. After closing a P2 reply with no push, touch the PR (edit body / label) or push to re-run the gate.
 
-On `pull_request_review_comment` created: cancel in-progress non-gate CI **only** for new top-level P0/P1 findings. Replies, closing tokens (Notion / `fixed in` / `not-a-finding:`), and P2-only comments do **not** cancel CI — those paths often need no new head, and a cancelled required check would otherwise stick.
+### Job `gate` (display name / Checks API name `Review Gate`)
 
-### Job `gate` (display name `Review Gate`)
-
-On `pull_request_target` and `pull_request_review`: loads `scripts/check-review-gate.py` from the PR **base** SHA (never the PR head) and fails unless all hold:
+Loads `scripts/check-review-gate.py` from the PR **base** SHA (never the PR head) and fails unless all hold:
 
 1. A completed review from the exact Codex bot login `chatgpt-codex-connector` exists on the **current head** (not body text / substring logins), **or** the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`) **and includes the current `headRefOid`** (full or ≥7-char prefix) so a stale fallback cannot pass after a new push.
 2. PR body contains a `## Review` section.
 3. Every review thread whose **root** comment matches `\bp2\b` has a reply with a closing token: Notion link, `fixed in <sha>`, or `not-a-finding: …` (all thread/comment pages are fetched).
 4. When `base` is `main`: label `review:high` or `review:ultra` is present.
 
-`pull_request_review` job conclusions are eligible for required checks. `pull_request_target` attaches the Actions job to the **base** SHA, so that path also publishes a Checks API run named `Review Gate` on the PR head (opened / synchronize / label / edit).
-
-### Job `gate-refresh-on-comment`
-
-`pull_request_review_comment` is **not** an eligible Actions event for required checks. That job re-evaluates the gate and publishes a Checks API run named `Review Gate` on the head SHA so a closing reply can clear a prior failure without a dummy push.
+`pull_request_target` attaches the Actions job to the **base** SHA, so the job always publishes a Checks API run named `Review Gate` on the PR head (opened / synchronize / label / edit).
 
 Unresolved threads are **not** checked here — that is GitHub's `required_review_thread_resolution` on the ruleset (free, instant on resolve).
 

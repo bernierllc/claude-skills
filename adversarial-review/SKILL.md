@@ -63,7 +63,7 @@ One local adversarial pass **before** the first Codex review (exhaust pipeline/s
 
 In T3: hand the PR to `Traffic Cop · <repo>` (`traffic-cop.md`). Do not self-merge around a missing cop.
 
-Install **`review-gate`** in the same repos so merge/CI enforcement matches this loop (conversation resolution, gate check, cancel-in-progress CI on new review comments).
+Install **`review-gate`** in the same repos so merge/CI enforcement matches this loop (conversation resolution + trusted `Review Gate` check).
 
 ## Related
 

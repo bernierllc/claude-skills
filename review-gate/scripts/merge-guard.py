@@ -63,12 +63,14 @@ def _shell_tokens(cmd: str) -> list[str]:
 
 
 def shell_comments(cmd: str) -> list[str]:
-    """Return `#…` shell comments, ignoring `#` inside single/double quotes."""
+    """Return `#…` shell comments at depth 0 (not inside quotes or `<(…)` / `$(…)`)."""
     comments: list[str] = []
     i = 0
     in_single = False
     in_double = False
-    while i < len(cmd):
+    depth = 0
+    n = len(cmd)
+    while i < n:
         c = cmd[i]
         if in_single:
             if c == "'":
@@ -76,7 +78,7 @@ def shell_comments(cmd: str) -> list[str]:
             i += 1
             continue
         if in_double:
-            if c == "\\" and i + 1 < len(cmd):
+            if c == "\\" and i + 1 < n:
                 i += 2
                 continue
             if c == '"':
@@ -91,10 +93,27 @@ def shell_comments(cmd: str) -> list[str]:
             in_double = True
             i += 1
             continue
-        if c == "#" and (i == 0 or cmd[i - 1].isspace()):
+        # Nested process / command substitutions and subshells.
+        if c in "<>" and i + 1 < n and cmd[i + 1] == "(":
+            depth += 1
+            i += 2
+            continue
+        if c == "$" and i + 1 < n and cmd[i + 1] == "(":
+            depth += 1
+            i += 2
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")" and depth > 0:
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and c == "#" and (i == 0 or cmd[i - 1].isspace()):
             end = cmd.find("\n", i)
             if end < 0:
-                end = len(cmd)
+                end = n
             comments.append(cmd[i:end])
             i = end
             continue
@@ -407,6 +426,20 @@ def gh_is_direct_command(part: str) -> bool:
 def scoped_dir_requires_repo(part: str) -> bool:
     """True when the segment uses env/subshell chdir we refuse to model without -R."""
     return env_wraps_merge(part) or bool(SUBSHELL_CD_RE.search(part))
+
+
+# Git location overrides change which repo `gh` sees without `-R`.
+GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"})
+
+
+def sets_git_location(part: str) -> bool:
+    """True when the command sets GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR."""
+    tokens = _shell_tokens(part)
+    rest, leading = _skip_leading_assignments(tokens)
+    if any(k in GIT_LOCATION_VARS for k in leading):
+        return True
+    env_assigns, _cleared_host, _cleared_repo = _env_wrapper_state(rest)
+    return any(k in GIT_LOCATION_VARS for k in env_assigns)
 
 
 def _repo_operand_unresolvable(repo: str | None) -> bool:
@@ -824,6 +857,11 @@ def iter_merge_segments(
                 "review-gate: command-scoped directory change detected "
                 "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
             )
+        if sets_git_location(part) and not has_literal_repo(part):
+            return [], (
+                "review-gate: GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR without literal "
+                "`-R owner/repo`; pass `-R` (git location env is not modeled)"
+            )
         if compound and not has_literal_repo(part):
             return [], COMPOUND_MERGE_MSG
         # Always evaluate against the tool cwd; literal -R selects the repo.
@@ -877,6 +915,11 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             return (
                 "review-gate: command-scoped directory change detected "
                 "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
+            )
+        if sets_git_location(cmd) and not has_literal_repo(cmd):
+            return (
+                "review-gate: GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR without literal "
+                "`-R owner/repo`; pass `-R` (git location env is not modeled)"
             )
         return check_one(cmd, start)
     for segment, seg_cwd in segments:

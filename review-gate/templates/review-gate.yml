@@ -1,82 +1,34 @@
-# Review Gate — required check + CI cancel on new review findings.
+# Review Gate — required check on PR head (trusted workflow code only).
 # Installed from bernierllc/claude-skills skill `review-gate`.
 # Pair with GitHub ruleset pull_request.required_review_thread_resolution: true.
 #
-# Security: gate jobs never execute PR-head code. They load
-# scripts/check-review-gate.py from the PR base SHA first, then fall back to the
-# repository default branch (so staging PRs work after installing on main only).
-# pull_request_target runs this workflow from the base branch.
+# Security: only `pull_request_target` so the workflow file always comes from the
+# PR base (never the merge commit). Same-repo `pull_request_review` /
+# `pull_request_review_comment` would run PR-modified workflow YAML with
+# checks/actions write — removed on purpose. Gate jobs never execute PR-head
+# code; they load scripts/check-review-gate.py from the PR base SHA first, then
+# the repository default branch.
 #
-# Required-check name is the job display name "Review Gate" (pull_request_review)
-# or the Checks API check run of the same name. pull_request_target attaches the
-# Actions job to the *base* SHA, so that path also publishes Checks API on the
-# PR head (same as the review-comment refresh path).
+# Required-check context is the Checks API check run named "Review Gate"
+# published on pull_request.head.sha (Actions job alone attaches to the base).
 name: Review Gate
 
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize, edited, labeled, unlabeled]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
 
 permissions:
   contents: read
   pull-requests: read
-  actions: write
   checks: write
 
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  group: review-gate-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Only cancel CI for new top-level P0/P1 findings (they need a new head).
-  # Closing replies / Notion deferrals / P2-only comments must not cancel required
-  # CI — those paths have no commit to restart cancelled jobs.
-  cancel-ci-on-finding:
-    if: github.event_name == 'pull_request_review_comment' && github.event.action == 'created'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Cancel in-progress CI when a P0/P1 finding lands
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          IN_REPLY_TO: ${{ github.event.comment.in_reply_to_id }}
-        run: |
-          set -euo pipefail
-          if [ -n "${IN_REPLY_TO}" ] && [ "${IN_REPLY_TO}" != "null" ]; then
-            echo "Reply comment — skip CI cancel (no new head expected)"
-            exit 0
-          fi
-          if printf '%s' "$COMMENT_BODY" | grep -qiE 'notion\.(so|com)/|fixed in|not-a-finding:'; then
-            echo "Closing token — skip CI cancel"
-            exit 0
-          fi
-          if ! printf '%s' "$COMMENT_BODY" | grep -qiE '(\[P0\]|\[P1\]|\bP0\b|\bP1\b)'; then
-            echo "Not a P0/P1 finding — skip CI cancel"
-            exit 0
-          fi
-          ids=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&status=in_progress&per_page=50" \
-            --jq '.workflow_runs[] | select(.name != "Review Gate") | .id')
-          ids_q=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&status=queued&per_page=50" \
-            --jq '.workflow_runs[] | select(.name != "Review Gate") | .id')
-          for id in $ids $ids_q; do
-            echo "Cancelling run $id"
-            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" || true
-          done
-
-  # pull_request_review: Actions job conclusion is eligible for required checks.
-  # pull_request_target: job is attached to the base SHA — also publish Checks API
-  # on the PR head so synchronize / opened / label paths clear the required context.
   gate:
     name: Review Gate
-    if: >
-      github.event_name == 'pull_request_target' ||
-      github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     steps:
       - name: Run trusted review-gate checker
@@ -85,7 +37,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
-          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -110,61 +61,8 @@ jobs:
           rc=$?
           set -e
           printf '%s\n' "$out"
-          if [ "$EVENT_NAME" = "pull_request_target" ]; then
-            if [ "$rc" -eq 0 ]; then
-              conclusion=success
-              title="review-gate ok"
-            else
-              conclusion=failure
-              title="review-gate failed"
-            fi
-            summary=$(printf '%s' "$out" | head -c 60000)
-            gh api -X POST "repos/$REPO/check-runs" \
-              -f name="Review Gate" \
-              -f head_sha="$SHA" \
-              -f status="completed" \
-              -f conclusion="$conclusion" \
-              -f "output[title]=$title" \
-              -f "output[summary]=$summary"
-          fi
-          exit "$rc"
-
-  # pull_request_review_comment is NOT an eligible Actions event for required
-  # checks (GitHub docs). Publish the same "Review Gate" context via Checks API
-  # so a closing reply / resolve can clear a prior failure without a new push.
-  gate-refresh-on-comment:
-    if: github.event_name == 'pull_request_review_comment'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Evaluate and publish Review Gate check run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          loaded=
-          for ref in "$BASE_SHA" "$DEFAULT_BRANCH"; do
-            [ -n "$ref" ] || continue
-            if meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$ref" 2>/dev/null); then
-              printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
-              echo "Loaded trusted checker from ref=$ref"
-              loaded=1
-              break
-            fi
-          done
-          if [ -z "$loaded" ]; then
-            echo "Missing trusted scripts/check-review-gate.py on base $BASE_SHA and default branch $DEFAULT_BRANCH."
-            exit 1
-          fi
-          set +e
-          out=$(python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO" 2>&1)
-          rc=$?
-          set -e
-          printf '%s\n' "$out"
+          # pull_request_target attaches the Actions job to the base SHA — always
+          # publish Checks API on the PR head for the required-check context.
           if [ "$rc" -eq 0 ]; then
             conclusion=success
             title="review-gate ok"
