@@ -26,7 +26,20 @@ MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\
 # `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
 REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
 CD_RE = re.compile(r"^cd\s+(?:--\s+)?(\S+)")
-PULL_URL = re.compile(r"github\.com/[^/]+/[^/]+/pull/(\d+)", re.I)
+PULL_URL = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", re.I)
+# Value-taking flags from https://cli.github.com/manual/gh_pr_merge — skip their args
+# so they are not mistaken for a branch/URL selector.
+MERGE_VALUE_FLAGS = frozenset(
+    {
+        "--match-head-commit",
+        "--body",
+        "--body-file",
+        "--subject",
+        "--author-email",
+        "-R",
+        "--repo",
+    }
+)
 
 
 def extract_repo(cmd: str) -> str | None:
@@ -45,8 +58,17 @@ def extract_merge_selector(cmd: str) -> str | None:
         tokens = shlex.split(m.group(1), posix=True)
     except ValueError:
         tokens = m.group(1).split()
-    for tok in tokens:
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
         if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+                continue
+            if tok in MERGE_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
             continue
         return tok.strip("'\"")
     return None
@@ -64,8 +86,8 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
 def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str | None, str | None]:
     """Resolve gh pr merge selector → (number, repo, error).
 
-    Supports number, pull URL, branch name, and omitted selector (current branch)
-    via `gh pr view`, matching https://cli.github.com/manual/gh_pr_merge.
+    Supports number, pull URL (including owner/repo from the URL), branch name,
+    and omitted selector (current branch) via `gh pr view`.
     """
     repo = extract_repo(cmd)
     selector = extract_merge_selector(cmd)
@@ -74,8 +96,9 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
     if selector:
         m_url = PULL_URL.search(selector)
         if m_url:
-            return int(m_url.group(1)), repo, None
-    args = ["gh", "pr", "view", "--json", "number", "-q", ".number"]
+            url_repo = f"{m_url.group(1)}/{m_url.group(2)}"
+            return int(m_url.group(3)), repo or url_repo, None
+    args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         args.insert(2, selector)
     if repo:
@@ -90,10 +113,19 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
         )
     except (OSError, subprocess.SubprocessError) as e:
         return None, repo, f"review-gate: could not resolve PR via gh: {e}"
-    if proc.returncode != 0 or not proc.stdout.strip().isdigit():
+    if proc.returncode != 0 or not proc.stdout.strip():
         detail = (proc.stderr or proc.stdout or "gh pr view failed").strip()
         return None, repo, f"review-gate: could not resolve PR from merge selector: {detail}"
-    return int(proc.stdout.strip()), repo, None
+    try:
+        data = json.loads(proc.stdout)
+        number = int(data["number"])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
+        return None, repo, f"review-gate: could not parse gh pr view output: {e}"
+    if not repo:
+        m_url = PULL_URL.search(data.get("url") or "")
+        if m_url:
+            repo = f"{m_url.group(1)}/{m_url.group(2)}"
+    return number, repo, None
 
 
 def payload_cwd(payload: dict, inp: dict) -> str:
@@ -109,13 +141,25 @@ def payload_cwd(payload: dict, inp: dict) -> str:
     return os.getcwd()
 
 
-def iter_merge_segments(cmd: str, start_cwd: str) -> list[tuple[str, str]]:
-    """Return (segment, cwd) for each `gh pr merge`, applying prior `cd` in the chain.
+def _cd_target_unresolvable(target: str) -> bool:
+    """True when the guard cannot know the post-cd directory statically."""
+    if not target or target == "-":
+        return True
+    if "$" in target or "`" in target:
+        return True
+    return False
 
-    Splits on `&&`, `;`, and newlines so multiline Bash tool calls like
-    `cd /other\\ngh pr merge 42` resolve the post-cd directory.
+
+def iter_merge_segments(
+    cmd: str, start_cwd: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Return ((segment, cwd)…, error).
+
+    Splits on `&&`, `;`, and newlines. Unresolvable `cd` before a merge without
+    an explicit `-R`/`--repo` fails closed so we never evaluate the wrong repo.
     """
     cwd = start_cwd
+    unresolved_cd = False
     out: list[tuple[str, str]] = []
     for part in re.split(r"\s*(?:&&|;|\n)\s*", cmd):
         part = part.strip()
@@ -124,14 +168,21 @@ def iter_merge_segments(cmd: str, start_cwd: str) -> list[tuple[str, str]]:
         m_cd = CD_RE.match(part)
         if m_cd and not MERGE_RE.search(part):
             target = m_cd.group(1).strip("'\"")
-            if target.startswith("$") or target == "-":
+            if _cd_target_unresolvable(target):
+                unresolved_cd = True
                 continue
             expanded = os.path.expanduser(target)
             cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+            unresolved_cd = False
             continue
         if MERGE_RE.search(part):
+            if unresolved_cd and not extract_repo(part):
+                return [], (
+                    "review-gate: cannot resolve `cd` target before `gh pr merge`; "
+                    "use a literal path or pass `-R owner/repo`"
+                )
             out.append((part, cwd))
-    return out
+    return out, None
 
 
 def check_one(segment: str, cwd: str | None) -> str | None:
@@ -161,7 +212,9 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if OVERRIDE.search(cmd):
         return None
     start = cwd or os.getcwd()
-    segments = iter_merge_segments(cmd, start)
+    segments, seg_err = iter_merge_segments(cmd, start)
+    if seg_err:
+        return seg_err
     if not segments:
         return check_one(cmd, start)
     for segment, seg_cwd in segments:

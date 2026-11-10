@@ -158,17 +158,27 @@ assert mg.MERGE_RE.search("gh pr merge 1 --squash")
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
 # cd before merge must resolve the target repo from the post-cd directory
-assert mg.iter_merge_segments(
+segs, err = mg.iter_merge_segments(
     "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
-) == [("gh pr merge 42 --squash", "/workspace/other")]
-assert mg.iter_merge_segments(
+)
+assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+segs, err = mg.iter_merge_segments(
     "cd /workspace/other\ngh pr merge 42 --squash", "/tmp/start"
-) == [("gh pr merge 42 --squash", "/workspace/other")]
+)
+assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+segs, err = mg.iter_merge_segments('cd "$OTHER_REPO" && gh pr merge 42', "/tmp/start")
+assert segs == [] and err and "cannot resolve" in err
 assert mg.extract_merge_selector("gh pr merge --squash") is None
+assert (
+    mg.extract_merge_selector("gh pr merge --match-head-commit deadbeef --auto") is None
+)
 assert mg.extract_merge_selector(
     "gh pr merge https://github.com/o/r/pull/7 --squash"
 ) == "https://github.com/o/r/pull/7"
 assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feature-branch"
+# URL selector must carry owner/repo, not only the number
+n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/7 --squash")
+assert e is None and n == 7 and r == "owner/other"
 
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"
