@@ -426,12 +426,21 @@ assert (
     mg.extract_merge_selector("gh -R owner/current pr merge -- -Rowner/branch")
     == "-Rowner/branch"
 )
-# Heredoc bodies are not executable merge segments
+# Doc heredoc bodies to cat are not executable merge segments
 heredoc_cmd = "cat > example.sh <<'EOF'\ngh -R owner/repo pr merge 42\nEOF"
 assert mg.check_command(heredoc_cmd, cwd="/tmp") is None
+assert not mg.executable_heredoc_merge(heredoc_cmd)
 assert not any(
     mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(heredoc_cmd)
 )
+# bash << executes the body — fail closed
+bash_heredoc = "bash <<'EOF'\ngh -R owner/target pr merge 2\nEOF"
+assert mg.executable_heredoc_merge(bash_heredoc)
+bash_hd_err = mg.check_command(bash_heredoc, cwd="/tmp")
+assert bash_hd_err and "heredoc" in bash_hd_err
+# Unquoted heredoc expands $(gh … pr merge) even for cat
+unquoted_hd = "cat <<EOF\n$(gh -R owner/target pr merge 2)\nEOF"
+assert mg.executable_heredoc_merge(unquoted_hd)
 # Same-line command after heredoc opener must still be gated
 same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
 assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
@@ -1143,6 +1152,27 @@ assert not _doctor.ruleset_targets_merge_branches(
             "ref_name": {
                 "include": ["~ALL"],
                 "exclude": ["refs/heads/main", "refs/heads/staging"],
+            }
+        }
+    }
+)
+# fnmatch exclusions: refs/heads/m* excludes main (staging still covered)
+assert _doctor.ruleset_covered_branches(
+    {
+        "conditions": {
+            "ref_name": {
+                "include": ["~ALL"],
+                "exclude": ["refs/heads/m*"],
+            }
+        }
+    }
+) == ["staging"]
+assert "main" not in _doctor.ruleset_covered_branches(
+    {
+        "conditions": {
+            "ref_name": {
+                "include": ["~ALL"],
+                "exclude": ["refs/heads/m*"],
             }
         }
     }

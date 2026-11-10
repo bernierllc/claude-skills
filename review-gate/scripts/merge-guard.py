@@ -250,22 +250,25 @@ def has_override(cmd: str) -> bool:
     return any(segment_has_override(p) for p in parts)
 
 
-def _parse_heredoc_delimiter(cmd: str, j: int) -> tuple[str, int] | None:
+def _parse_heredoc_delimiter(cmd: str, j: int) -> tuple[str, int, bool] | None:
     """Parse a Bash heredoc word with quote removal.
 
     Bash forms the closing delimiter by quote-removing the opener word, so
     ``<<E\\OF``, ``<<"E"OF``, and ``<<'EOF'`` all close on a line ``EOF``.
-    Returns ``(delimiter, index_after_word)`` or ``None`` if no word.
+    Returns ``(delimiter, index_after_word, quoted)`` or ``None`` if no word.
+    ``quoted`` is True when any part of the word used quotes (body not expanded).
     """
     n = len(cmd)
     if j >= n or cmd[j] in " \t\n;&|<>()":
         return None
     delim_chars: list[str] = []
+    quoted = False
     while j < n:
         ch = cmd[j]
         if ch in " \t\n;&|<>()":
             break
         if ch == "'":
+            quoted = True
             j += 1
             while j < n and cmd[j] != "'":
                 delim_chars.append(cmd[j])
@@ -274,6 +277,7 @@ def _parse_heredoc_delimiter(cmd: str, j: int) -> tuple[str, int] | None:
                 j += 1
             continue
         if ch == '"':
+            quoted = True
             j += 1
             while j < n and cmd[j] != '"':
                 if cmd[j] == "\\" and j + 1 < n:
@@ -294,17 +298,51 @@ def _parse_heredoc_delimiter(cmd: str, j: int) -> tuple[str, int] | None:
     delim = "".join(delim_chars)
     if not delim:
         return None
-    return delim, j
+    return delim, j, quoted
 
 
-def strip_heredoc_bodies(cmd: str) -> str:
-    """Remove heredocs so script/doc examples are not treated as merges.
+def _heredoc_feeds_shell(prefix: str) -> bool:
+    """True when the command receiving the heredoc is a shell interpreter."""
+    seg = prefix
+    for sep in (";", "\n", "|", "&"):
+        if sep in seg:
+            seg = seg.rsplit(sep, 1)[-1]
+    tokens = _shell_tokens(seg.strip())
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return False
+    name = rest[i].rsplit("/", 1)[-1]
+    return name in SHELL_INTERPRETERS
 
-    Replaces each ``<<DELIM … DELIM`` (including the body) with a space so
-    newlines inside heredocs do not become chain splits and body lines like
-    ``gh pr merge`` cannot match ``MERGE_RE`` / ``is_gh_pr_merge``.
+
+def _heredoc_body_has_merge(body: str) -> bool:
+    """True when a heredoc body text can run or expand a ``gh pr merge``."""
+    if MERGE_RE.search(body) or is_gh_pr_merge(body):
+        return True
+    if dynamic_gh_pr_merge(body) or quote_smashed_merge(body):
+        return True
+    for sub in _extract_command_substitutions(body):
+        if (
+            MERGE_RE.search(sub)
+            or is_gh_pr_merge(sub)
+            or dynamic_gh_pr_merge(sub)
+            or quote_smashed_merge(sub)
+        ):
+            return True
+    return False
+
+
+def analyze_heredocs(cmd: str) -> tuple[str, list[tuple[str, bool, bool]]]:
+    """Strip heredoc bodies and return ``(stripped, [(body, quoted, feeds_shell), …])``.
+
+    Bodies are inspected before discard so ``bash <<'EOF'`` / expanding heredocs
+    cannot hide a merge. Doc heredocs to ``cat`` remain strip-only.
     """
     out: list[str] = []
+    infos: list[tuple[str, bool, bool]] = []
     i = 0
     in_single = False
     in_double = False
@@ -361,7 +399,9 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 out.append(c)
                 i += 1
                 continue
-            delim, j = parsed
+            delim, j, quoted = parsed
+            prefix = "".join(out)
+            feeds_shell = _heredoc_feeds_shell(prefix)
             # Replace <<DELIM with a space, but keep the rest of the opener line
             # (e.g. `cat <<EOF; gh … pr merge` — the merge must remain visible).
             out.append(" ")
@@ -370,7 +410,8 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 j += 1
             if j < n and cmd[j] == "\n":
                 j += 1
-            # Drop body lines until the closing delimiter.
+            # Collect body lines until the closing delimiter.
+            body_lines: list[str] = []
             found = False
             while j < n:
                 line_start = j
@@ -383,6 +424,7 @@ def strip_heredoc_bodies(cmd: str) -> str:
                         j += 1
                     found = True
                     break
+                body_lines.append(line)
                 if j < n and cmd[j] == "\n":
                     j += 1
             if not found:
@@ -390,11 +432,43 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 # not silently swallowed with the supposed body.
                 out.append(cmd[i:])
                 break
+            infos.append(("\n".join(body_lines), quoted, feeds_shell))
             i = j
             continue
         out.append(c)
         i += 1
-    return "".join(out)
+    return "".join(out), infos
+
+
+def strip_heredoc_bodies(cmd: str) -> str:
+    """Remove heredocs so script/doc examples are not treated as merges."""
+    stripped, _infos = analyze_heredocs(cmd)
+    return stripped
+
+
+def executable_heredoc_merge(cmd: str) -> bool:
+    """True when a heredoc body that Bash executes/expands contains a merge.
+
+    ``bash <<'EOF'`` / ``sh <<EOF`` run the body as a script. Unquoted heredocs
+    expand ``$(gh … pr merge)`` even when fed to ``cat``. Quoted doc heredocs to
+    non-shell commands are ignored (still stripped for false-positive avoidance).
+    """
+    _stripped, infos = analyze_heredocs(cmd)
+    for body, quoted, feeds_shell in infos:
+        if not _heredoc_body_has_merge(body):
+            continue
+        if feeds_shell:
+            return True
+        if not quoted:
+            for sub in _extract_command_substitutions(body):
+                if (
+                    MERGE_RE.search(sub)
+                    or is_gh_pr_merge(sub)
+                    or dynamic_gh_pr_merge(sub)
+                    or quote_smashed_merge(sub)
+                ):
+                    return True
+    return False
 
 
 def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
@@ -2146,6 +2220,13 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    # Inspect executable/expanding heredocs before stripping their bodies.
+    if executable_heredoc_merge(cmd):
+        return (
+            "review-gate: heredoc body contains `gh pr merge` "
+            "(executed by `bash <<` / expanded unquoted); run literal "
+            "`gh -R owner/repo pr merge <n>` without embedding it in a heredoc"
+        )
     cmd = strip_heredoc_bodies(cmd)
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     # Quote-smashed `g''h` inside `bash -c` / eval — Bash concatenates to `gh`.

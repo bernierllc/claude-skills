@@ -6,6 +6,7 @@ Prints WARN / OK lines on stdout.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import subprocess
 import sys
@@ -31,24 +32,28 @@ def ruleset_is_enforcing(detail: dict) -> bool:
     return detail.get("enforcement") == "active"
 
 
+def _fnmatch_ref(pat: str, ref: str, branch: str) -> bool:
+    """True when a GitHub ruleset fnmatch pattern matches ``ref`` / ``branch``."""
+    if pat == "~ALL":
+        return True
+    if pat == "~DEFAULT_BRANCH":
+        return branch == "main"
+    if fnmatch.fnmatchcase(ref, pat) or fnmatch.fnmatchcase(branch, pat):
+        return True
+    return False
+
+
 def _branch_covered_by_ref_name(
     branch: str, include: list[str], exclude: list[str]
 ) -> bool:
     ref = f"refs/heads/{branch}"
-    if ref in exclude or branch in exclude:
+    # Exclusions use the same fnmatch semantics as GitHub rulesets.
+    for pat in exclude:
+        if _fnmatch_ref(pat, ref, branch):
+            return False
+    if not include:
         return False
-    for pat in include:
-        if pat in ("~ALL", ref, branch):
-            return True
-        if pat == "~DEFAULT_BRANCH" and branch == "main":
-            return True
-        if pat in ("refs/heads/*", "refs/heads/**"):
-            return True
-        if pat.endswith("/*") or pat.endswith("/**"):
-            prefix = pat.rstrip("*").rstrip("/")
-            if ref.startswith(prefix + "/") or ref == prefix:
-                return True
-    return False
+    return any(_fnmatch_ref(pat, ref, branch) for pat in include)
 
 
 def ruleset_covered_branches(detail: dict) -> list[str]:
