@@ -163,16 +163,19 @@ def _cd_target_unresolvable(target: str | None) -> bool:
     return False
 
 
-def parse_cd_directory(part: str) -> str | None:
-    """Return the directory operand of a `cd` segment, skipping -L/-P/-- options.
+DIR_BUILTINS = frozenset({"cd", "pushd"})
 
-    None means bare `cd`, `cd -`, or no directory token.
+
+def parse_dir_builtin(part: str, builtin: str) -> str | None:
+    """Return the directory operand of cd/pushd, skipping -L/-P/-- options.
+
+    None means bare builtin, `cd -`, or no directory token (treat as unresolvable).
     """
     try:
         tokens = shlex.split(part, posix=True)
     except ValueError:
         tokens = part.split()
-    if not tokens or tokens[0] != "cd":
+    if not tokens or tokens[0] != builtin:
         return None
     i = 1
     while i < len(tokens):
@@ -194,23 +197,26 @@ def iter_merge_segments(
 ) -> tuple[list[tuple[str, str]], str | None]:
     """Return ((segment, cwd)…, error).
 
-    Splits on `&&`, `;`, and newlines. Unresolvable `cd` before a merge without
-    an explicit `-R`/`--repo` fails closed so we never evaluate the wrong repo.
+    Splits on `&&`, `||`, `;`, `&`, and newlines so each merge is checked.
+    Unresolvable cd/pushd/popd before a merge without `-R` fails closed.
     """
     cwd = start_cwd
     unresolved_cd = False
     out: list[tuple[str, str]] = []
-    for part in re.split(r"\s*(?:&&|;|\n)\s*", cmd):
+    for part in re.split(r"\s*(?:&&|\|\||;|\n|&)\s*", cmd):
         part = part.strip()
         if not part:
             continue
-        if part.startswith("cd") and not MERGE_RE.search(part):
+        if not MERGE_RE.search(part):
             try:
                 first = shlex.split(part, posix=True)[:1]
             except ValueError:
                 first = part.split()[:1]
-            if first == ["cd"]:
-                target = parse_cd_directory(part)
+            if first and first[0] == "popd":
+                unresolved_cd = True
+                continue
+            if first and first[0] in DIR_BUILTINS:
+                target = parse_dir_builtin(part, first[0])
                 if _cd_target_unresolvable(target):
                     unresolved_cd = True
                     continue
@@ -220,10 +226,16 @@ def iter_merge_segments(
                 unresolved_cd = False
                 continue
         if MERGE_RE.search(part):
+            # Multiple merges left in one segment (unusual) → require -R.
+            if len(re.findall(r"\bpr\s+merge\b", part)) > 1 and not extract_repo(part):
+                return [], (
+                    "review-gate: multiple `gh pr merge` invocations in one shell "
+                    "segment; pass `-R owner/repo` on each or split the command"
+                )
             if unresolved_cd and not extract_repo(part):
                 return [], (
-                    "review-gate: cannot resolve `cd` target before `gh pr merge`; "
-                    "use a literal path or pass `-R owner/repo`"
+                    "review-gate: cannot resolve directory change before `gh pr merge`; "
+                    "use a literal `cd`/`pushd` path or pass `-R owner/repo`"
                 )
             out.append((part, cwd))
     return out, None

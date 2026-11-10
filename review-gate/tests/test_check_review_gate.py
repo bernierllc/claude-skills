@@ -170,6 +170,17 @@ segs, err = mg.iter_merge_segments(
     "cd -P /workspace/other && gh pr merge 42 --squash", "/tmp/start"
 )
 assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+segs, err = mg.iter_merge_segments(
+    "pushd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
+)
+assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+segs, err = mg.iter_merge_segments(
+    "gh pr merge 1 --match-head-commit deadbeef || gh pr merge 2", "/tmp/start"
+)
+assert err is None and [s for s, _ in segs] == [
+    "gh pr merge 1 --match-head-commit deadbeef",
+    "gh pr merge 2",
+]
 segs, err = mg.iter_merge_segments('cd "$OTHER_REPO" && gh pr merge 42', "/tmp/start")
 assert segs == [] and err and "cannot resolve" in err
 assert mg.extract_merge_selector("gh pr merge --squash") is None
