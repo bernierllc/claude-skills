@@ -1620,22 +1620,79 @@ def prior_tracked_gh_unset(cmd: str) -> bool:
     return False
 
 
-def _part_has_shell_mutation(part: str) -> bool:
-    """True when the segment can install hidden merge side effects.
+def _part_loads_dynamic_builtin(part: str) -> bool:
+    """True when ``enable -f`` loads ``gh`` or a shadowable prefix from a .so.
 
-    Covers ``eval`` / ``source`` / ``.`` (redefine ``gh``) and ``trap`` (EXIT
-    handlers can run an unchecked merge after the inspected command).
+    ``enable -f /tmp/evil.so gh`` makes the next ``gh`` run the loaded builtin
+    instead of the real binary the gate inspects.
     """
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    return i < len(rest) and rest[i] in ("eval", "source", ".", "trap")
+    if i >= len(rest) or rest[i] != "enable":
+        return False
+    j = i + 1
+    saw_f = False
+    names: list[str] = []
+    while j < len(rest):
+        tok = rest[j]
+        if tok == "--":
+            names.extend(rest[j + 1 :])
+            break
+        if tok == "-f":
+            saw_f = True
+            j += 2
+            continue
+        if tok.startswith("-f") and not tok.startswith("--"):
+            # sticky ``-f/tmp/evil.so``
+            saw_f = True
+            j += 1
+            continue
+        if tok.startswith("-") and not tok.startswith("--"):
+            if "f" in tok[1:]:
+                saw_f = True
+                j += 2
+                continue
+            j += 1
+            continue
+        if tok.startswith("--"):
+            j += 1
+            continue
+        names.append(tok)
+        j += 1
+    if not saw_f:
+        return False
+    targets = frozenset({"gh"}) | SHADOWABLE_PREFIXES
+    if not names:
+        # ``enable -f file`` with no name is opaque — fail closed.
+        return True
+    return any(n in targets or _dequote_shell_text(n) in targets for n in names)
+
+
+def _part_has_shell_mutation(part: str) -> bool:
+    """True when the segment can install hidden merge side effects.
+
+    Covers ``eval`` / ``source`` / ``.`` (redefine ``gh``), ``trap`` (EXIT
+    handlers can run an unchecked merge after the inspected command), and
+    ``enable -f`` (load a dynamic ``gh`` / prefix builtin).
+    """
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i < len(rest) and rest[i] in ("eval", "source", ".", "trap"):
+        return True
+    if _part_loads_dynamic_builtin(part):
+        return True
+    dequoted = _dequote_shell_text(part)
+    return dequoted != part and _part_loads_dynamic_builtin(dequoted)
 
 
 def shell_mutation_before_merge(cmd: str) -> bool:
-    """True when ``eval``/``source``/``.``/``trap`` shares a compound with a merge.
+    """True when ``eval``/``source``/``.``/``trap``/``enable -f`` shares a merge.
 
     Order does not matter: a ``trap … EXIT`` *after* a validated merge still runs
     on shell exit and can perform an unchecked second merge.
@@ -2572,9 +2629,10 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     # (including traps installed *after* the validated merge segment).
     if shell_mutation_before_merge(cmd):
         return (
-            "review-gate: `eval`/`source`/`.`/`trap` with `gh pr merge` "
-            "(can redefine `gh` or run a merge from a trap); run literal "
-            "`gh -R owner/repo pr merge <n>` without sourcing, eval, or trap"
+            "review-gate: `eval`/`source`/`.`/`trap`/`enable -f` with `gh pr merge` "
+            "(can redefine `gh`, load a dynamic builtin, or run a merge from a trap); "
+            "run literal `gh -R owner/repo pr merge <n>` without sourcing, eval, "
+            "trap, or enable -f"
         )
     # Function/alias/hash named `gh` shadows the binary the gate inspects.
     if redefines_gh(cmd):

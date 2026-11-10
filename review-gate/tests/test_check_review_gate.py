@@ -937,6 +937,18 @@ trap_after = (
 assert mg.shell_mutation_before_merge(trap_after)
 trap_after_err = mg.check_command(trap_after, cwd="/tmp")
 assert trap_after_err and "trap" in trap_after_err
+# enable -f can replace gh (or command/builtin/…) with a loaded .so builtin
+enable_gh = "enable -f /tmp/evil.so gh; gh -R owner/safe pr merge 1"
+assert mg._part_loads_dynamic_builtin("enable -f /tmp/evil.so gh")
+assert mg.shell_mutation_before_merge(enable_gh)
+enable_err = mg.check_command(enable_gh, cwd="/tmp")
+assert enable_err and "enable" in enable_err
+assert mg.shell_mutation_before_merge(
+    "enable -f /tmp/evil.so command; command gh -R owner/safe pr merge 1"
+)
+assert mg._part_loads_dynamic_builtin("builtin enable -f /tmp/evil.so gh")
+assert not mg._part_loads_dynamic_builtin("enable -a")
+assert not mg._part_loads_dynamic_builtin("enable -f /tmp/x true")
 # Prefix/wrappers stripped as harmless can be shadowed functions
 prefix_redef = (
     'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
