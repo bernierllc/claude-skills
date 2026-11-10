@@ -335,6 +335,20 @@ def env_wraps_merge(part: str) -> bool:
     return any(t == "env" for t in tokens[:gh_i])
 
 
+# Wrappers that append stdin/args onto the command — selectors are not on argv.
+ARGUMENT_WRAPPERS = frozenset({"xargs", "parallel"})
+
+
+def argument_wraps_merge(part: str) -> bool:
+    """True when xargs/parallel precedes `gh` (appends PR selectors we cannot see)."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
+    except StopIteration:
+        return False
+    return any(t in ARGUMENT_WRAPPERS for t in tokens[:gh_i])
+
+
 def scoped_dir_requires_repo(part: str) -> bool:
     """True when the segment uses env/subshell chdir we refuse to model without -R."""
     return env_wraps_merge(part) or bool(SUBSHELL_CD_RE.search(part))
@@ -493,13 +507,18 @@ def extract_merge_selector(cmd: str) -> str | None:
     return None
 
 
+def is_pull_url_selector(selector: str) -> re.Match[str] | None:
+    """Match only when the *entire* merge selector is a pull URL (not a substring)."""
+    return PULL_URL.fullmatch(selector.strip())
+
+
 def has_literal_repo(part: str) -> bool:
     """True when the merge names a concrete owner/repo (-R, GH_REPO=, or pull URL)."""
     repo = extract_repo(part)
     if repo and repo != "$UNRESOLVED" and "/" in repo:
         return True
     selector = extract_merge_selector(part)
-    if selector and PULL_URL.search(selector):
+    if selector and is_pull_url_selector(selector):
         return True
     return False
 
@@ -520,12 +539,45 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     return None, repo
 
 
-def _scrubbed_gh_env(scrub_gh_repo: bool) -> dict[str, str] | None:
-    """Env for child ``gh`` when the merge cleared GH_REPO; else inherit."""
-    if not scrub_gh_repo:
+def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
+    """Build a subprocess env mirroring command-scoped GH_HOST / GH_REPO.
+
+    Needed when the merge sets ``GH_HOST=…`` but relies on an inherited
+    ``GH_REPO`` (or clears GH_REPO): gate ``gh`` calls must see the same
+    environment as the merge child. Returns None when the process env is fine.
+    """
+    tokens = _shell_tokens(cmd)
+    rest, leading = _skip_leading_assignments(tokens)
+    env_assigns, cleared_host, cleared_repo = _env_wrapper_state(rest)
+    overlays = {**leading, **env_assigns}
+    touches = (
+        "GH_HOST" in overlays
+        or "GH_REPO" in overlays
+        or cleared_host
+        or cleared_repo
+        or scrub_gh_repo
+    )
+    if not touches:
         return None
     env = os.environ.copy()
-    env.pop("GH_REPO", None)
+    if cleared_host and "GH_HOST" not in env_assigns:
+        env.pop("GH_HOST", None)
+    elif "GH_HOST" in overlays:
+        val = overlays["GH_HOST"]
+        if val == "":
+            env.pop("GH_HOST", None)
+        elif not _repo_operand_unresolvable(val):
+            env["GH_HOST"] = val
+    if (
+        scrub_gh_repo
+        or (cleared_repo and "GH_REPO" not in env_assigns)
+        or overlays.get("GH_REPO") == ""
+    ):
+        env.pop("GH_REPO", None)
+    elif "GH_REPO" in overlays and overlays["GH_REPO"]:
+        val = overlays["GH_REPO"]
+        if not _repo_operand_unresolvable(val):
+            env["GH_REPO"] = val
     return env
 
 
@@ -547,12 +599,13 @@ def resolve_pr_number(
     if selector and selector.isdigit():
         return int(selector), repo, None, scrub_gh_repo
     if selector:
-        m_url = PULL_URL.search(selector)
+        m_url = is_pull_url_selector(selector)
         if m_url:
             # gh resolves the repository from the URL selector even when -R
             # disagrees (e.g. `gh pr merge https://…/target/pull/7 -R owner/safe`).
             url_repo = repo_from_pull_url_match(m_url)
             return int(m_url.group(4)), url_repo, None, False
+    child_env = _child_gh_env(cmd, scrub_gh_repo)
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         args.insert(2, selector)
@@ -564,7 +617,7 @@ def resolve_pr_number(
             capture_output=True,
             text=True,
             cwd=cwd or None,
-            env=_scrubbed_gh_env(scrub_gh_repo),
+            env=child_env,
             timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as e:
@@ -706,6 +759,11 @@ def iter_merge_segments(
                 "review-gate: multiple `gh pr merge` invocations in one shell "
                 "segment; run them as separate commands"
             )
+        if argument_wraps_merge(part):
+            return [], (
+                "review-gate: argument-producing wrapper around `gh pr merge` "
+                "(e.g. `xargs`); run `gh -R owner/repo pr merge <n>` directly"
+            )
         if scoped_dir_requires_repo(part) and not has_literal_repo(part):
             return [], (
                 "review-gate: command-scoped directory change detected "
@@ -726,7 +784,7 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
         hostname, owner, name = gate.parse_repo_with_host(
-            repo, cwd=cwd, env=_scrubbed_gh_env(scrub_gh_repo)
+            repo, cwd=cwd, env=_child_gh_env(segment, scrub_gh_repo)
         )
         pr = gate.pr_payload(owner, name, number, hostname=hostname)
         reasons = gate.evaluate(pr)
@@ -755,6 +813,11 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if seg_err:
         return seg_err
     if not segments:
+        if argument_wraps_merge(cmd):
+            return (
+                "review-gate: argument-producing wrapper around `gh pr merge` "
+                "(e.g. `xargs`); run `gh -R owner/repo pr merge <n>` directly"
+            )
         if scoped_dir_requires_repo(cmd) and not has_literal_repo(cmd):
             return (
                 "review-gate: command-scoped directory change detected "

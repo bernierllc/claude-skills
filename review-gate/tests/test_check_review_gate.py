@@ -229,11 +229,30 @@ n, r, e, scrub = mg.resolve_pr_number(
     "gh pr merge https://github.com/owner/target/pull/7 -R owner/safe --squash"
 )
 assert e is None and n == 7 and r == "github.com/owner/target" and scrub is False
+# Branch names that merely contain a URL-shaped substring are not pull URLs
+n, r, e, scrub = mg.resolve_pr_number(
+    "gh -R owner/target pr merge feature/github.com/owner/safe/pull/7"
+)
+# Falls through to gh pr view (branch selector) — not the embedded safe#7
+assert not (e is None and n == 7 and r and "owner/safe" in r)
+assert mg.is_pull_url_selector("feature/github.com/owner/safe/pull/7") is None
+assert mg.is_pull_url_selector("https://github.com/owner/safe/pull/7") is not None
 # Enterprise pull URLs retain the hostname for gate queries
 n, r, e, scrub = mg.resolve_pr_number(
     "gh pr merge https://ghe.example/owner/repo/pull/7 --squash"
 )
 assert e is None and n == 7 and r == "ghe.example/owner/repo" and scrub is False
+# Command-scoped GH_HOST overlays process env for fallback gh resolution
+child = mg._child_gh_env("GH_HOST=ghe.example gh pr merge 42", scrub_gh_repo=False)
+assert child is not None and child.get("GH_HOST") == "ghe.example"
+# xargs / parallel wrappers fail closed (selectors come from stdin, not argv)
+xargs_err = mg.check_command(
+    "printf '42\\n' | xargs gh -R owner/target pr merge", cwd="/tmp"
+)
+assert xargs_err and "argument-producing" in xargs_err
+assert mg.argument_wraps_merge("xargs gh -R owner/target pr merge")
+segs, err = mg.iter_merge_segments("xargs gh -R owner/target pr merge", "/tmp")
+assert segs == [] and err and "argument-producing" in err
 # Leading GH_HOST= prefixes a hostless -R / GH_REPO slug
 assert (
     mg.extract_repo("GH_HOST=ghe.example gh -R owner/target pr merge 42")
