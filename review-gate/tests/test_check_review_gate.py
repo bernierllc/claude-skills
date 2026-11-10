@@ -573,6 +573,16 @@ assert mg.dynamic_gh_subcommand_merge("gh $x 42 -R owner/target")
 assert mg.check_command("gh $x 42 -R owner/target", cwd="/tmp")
 assert not mg.dynamic_gh_subcommand_merge("gh pr merge 42 -R owner/target")
 assert not mg.dynamic_gh_subcommand_merge('gh issue "$x"')
+# Fully variable-assembled merge across segments (no literal gh/pr/merge on invoke)
+var_asm = 'c=gh; p=pr; m=merge; "$c" "$p" "$m" 42 -R owner/repo'
+assert mg.variable_assembled_merge(var_asm)
+var_asm_err = mg.check_command(var_asm, cwd="/tmp")
+assert var_asm_err and "variable-assembled" in var_asm_err
+assert mg.variable_assembled_merge(
+    'c=gh p=pr m=merge "$c" "$p" "$m" 42 -R owner/repo'
+)
+assert not mg.variable_assembled_merge('"$c" "$p" "$m" 42 -R owner/repo')
+assert not mg.variable_assembled_merge("gh -R owner/safe pr merge 1")
 # Dynamic argv after merge may expand into -Rowner/target
 dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
 assert mg.dynamic_merge_argv(dyn_repo_flag)

@@ -826,6 +826,94 @@ def dynamic_gh_subcommand_merge(part: str) -> bool:
     return a == "pr" and b_dyn
 
 
+_MERGE_ASSEMBLY_WORDS = frozenset({"gh", "pr", "merge"})
+
+
+def _assignment_value_merge_word(val: str) -> str | None:
+    """Return ``gh``/``pr``/``merge`` when ``val`` is that literal, else None."""
+    plain = _dequote_shell_text(val.strip("'\""))
+    if plain in _MERGE_ASSEMBLY_WORDS:
+        return plain
+    return None
+
+
+def _part_assigns_merge_assembly_words(part: str) -> set[str]:
+    """Collect literal ``gh``/``pr``/``merge`` values assigned in ``part``."""
+    found: set[str] = set()
+    tokens = _shell_tokens(part)
+    rest, leading = _skip_leading_assignments(tokens)
+    for _key, val in leading.items():
+        word = _assignment_value_merge_word(val)
+        if word:
+            found.add(word)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return found
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        found |= _part_assigns_merge_assembly_words(nested)
+        return found
+    head = rest[i]
+    m_head = ASSIGNMENT_RE.match(head)
+    if m_head:
+        word = _assignment_value_merge_word(m_head.group(2))
+        if word:
+            found.add(word)
+        return found
+    if head in ("export", "declare", "typeset", "local", "readonly"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") or tok.startswith("+"):
+                continue
+            _key, has_eq, val = tok.partition("=")
+            if not has_eq:
+                continue
+            word = _assignment_value_merge_word(val)
+            if word:
+                found.add(word)
+    return found
+
+
+def _part_fully_dynamic_merge_prefix(part: str) -> bool:
+    """True when the first three command words are all dynamic (``\"$c\" \"$p\" \"$m\"``)."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    i = _index_after_env_wrapper(tokens)
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    words: list[str] = []
+    while i < len(tokens) and len(words) < 3:
+        tok = tokens[i]
+        if tok == "--":
+            break
+        if tok.startswith("-"):
+            # Flags only make sense after the executable; reject mid-prefix.
+            if not words:
+                return False
+            break
+        words.append(tok)
+        i += 1
+    return len(words) == 3 and all(_command_name_dynamic(w) for w in words)
+
+
+def variable_assembled_merge(cmd: str) -> bool:
+    """True when ``gh pr merge`` is assembled via variables across segments.
+
+    Example: ``c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" 42 -R owner/repo`` —
+    no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
+    ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if any(is_gh_pr_merge(p) for p in parts):
+        return False
+    assigned: set[str] = set()
+    for part in parts:
+        assigned |= _part_assigns_merge_assembly_words(part)
+    if not ({"gh", "pr", "merge"} <= assigned):
+        return False
+    return any(_part_fully_dynamic_merge_prefix(p) for p in parts)
+
+
 def dynamic_merge_argv(part: str) -> bool:
     """True when argv after ``merge`` has a dynamic token (may expand to ``-R…``).
 
@@ -3377,6 +3465,15 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: dynamic `gh` subcommand "
             "(e.g. `gh \"$x\" \"$y\"` / `gh pr \"$m\"`); "
+            "run literal `gh -R owner/repo pr merge <n>`"
+        )
+    # `c=gh; p=pr; m=merge; "$c" "$p" "$m" …` — fully variable-assembled merge.
+    if variable_assembled_merge(cmd) or any(
+        variable_assembled_merge(p) for p in parts
+    ):
+        return (
+            "review-gate: variable-assembled `gh pr merge` "
+            "(e.g. `c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" …`); "
             "run literal `gh -R owner/repo pr merge <n>`"
         )
     # `gh pr merge 42 "$(printf -- -Rowner/target)"` — dynamic argv may become -R.
