@@ -186,6 +186,16 @@ n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/
 assert e is None and n == 7 and r == "owner/other"
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
+assert mg.extract_repo("gh pr merge 7 -Rowner/other --squash") == "owner/other"
+assert mg.extract_repo("gh -Rowner/other pr merge 7") == "owner/other"
+scoped = mg.check_command("env -C /workspace/other gh pr merge 42", cwd="/tmp")
+assert scoped and "command-scoped" in scoped
+_orig_one = mg.check_one
+mg.check_one = lambda segment, cwd=None: None
+try:
+    assert mg.check_command("env -C /tmp gh -R owner/other pr merge 42", cwd="/tmp") is None
+finally:
+    mg.check_one = _orig_one
 
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"
@@ -216,10 +226,10 @@ finally:
     mg.gate.evaluate = _orig_eval
 
 yml = (Path(__file__).parent.parent / "templates" / "review-gate.yml").read_text()
-# Trusted execution: pull_request_target + checker loaded from base SHA contents API
 assert "pull_request_target:" in yml
-assert "contents/scripts/check-review-gate.py?ref=$BASE_SHA" in yml
-# Do not execute a PR-head checkout of the checker
+assert "contents/scripts/check-review-gate.py?ref=$ref" in yml
+assert "DEFAULT_BRANCH" in yml
+assert 'for ref in "$BASE_SHA" "$DEFAULT_BRANCH"' in yml
 assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml

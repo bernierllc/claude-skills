@@ -2,9 +2,10 @@
 # Installed from bernierllc/claude-skills skill `review-gate`.
 # Pair with GitHub ruleset pull_request.required_review_thread_resolution: true.
 #
-# Security: gate jobs load scripts/check-review-gate.py from the PR *base* SHA
-# (never from the PR head), and pull_request_target runs this workflow from the
-# base branch. Install copies both this file and the checker onto the default branch.
+# Security: gate jobs never execute PR-head code. They load
+# scripts/check-review-gate.py from the PR base SHA first, then fall back to the
+# repository default branch (so staging PRs work after installing on main only).
+# pull_request_target runs this workflow from the base branch.
 #
 # Required-check name is the job display name "Review Gate" (eligible events) or
 # the Checks API check run of the same name (review-comment refresh path).
@@ -74,17 +75,30 @@ jobs:
       github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     steps:
-      - name: Run trusted review-gate checker from base
+      - name: Run trusted review-gate checker
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$BASE_SHA") \
-            || { echo "Missing trusted scripts/check-review-gate.py on base $BASE_SHA. Re-run install-workflow.py so the checker is committed on the default branch."; exit 1; }
-          printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
+          loaded=
+          for ref in "$BASE_SHA" "$DEFAULT_BRANCH"; do
+            [ -n "$ref" ] || continue
+            if meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$ref" 2>/dev/null); then
+              printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
+              echo "Loaded trusted checker from ref=$ref"
+              loaded=1
+              break
+            fi
+          done
+          if [ -z "$loaded" ]; then
+            echo "Missing trusted scripts/check-review-gate.py on base $BASE_SHA and default branch $DEFAULT_BRANCH."
+            echo "Run install-workflow.py and merge it to the default branch (and ideally every protected base)."
+            exit 1
+          fi
           python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO"
 
   # pull_request_review_comment is NOT an eligible Actions event for required
@@ -101,11 +115,23 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$BASE_SHA") \
-            || { echo "Missing trusted scripts/check-review-gate.py on base $BASE_SHA."; exit 1; }
-          printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
+          loaded=
+          for ref in "$BASE_SHA" "$DEFAULT_BRANCH"; do
+            [ -n "$ref" ] || continue
+            if meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$ref" 2>/dev/null); then
+              printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
+              echo "Loaded trusted checker from ref=$ref"
+              loaded=1
+              break
+            fi
+          done
+          if [ -z "$loaded" ]; then
+            echo "Missing trusted scripts/check-review-gate.py on base $BASE_SHA and default branch $DEFAULT_BRANCH."
+            exit 1
+          fi
           set +e
           out=$(python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO" 2>&1)
           rc=$?

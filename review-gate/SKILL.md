@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.6
+version: 1.0.7
 author: Bernier LLC
 ---
 
@@ -10,7 +10,7 @@ author: Bernier LLC
 Programmatic enforcement for the adversarial review loop. Ships:
 
 1. **Workflow template** — `.github/workflows/review-gate.yml` (`pull_request_target`)
-2. **Trusted checker** — `scripts/check-review-gate.py` (loaded from the PR **base** SHA)
+2. **Trusted checker** — `scripts/check-review-gate.py` (loaded from the PR **base** SHA, falling back to the repo default branch)
 3. **Doctor** — warns when the workflow, checker, or ruleset conversation-resolution flag is missing
 4. **PreToolUse merge guard** — blocks `gh pr merge` when the local gate check fails
 

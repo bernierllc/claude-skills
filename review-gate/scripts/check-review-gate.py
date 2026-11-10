@@ -244,6 +244,61 @@ def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]
     return reviews
 
 
+def _paginate_labels(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+    """Fetch every label on the PR."""
+    labels: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        if cursor is None:
+            q = """
+            query($owner:String!, $name:String!, $number:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  labels(first: 50) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { name }
+                  }
+                }
+              }
+            }
+            """
+            conn = (
+                _graphql(q, owner=owner, name=name, number=number)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("labels")
+                or {}
+            )
+        else:
+            q = """
+            query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  labels(first: 50, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { name }
+                  }
+                }
+              }
+            }
+            """
+            conn = (
+                _graphql(q, owner=owner, name=name, number=number, cursor=cursor)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("labels")
+                or {}
+            )
+        labels.extend(conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        cursor = page.get("endCursor")
+        if not cursor:
+            break
+    return labels
+
+
 def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
     q = """
     query($owner:String!, $name:String!, $number:Int!) {
@@ -253,7 +308,6 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
           body
           baseRefName
           headRefOid
-          labels(first: 50) { nodes { name } }
         }
       }
     }
@@ -262,6 +316,7 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
     pr = (data.get("repository") or {}).get("pullRequest")
     if not pr:
         raise RuntimeError(f"PR #{number} not found in {owner}/{name}")
+    pr["labels"] = {"nodes": _paginate_labels(owner, name, number)}
     pr["reviews"] = {"nodes": _paginate_reviews(owner, name, number)}
     pr["reviewThreads"] = {"nodes": _paginate_threads(owner, name, number)}
     return pr

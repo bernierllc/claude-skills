@@ -22,11 +22,18 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
-MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\b")
-# `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
-REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
+MERGE_RE = re.compile(
+    r"\bgh(?:\s+-R(?:=\S+|\s+\S+|\S+)|\s+--repo(?:=\S+|\s+\S+))*\s+pr\s+merge\b"
+)
+# gh accepts `-R owner/repo`, `-R=owner/repo`, and attached `-Rowner/repo`.
+REPO_FLAG = re.compile(r"(?:(?:^|\s)-R(?:=|\s*)|--repo(?:=|\s+))(\S+)")
 PULL_URL = re.compile(
     r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
+    re.I,
+)
+# Command-scoped directory changes we do not fully parse — require `-R` instead.
+SCOPED_DIR_RE = re.compile(
+    r"(?:(?:^|[\s;|&])env\s+-C\s|(?:^|[\s;|&])\(\s*cd\s)",
     re.I,
 )
 # Value-taking flags from `gh pr merge --help` — skip their args so they are not
@@ -249,6 +256,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return None
     if OVERRIDE.search(cmd):
         return None
+    # After multiple review rounds on shell cwd parsing: fail closed for
+    # command-scoped dirs we don't model (env -C, `( cd … )`) unless `-R` is set.
+    if SCOPED_DIR_RE.search(cmd) and not extract_repo(cmd):
+        return (
+            "review-gate: command-scoped directory change detected "
+            "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
+        )
     start = cwd or os.getcwd()
     segments, seg_err = iter_merge_segments(cmd, start)
     if seg_err:
