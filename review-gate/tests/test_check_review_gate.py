@@ -752,7 +752,9 @@ assert "pull_request_review:" not in yml
 assert "pull_request_review_comment:" not in yml
 assert "contents/scripts/check-review-gate.py?ref=$ref" in yml
 assert "DEFAULT_BRANCH" in yml
-assert 'for ref in "$BASE_SHA" "$DEFAULT_BRANCH"' in yml
+assert 'ref="$DEFAULT_BRANCH"' in yml
+assert "$BASE_SHA" not in yml
+assert "BASE_SHA:" not in yml
 assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml
@@ -766,5 +768,22 @@ skill = (Path(__file__).parent.parent / "SKILL.md").read_text()
 assert '$(aec path skill review-gate)/scripts/install-workflow.py' in skill
 assert "$(dirname)/scripts/install-workflow.py" not in skill
 assert "scripts/check-review-gate.py" in skill
+assert "default branch" in skill.lower()
+
+# PATH=… can swap the gh binary even with a literal -R — fail closed
+assert mg.sets_path_override("PATH=/tmp/fake:$PATH gh -R owner/safe pr merge 1")
+assert mg.path_override_for_merge(
+    "PATH=/tmp/fake:$PATH gh -R owner/safe pr merge 1"
+)
+path_err = mg.check_command(
+    "PATH=/tmp/fake:$PATH gh -R owner/safe pr merge 1", cwd="/tmp"
+)
+assert path_err and "PATH" in path_err
+assert mg.sets_path_override("env PATH=/tmp/fake gh -R owner/safe pr merge 1")
+assert mg.sets_path_override("env -u PATH gh -R owner/safe pr merge 1")
+assert mg.path_override_for_merge(
+    "export PATH=/tmp/fake:$PATH; gh -R owner/safe pr merge 1"
+)
+assert not mg.sets_path_override("gh -R owner/safe pr merge 1")
 
 print("ok")

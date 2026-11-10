@@ -723,6 +723,37 @@ def sets_git_location(part: str) -> bool:
     return any(is_git_env_override_key(k) for k in env_assigns)
 
 
+def sets_path_override(part: str) -> bool:
+    """True when the segment assigns/clears PATH (can swap which ``gh`` runs)."""
+    tokens = _shell_tokens(part)
+    rest, leading = _skip_leading_assignments(tokens)
+    if "PATH" in leading:
+        return True
+    env_assigns, cleared = _env_wrapper_state(rest)
+    if "PATH" in env_assigns or "PATH" in cleared:
+        return True
+    # ``export PATH=…`` / ``export PATH`` in a prior or same segment.
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i < len(rest) and rest[i] == "export":
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            key, _, _val = tok.partition("=")
+            if key == "PATH":
+                return True
+    return False
+
+
+def path_override_for_merge(cmd: str) -> bool:
+    """True when a merge command may run under a command-scoped PATH override."""
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if not any(is_gh_pr_merge(p) for p in parts):
+        return False
+    return any(sets_path_override(p) for p in parts)
+
+
 def _repo_operand_unresolvable(repo: str | None) -> bool:
     """True when -R/--repo/GH_REPO still contains shell expansion."""
     if not repo:
@@ -1392,6 +1423,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: relative GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME under "
             "cd/pushd/env -C (cwd differs from the gate); pass an absolute path"
+        )
+    # PATH=… / env -u PATH can replace the ``gh`` binary the shell runs.
+    if path_override_for_merge(cmd):
+        return (
+            "review-gate: command-scoped PATH override with `gh pr merge` "
+            "(can swap the `gh` binary); unset PATH for the merge command"
         )
     if not any(is_gh_pr_merge(p) for p in parts):
         # `bash -c 'gh pr merge …'` / `eval '…'` leave the merge inside one token.

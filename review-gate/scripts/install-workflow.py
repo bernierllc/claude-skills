@@ -30,7 +30,7 @@ def main() -> int:
 
     root = Path.cwd()
     _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
-    # Checker must live on the default branch; the workflow loads it by base SHA.
+    # Checker must live on the default branch; the workflow loads only that ref.
     _copy(checker_src, root / "scripts" / "check-review-gate.py", force)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")

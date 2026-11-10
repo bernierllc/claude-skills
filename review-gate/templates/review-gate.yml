@@ -6,8 +6,9 @@
 # PR base (never the merge commit). Same-repo `pull_request_review` /
 # `pull_request_review_comment` would run PR-modified workflow YAML with
 # checks/actions write — removed on purpose. Gate jobs never execute PR-head
-# code; they load scripts/check-review-gate.py from the PR base SHA first, then
-# the repository default branch.
+# or untrusted-base code; they load scripts/check-review-gate.py exclusively
+# from the repository default branch (a PR base ref can be a contributor-
+# controlled branch when the PR targets a non-default base).
 #
 # Required-check context is the Checks API check run named "Review Gate"
 # published on pull_request.head.sha (Actions job alone attaches to the base).
@@ -37,7 +38,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -58,20 +58,16 @@ jobs:
               -f "output[title]=$title" \
               -f "output[summary]=$summary"
           }
-          loaded=
-          for ref in "$BASE_SHA" "$DEFAULT_BRANCH"; do
-            [ -n "$ref" ] || continue
-            if meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$ref" 2>/dev/null); then
-              printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
-              echo "Loaded trusted checker from ref=$ref"
-              loaded=1
-              break
-            fi
-          done
-          if [ -z "$loaded" ]; then
+          # Only the default branch is trusted for the checker binary. A PR can
+          # target any same-repo branch; that base SHA is not necessarily protected.
+          ref="$DEFAULT_BRANCH"
+          if meta=$(gh api "repos/$REPO/contents/scripts/check-review-gate.py?ref=$ref" 2>/dev/null); then
+            printf '%s' "$meta" | jq -r '.content' | base64 -d > /tmp/check-review-gate.py
+            echo "Loaded trusted checker from ref=$ref"
+          else
             msg=$(printf '%s\n%s' \
-              "Missing trusted scripts/check-review-gate.py on base $BASE_SHA and default branch $DEFAULT_BRANCH." \
-              "Run install-workflow.py and merge it to the default branch (and ideally every protected base).")
+              "Missing trusted scripts/check-review-gate.py on default branch $DEFAULT_BRANCH." \
+              "Run install-workflow.py and merge it to the default branch.")
             printf '%s\n' "$msg"
             complete_check failure "review-gate failed" "$msg"
             exit 1
