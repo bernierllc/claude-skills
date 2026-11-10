@@ -215,12 +215,22 @@ segs, err = mg.iter_merge_segments(
     "GIT_DIR=/workspace/target/.git gh -R owner/r pr merge 42", "/tmp"
 )
 assert err is None and len(segs) == 1
-# GH_CONFIG_DIR is propagated to gate gh subprocesses
+# GH_CONFIG_DIR / XDG_CONFIG_HOME / HOME are propagated to gate gh subprocesses
 child = mg._child_gh_env(
     "GH_CONFIG_DIR=/tmp/enterprise gh -R owner/target pr merge 42",
     scrub_gh_repo=False,
 )
 assert child is not None and child.get("GH_CONFIG_DIR") == "/tmp/enterprise"
+child = mg._child_gh_env(
+    "XDG_CONFIG_HOME=/tmp/enterprise gh -R owner/target pr merge 42",
+    scrub_gh_repo=False,
+)
+assert child is not None and child.get("XDG_CONFIG_HOME") == "/tmp/enterprise"
+child = mg._child_gh_env(
+    "HOME=/tmp/enterprise-home gh -R owner/target pr merge 42",
+    scrub_gh_repo=False,
+)
+assert child is not None and child.get("HOME") == "/tmp/enterprise-home"
 # Override on one merge must not waive a second merge in the same command
 assert mg.segment_has_override("gh -R owner/safe pr merge 1  # review-gate-ok: approved")
 assert not mg.segment_has_override("gh -R owner/target pr merge 2")

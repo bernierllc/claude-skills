@@ -655,11 +655,28 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     return None, repo
 
 
-def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
-    """Build a subprocess env mirroring command-scoped GH_* for gate ``gh``.
+# gh config location: GH_CONFIG_DIR, else $XDG_CONFIG_HOME/gh, else $HOME/.config/gh.
+GH_CONFIG_LOCATION_VARS = frozenset({"GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"})
 
-    Propagates ``GH_HOST`` / ``GH_REPO`` / ``GH_CONFIG_DIR`` so host selection and
-    Enterprise config dirs match the merge child. Returns None when unchanged.
+
+def _apply_overlay_env_var(
+    env: dict[str, str], overlays: dict[str, str], key: str
+) -> None:
+    """Set or clear ``key`` on ``env`` from a command-scoped overlay."""
+    if key not in overlays:
+        return
+    val = overlays[key]
+    if val == "":
+        env.pop(key, None)
+    elif not _repo_operand_unresolvable(val):
+        env[key] = val
+
+
+def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
+    """Build a subprocess env mirroring command-scoped gh config for gate ``gh``.
+
+    Propagates ``GH_HOST`` / ``GH_REPO`` / ``GH_CONFIG_DIR`` / ``XDG_CONFIG_HOME`` /
+    ``HOME`` so host selection and config dirs match the merge child.
     """
     tokens = _shell_tokens(cmd)
     rest, leading = _skip_leading_assignments(tokens)
@@ -668,7 +685,7 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
     touches = (
         "GH_HOST" in overlays
         or "GH_REPO" in overlays
-        or "GH_CONFIG_DIR" in overlays
+        or any(k in overlays for k in GH_CONFIG_LOCATION_VARS)
         or cleared_host
         or cleared_repo
         or scrub_gh_repo
@@ -679,11 +696,7 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
     if cleared_host and "GH_HOST" not in env_assigns:
         env.pop("GH_HOST", None)
     elif "GH_HOST" in overlays:
-        val = overlays["GH_HOST"]
-        if val == "":
-            env.pop("GH_HOST", None)
-        elif not _repo_operand_unresolvable(val):
-            env["GH_HOST"] = val
+        _apply_overlay_env_var(env, overlays, "GH_HOST")
     if (
         scrub_gh_repo
         or (cleared_repo and "GH_REPO" not in env_assigns)
@@ -694,12 +707,8 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
         val = overlays["GH_REPO"]
         if not _repo_operand_unresolvable(val):
             env["GH_REPO"] = val
-    if "GH_CONFIG_DIR" in overlays:
-        val = overlays["GH_CONFIG_DIR"]
-        if val == "":
-            env.pop("GH_CONFIG_DIR", None)
-        elif not _repo_operand_unresolvable(val):
-            env["GH_CONFIG_DIR"] = val
+    for key in GH_CONFIG_LOCATION_VARS:
+        _apply_overlay_env_var(env, overlays, key)
     return env
 
 
