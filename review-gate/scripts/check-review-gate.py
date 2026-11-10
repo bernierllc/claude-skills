@@ -20,6 +20,8 @@ CLOSING = re.compile(
 FALLBACK_REVIEWER = re.compile(r"\b(agy|superpowers|claude|antigravity)\b", re.I)
 REVIEW_SECTION = re.compile(r"(?m)^##\s+Review\b")
 MAIN_REVIEW_LABELS = {"review:high", "review:ultra"}
+# Exact bot logins only — substring matches like "codex-helper" must not pass the gate.
+CODEX_AUTHORS = frozenset({"chatgpt-codex-connector"})
 
 
 def run_gh(args: list[str], repo: str | None = None) -> Any:
@@ -53,9 +55,8 @@ def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
 
 
 def is_codex_author(login: str | None) -> bool:
-    """True only for Codex/ChatGPT review bot identities — never body text."""
-    author = (login or "").lower()
-    return "codex" in author or "chatgpt" in author
+    """True only for the known Codex GitHub App login — never body text or substrings."""
+    return (login or "").lower() in CODEX_AUTHORS
 
 
 def _graphql(query: str, **variables: Any) -> dict[str, Any]:
@@ -170,6 +171,71 @@ def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]
     return threads
 
 
+def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+    """Fetch every submitted review (not just the last 40)."""
+    reviews: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        if cursor is None:
+            q = """
+            query($owner:String!, $name:String!, $number:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  reviews(first: 50) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      state
+                      body
+                      commit { oid }
+                      author { login }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            conn = (
+                _graphql(q, owner=owner, name=name, number=number)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviews")
+                or {}
+            )
+        else:
+            q = """
+            query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  reviews(first: 50, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      state
+                      body
+                      commit { oid }
+                      author { login }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            conn = (
+                _graphql(q, owner=owner, name=name, number=number, cursor=cursor)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviews")
+                or {}
+            )
+        reviews.extend(conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        cursor = page.get("endCursor")
+        if not cursor:
+            break
+    return reviews
+
+
 def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
     q = """
     query($owner:String!, $name:String!, $number:Int!) {
@@ -180,14 +246,6 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
           baseRefName
           headRefOid
           labels(first: 50) { nodes { name } }
-          reviews(last: 40) {
-            nodes {
-              state
-              body
-              commit { oid }
-              author { login }
-            }
-          }
         }
       }
     }
@@ -196,6 +254,7 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
     pr = (data.get("repository") or {}).get("pullRequest")
     if not pr:
         raise RuntimeError(f"PR #{number} not found in {owner}/{name}")
+    pr["reviews"] = {"nodes": _paginate_reviews(owner, name, number)}
     pr["reviewThreads"] = {"nodes": _paginate_threads(owner, name, number)}
     return pr
 

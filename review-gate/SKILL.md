@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.3
+version: 1.0.4
 author: Bernier LLC
 ---
 
@@ -53,7 +53,7 @@ On `pull_request_review_comment` created: cancel in-progress non-gate CI **only*
 
 On eligible events (`pull_request_target`, `pull_request_review`): loads `scripts/check-review-gate.py` from the PR **base** SHA (never the PR head) and fails unless all hold:
 
-1. A completed Codex/ChatGPT-bot review exists on the **current head** (matched by **author login**, not body text), or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`).
+1. A completed review from the exact Codex bot login `chatgpt-codex-connector` exists on the **current head** (not body text / substring logins), or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`).
 2. PR body contains a `## Review` section.
 3. Every review thread whose **root** comment matches `\bp2\b` has a reply with a closing token: Notion link, `fixed in <sha>`, or `not-a-finding: …` (all thread/comment pages are fetched).
 4. When `base` is `main`: label `review:high` or `review:ultra` is present.

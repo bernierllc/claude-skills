@@ -102,6 +102,8 @@ human_mentions = pr(
 assert g.evaluate(human_mentions)
 assert g.is_codex_author("chatgpt-codex-connector")
 assert not g.is_codex_author("mbernier")
+assert not g.is_codex_author("codex-helper")
+assert not g.is_codex_author("chatgpt-user")
 
 # Unanswered P2
 p2 = pr(
@@ -159,6 +161,14 @@ assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
 assert mg.iter_merge_segments(
     "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
 ) == [("gh pr merge 42 --squash", "/workspace/other")]
+assert mg.iter_merge_segments(
+    "cd /workspace/other\ngh pr merge 42 --squash", "/tmp/start"
+) == [("gh pr merge 42 --squash", "/workspace/other")]
+assert mg.extract_merge_selector("gh pr merge --squash") is None
+assert mg.extract_merge_selector(
+    "gh pr merge https://github.com/o/r/pull/7 --squash"
+) == "https://github.com/o/r/pull/7"
+assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feature-branch"
 
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"

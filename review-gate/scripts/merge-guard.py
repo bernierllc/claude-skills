@@ -10,6 +10,8 @@ import importlib.util
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,17 +26,74 @@ MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\
 # `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
 REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
 CD_RE = re.compile(r"^cd\s+(?:--\s+)?(\S+)")
+PULL_URL = re.compile(r"github\.com/[^/]+/[^/]+/pull/(\d+)", re.I)
+
+
+def extract_repo(cmd: str) -> str | None:
+    m_repo = REPO_FLAG.search(cmd)
+    if m_repo:
+        return m_repo.group(1).strip("'\"")
+    return None
+
+
+def extract_merge_selector(cmd: str) -> str | None:
+    """Positional selector after `pr merge`, or None when merging the current branch."""
+    m = re.search(r"\bpr\s+merge\b(.*)$", cmd, re.S)
+    if not m:
+        return None
+    try:
+        tokens = shlex.split(m.group(1), posix=True)
+    except ValueError:
+        tokens = m.group(1).split()
+    for tok in tokens:
+        if tok.startswith("-"):
+            continue
+        return tok.strip("'\"")
+    return None
 
 
 def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
-    repo = None
-    m_repo = REPO_FLAG.search(cmd)
-    if m_repo:
-        repo = m_repo.group(1).strip("'\"")
+    """Legacy helper: numeric selector only. Prefer resolve_pr_number for merges."""
+    repo = extract_repo(cmd)
     m = re.search(r"\bpr\s+merge\s+(\d+)\b", cmd)
     if m:
         return int(m.group(1)), repo
     return None, repo
+
+
+def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str | None, str | None]:
+    """Resolve gh pr merge selector → (number, repo, error).
+
+    Supports number, pull URL, branch name, and omitted selector (current branch)
+    via `gh pr view`, matching https://cli.github.com/manual/gh_pr_merge.
+    """
+    repo = extract_repo(cmd)
+    selector = extract_merge_selector(cmd)
+    if selector and selector.isdigit():
+        return int(selector), repo, None
+    if selector:
+        m_url = PULL_URL.search(selector)
+        if m_url:
+            return int(m_url.group(1)), repo, None
+    args = ["gh", "pr", "view", "--json", "number", "-q", ".number"]
+    if selector:
+        args.insert(2, selector)
+    if repo:
+        args.extend(["-R", repo])
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            cwd=cwd or None,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, repo, f"review-gate: could not resolve PR via gh: {e}"
+    if proc.returncode != 0 or not proc.stdout.strip().isdigit():
+        detail = (proc.stderr or proc.stdout or "gh pr view failed").strip()
+        return None, repo, f"review-gate: could not resolve PR from merge selector: {detail}"
+    return int(proc.stdout.strip()), repo, None
 
 
 def payload_cwd(payload: dict, inp: dict) -> str:
@@ -53,12 +112,12 @@ def payload_cwd(payload: dict, inp: dict) -> str:
 def iter_merge_segments(cmd: str, start_cwd: str) -> list[tuple[str, str]]:
     """Return (segment, cwd) for each `gh pr merge`, applying prior `cd` in the chain.
 
-    Covers agent patterns like `cd /other && gh pr merge 42`. Unresolvable cds
-    (`cd -`, `$VAR`) leave cwd unchanged so -R still wins when present.
+    Splits on `&&`, `;`, and newlines so multiline Bash tool calls like
+    `cd /other\\ngh pr merge 42` resolve the post-cd directory.
     """
     cwd = start_cwd
     out: list[tuple[str, str]] = []
-    for part in re.split(r"\s*(?:&&|;)\s*", cmd):
+    for part in re.split(r"\s*(?:&&|;|\n)\s*", cmd):
         part = part.strip()
         if not part:
             continue
@@ -76,7 +135,9 @@ def iter_merge_segments(cmd: str, start_cwd: str) -> list[tuple[str, str]]:
 
 
 def check_one(segment: str, cwd: str | None) -> str | None:
-    number, repo = extract_pr_and_repo(segment)
+    number, repo, err = resolve_pr_number(segment, cwd=cwd)
+    if err:
+        return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
