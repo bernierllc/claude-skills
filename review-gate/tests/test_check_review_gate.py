@@ -562,6 +562,12 @@ wrapped = mg.check_command("bash -c 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
+# Bundled short flags: -dR owner/target (gh/cobra accepts this)
+assert mg.extract_repo("gh pr merge 42 -dR owner/target") == "owner/target"
+assert mg.extract_merge_selector("gh pr merge 42 -dR owner/target") == "42"
+assert mg.has_literal_repo("gh pr merge 42 -dR owner/target")
+assert mg.extract_repo("gh pr merge 42 -dRowner/target") == "owner/target"
+assert mg.extract_merge_selector("gh pr merge -dR owner/target 42") == "42"
 # Dynamic -R / GH_REPO operands fail closed
 assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
 n, r, e, scrub = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')

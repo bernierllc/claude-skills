@@ -51,8 +51,64 @@ MERGE_VALUE_FLAGS = frozenset(
         "--repo",
     }
 )
+# Single-letter value-taking flags (cobra/pflag bundles: `-dR owner/repo`).
+MERGE_VALUE_SHORT = frozenset({"R", "b", "F", "t", "A"})
 # Separators that do not guarantee a preceding `cd` applied to the parent shell.
 CONDITIONAL_SEPS = frozenset({"||", "|", "&"})
+
+
+def _consume_merge_argv_flag(
+    tokens: list[str], i: int
+) -> tuple[int, str | None, bool]:
+    """Advance past a merge argv flag at ``tokens[i]``.
+
+    Returns ``(next_index, repo_from_-R_or_None, missing_value)``.
+    Understands cobra-style short clusters (``-dR owner/target``, ``-dRowner/target``)
+    so a bundled ``R`` is not skipped as an unknown boolean flag.
+    """
+    tok = tokens[i]
+    if tok in ("-R", "--repo"):
+        if i + 1 >= len(tokens):
+            return i + 1, None, True
+        return i + 2, tokens[i + 1], False
+    if tok.startswith("--repo="):
+        return i + 1, tok.split("=", 1)[1], False
+    if tok.startswith("--"):
+        if "=" in tok:
+            return i + 1, None, False
+        if tok in MERGE_VALUE_FLAGS:
+            if i + 1 >= len(tokens):
+                return i + 1, None, True
+            return i + 2, None, False
+        return i + 1, None, False
+    if not tok.startswith("-") or tok == "-":
+        return i + 1, None, False
+    # Short option or cluster: -Rowner, -bTEXT, -dR owner, -dRowner, -b, …
+    if "=" in tok:
+        # ``-R=owner/repo`` / ``-b=text`` (unlikely for gh, but consume as one token).
+        key, _, val = tok[1:].partition("=")
+        if key == "R":
+            return i + 1, val, False
+        return i + 1, None, False
+    body = tok[1:]
+    j = 0
+    while j < len(body):
+        ch = body[j]
+        if ch in MERGE_VALUE_SHORT:
+            attached = body[j + 1 :]
+            if attached:
+                value = attached
+                next_i = i + 1
+            else:
+                if i + 1 >= len(tokens):
+                    return i + 1, None, True
+                value = tokens[i + 1]
+                next_i = i + 2
+            if ch == "R":
+                return next_i, value, False
+            return next_i, None, False
+        j += 1
+    return i + 1, None, False
 
 
 def _shell_tokens(cmd: str) -> list[str]:
@@ -547,33 +603,21 @@ def extract_repo_resolution(cmd: str) -> tuple[str | None, bool]:
     elif cleared_gh_repo and "GH_REPO" not in env_assigns:
         assignments.pop("GH_REPO", None)
     found: str | None = None
-    i = 0
+    # Only scan gh argv (not `env -uGH_REPO` / similar wrappers — those contain
+    # the letter R and must not be parsed as bundled merge short flags).
+    try:
+        i = rest.index("gh")
+    except ValueError:
+        i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok in ("-R", "--repo"):
-            if i + 1 < len(rest):
-                found = _normalize_repo_operand(rest[i + 1])
-                i += 2
-                continue
-            return None, cleared_gh_repo
-        if tok.startswith("--repo="):
-            found = _normalize_repo_operand(tok.split("=", 1)[1])
-            i += 1
-            continue
-        if tok.startswith("-R") and tok != "-R":
-            found = _normalize_repo_operand(tok[2:])
-            i += 1
-            continue
         if tok.startswith("-"):
-            if "=" in tok:
-                i += 1
-                continue
-            # Consume value-taking flags (including -R handled above).
-            base = tok
-            if base in MERGE_VALUE_FLAGS:
-                i += 2
-                continue
-            i += 1
+            next_i, repo_val, missing = _consume_merge_argv_flag(rest, i)
+            if missing and repo_val is None and tok in ("-R", "--repo"):
+                return None, cleared_gh_repo
+            if repo_val is not None:
+                found = _normalize_repo_operand(repo_val)
+            i = next_i
             continue
         i += 1
     if found is not None:
@@ -608,22 +652,8 @@ def extract_merge_selector(cmd: str) -> str | None:
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith("-"):
-            if tok in ("-R", "--repo"):
-                i += 2
-                continue
-            if tok.startswith("-R") and tok != "-R":
-                i += 1
-                continue
-            if tok.startswith("--repo="):
-                i += 1
-                continue
-            if "=" in tok:
-                i += 1
-                continue
-            if tok in MERGE_VALUE_FLAGS:
-                i += 2
-                continue
-            i += 1
+            next_i, _repo_val, _missing = _consume_merge_argv_flag(tokens, i)
+            i = next_i
             continue
         # Trailing subshell closer etc.
         if tok in {")", "fi", "done", "esac"}:
