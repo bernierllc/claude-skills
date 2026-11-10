@@ -189,9 +189,12 @@ assert not mg.has_override(
 )
 assert not mg.has_override("# review-gate-ok: prior line\ngh pr merge 42")
 assert mg.has_override("gh pr merge 42  # review-gate-ok: attached")
-# Nested process-substitution comments are not outer-shell overrides
+# Nested process-substitution / backtick comments are not outer-shell overrides
 assert not mg.segment_has_override(
     "gh -R owner/target pr merge 42 --auto 3< <(printf x # review-gate-ok: fake\n)"
+)
+assert not mg.segment_has_override(
+    "gh -R owner/target pr merge 42 --body `printf x # review-gate-ok: fake\n`"
 )
 # GIT_DIR / GIT_CONFIG_* without -R fails closed; with -R is allowed
 assert mg.sets_git_location("GIT_DIR=/workspace/target/.git gh pr merge 42")

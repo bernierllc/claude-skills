@@ -5,12 +5,19 @@ Exit 0 = pass. Exit 1 = fail (print reasons on stdout). Exit 2 = usage / infra e
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
-from typing import Any
+from contextvars import ContextVar
+from typing import Any, Iterator
+
+# Optional env for gate ``gh`` subprocesses (merge-guard command-scoped GH_*).
+_GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
+    "review_gate_gh_env", default=None
+)
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
 CLOSING = re.compile(
@@ -27,6 +34,16 @@ CODEX_AUTHORS = frozenset({"chatgpt-codex-connector"})
 DOTCOM_HOSTS = frozenset({"github.com", "www.github.com"})
 
 
+@contextlib.contextmanager
+def gh_subprocess_env(env: dict[str, str] | None) -> Iterator[None]:
+    """Apply a temporary env to every ``gh`` subprocess in this context."""
+    token = _GH_SUBPROCESS_ENV.set(env)
+    try:
+        yield
+    finally:
+        _GH_SUBPROCESS_ENV.reset(token)
+
+
 def run_gh(
     args: list[str],
     repo: str | None = None,
@@ -39,7 +56,9 @@ def run_gh(
     if repo:
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, env=_GH_SUBPROCESS_ENV.get()
+    )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "gh api failed")
     if not proc.stdout.strip():

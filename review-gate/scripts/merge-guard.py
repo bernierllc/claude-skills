@@ -63,7 +63,7 @@ def _shell_tokens(cmd: str) -> list[str]:
 
 
 def shell_comments(cmd: str) -> list[str]:
-    """Return `#…` shell comments at depth 0 (not inside quotes or `<(…)` / `$(…)`)."""
+    """Return `#…` shell comments at depth 0 (not quotes / `<(…)` / `$(…)` / backticks)."""
     comments: list[str] = []
     i = 0
     in_single = False
@@ -92,6 +92,18 @@ def shell_comments(cmd: str) -> list[str]:
         if c == '"':
             in_double = True
             i += 1
+            continue
+        # Legacy backtick command substitution — skip until closing unescaped `.
+        if c == "`":
+            i += 1
+            while i < n:
+                if cmd[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if cmd[i] == "`":
+                    i += 1
+                    break
+                i += 1
             continue
         # Nested process / command substitutions and subshells.
         if c in "<>" and i + 1 < n and cmd[i + 1] == "(":
@@ -897,12 +909,14 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
+    child_env = _child_gh_env(segment, scrub_gh_repo)
     try:
-        hostname, owner, name = gate.parse_repo_with_host(
-            repo, cwd=cwd, env=_child_gh_env(segment, scrub_gh_repo)
-        )
-        pr = gate.pr_payload(owner, name, number, hostname=hostname)
-        reasons = gate.evaluate(pr)
+        with gate.gh_subprocess_env(child_env):
+            hostname, owner, name = gate.parse_repo_with_host(
+                repo, cwd=cwd, env=child_env
+            )
+            pr = gate.pr_payload(owner, name, number, hostname=hostname)
+            reasons = gate.evaluate(pr)
     except Exception as e:  # noqa: BLE001
         # Fail closed: infra / GraphQL errors must not silently allow merges.
         return f"review-gate: gate check failed: {e}"
