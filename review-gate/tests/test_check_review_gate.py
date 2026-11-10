@@ -416,6 +416,21 @@ blocked = mg.check_command(compound_dyn, cwd="/tmp")
 assert blocked and "dynamic" in blocked
 assert not mg.dynamic_gh_pr_merge("something pr merge 42")
 assert not mg.dynamic_gh_pr_merge("gh -R owner/target pr merge 42")
+# Option terminator: post-`--` `-R…` is a branch selector, not a repo flag
+assert (
+    mg.extract_repo("gh -R owner/current pr merge -- -Rowner/branch")
+    == "owner/current"
+)
+assert (
+    mg.extract_merge_selector("gh -R owner/current pr merge -- -Rowner/branch")
+    == "-Rowner/branch"
+)
+# Heredoc bodies are not executable merge segments
+heredoc_cmd = "cat > example.sh <<'EOF'\ngh -R owner/repo pr merge 42\nEOF"
+assert mg.check_command(heredoc_cmd, cwd="/tmp") is None
+assert not any(
+    mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(heredoc_cmd)
+)
 # Dynamic pr/merge subcommands after literal gh
 assert mg.dynamic_gh_subcommand_merge('gh "$x" "$y" 42 -R owner/target')
 assert mg.dynamic_gh_subcommand_merge('gh pr "$y" 42 -R owner/target')

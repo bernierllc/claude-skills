@@ -225,12 +225,116 @@ def has_override(cmd: str) -> bool:
     return any(segment_has_override(p) for p in parts)
 
 
+def strip_heredoc_bodies(cmd: str) -> str:
+    """Remove heredocs so script/doc examples are not treated as merges.
+
+    Replaces each ``<<DELIM … DELIM`` (including the body) with a space so
+    newlines inside heredocs do not become chain splits and body lines like
+    ``gh pr merge`` cannot match ``MERGE_RE`` / ``is_gh_pr_merge``.
+    """
+    out: list[str] = []
+    i = 0
+    in_single = False
+    in_double = False
+    n = len(cmd)
+    while i < n:
+        c = cmd[i]
+        if in_single:
+            out.append(c)
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(cmd[i + 1])
+            i += 2
+            continue
+        # Heredoc: <<[-]['"]?WORD['"]?
+        if c == "<" and i + 1 < n and cmd[i + 1] == "<":
+            j = i + 2
+            strip_tabs = False
+            if j < n and cmd[j] == "-":
+                j += 1
+                strip_tabs = True
+            while j < n and cmd[j] in " \t":
+                j += 1
+            quote = ""
+            if j < n and cmd[j] in "'\"":
+                quote = cmd[j]
+                j += 1
+            delim_chars: list[str] = []
+            while j < n:
+                ch = cmd[j]
+                if quote:
+                    if ch == quote:
+                        j += 1
+                        break
+                    delim_chars.append(ch)
+                    j += 1
+                    continue
+                if ch in " \t\n;&|<>()":
+                    break
+                delim_chars.append(ch)
+                j += 1
+            delim = "".join(delim_chars)
+            if not delim:
+                out.append(c)
+                i += 1
+                continue
+            # Skip remainder of the opener line (e.g. trailing redirects).
+            while j < n and cmd[j] != "\n":
+                j += 1
+            if j < n and cmd[j] == "\n":
+                j += 1
+            # Drop body lines until the closing delimiter.
+            while j < n:
+                line_start = j
+                while j < n and cmd[j] != "\n":
+                    j += 1
+                line = cmd[line_start:j]
+                compare = line.lstrip("\t") if strip_tabs else line
+                if compare == delim:
+                    if j < n and cmd[j] == "\n":
+                        j += 1
+                    break
+                if j < n and cmd[j] == "\n":
+                    j += 1
+            out.append(" ")
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
     """Split on chain operators outside quotes.
 
     Returns [(segment, sep_after), ...] where sep_after is one of
     '', '&&', '||', '|', ';', '&', '\\n'.
     """
+    cmd = strip_heredoc_bodies(cmd)
     parts: list[tuple[str, str]] = []
     buf: list[str] = []
     i = 0
@@ -701,6 +805,10 @@ def extract_repo_resolution(cmd: str) -> tuple[str | None, bool]:
         i = 0
     while i < len(rest):
         tok = rest[i]
+        if tok == "--":
+            # Option terminator — later tokens are positionals (e.g. branch
+            # ``-Rowner/branch``), not repository flags.
+            break
         if tok.startswith("-"):
             next_i, repo_val, missing = _consume_merge_argv_flag(rest, i)
             if missing and repo_val is None and tok in ("-R", "--repo"):
@@ -1224,6 +1332,7 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    cmd = strip_heredoc_bodies(cmd)
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     # Every segment — including those after a literal `gh pr merge` — must not
     # hide a dynamically named merge (`$'\\x67\\x68'`, `./[g]h`, …).
