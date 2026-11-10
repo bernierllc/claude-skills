@@ -469,9 +469,17 @@ assert mg.gh_alias_merge_risk("gh -R owner/target sneak")
 assert mg.gh_alias_merge_risk(
     "gh alias set 'pr sneak' 'pr merge 2 -R owner/target'; gh pr sneak"
 )
+# Multiword aliases under every namespace (not only pr)
+assert mg.gh_alias_merge_risk("gh repo sneak")
+assert mg.gh_alias_merge_risk(
+    "gh alias set 'repo sneak' 'pr merge 2 -R owner/target'; gh repo sneak"
+)
+assert mg.gh_alias_merge_risk("gh issue sneak")
+assert mg.gh_alias_merge_risk("gh run sneak")
 # Built-ins must not be treated as opaque aliases
 assert not mg.gh_alias_merge_risk("gh discussion list")
 assert not mg.gh_alias_merge_risk("gh skill list")
+assert not mg.gh_alias_merge_risk("gh repo view")
 assert not mg.gh_alias_merge_risk("gh copilot")
 assert not mg.gh_alias_merge_risk("gh preview")
 assert not mg.gh_alias_merge_risk("gh agent-task list")
@@ -769,6 +777,13 @@ assert mg.check_command(declare_host, cwd="/tmp") and "exported" in mg.check_com
 assert mg.prior_tracked_gh_export(
     "typeset -x GH_HOST=ghe.example; gh -R owner/target pr merge 42"
 )
+# declare without -x still keeps an inherited export attribute
+declare_plain = "declare GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+assert mg._part_exports_tracked_gh("declare GH_HOST=ghe.example")
+assert mg.prior_tracked_gh_export(declare_plain)
+assert mg.check_command(declare_plain, cwd="/tmp") and "exported" in mg.check_command(
+    declare_plain, cwd="/tmp"
+)
 # Same-segment leading assign is still OK (mirrored by _child_gh_env)
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
@@ -796,6 +811,14 @@ unset_host = "unset GH_HOST; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_unset(unset_host)
 unset_err = mg.check_command(unset_host, cwd="/tmp")
 assert unset_err and "unset" in unset_err
+# Indexed unset spelling removes the scalar the same as unset GH_HOST
+assert mg._part_unsets_tracked_gh("unset 'GH_HOST[0]'")
+assert mg.prior_tracked_gh_unset(
+    "unset 'GH_HOST[0]'; gh -R owner/target pr merge 42"
+)
+assert mg.check_command(
+    "unset 'GH_HOST[0]'; gh -R owner/target pr merge 42", cwd="/tmp"
+)
 # declare +x / export -n remove export attribute (same class as unset)
 declare_plusx = "declare +x GH_HOST; gh -R owner/target pr merge 42"
 assert mg._part_unsets_tracked_gh("declare +x GH_HOST")

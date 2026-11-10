@@ -1190,6 +1190,147 @@ GH_PR_SUBCOMMANDS = frozenset(
         "view",
     }
 )
+# Known subcommands per top-level (from ``gh <cmd> --help``). Namespaces that
+# take freeform args (``api``, ``browse``, …) are omitted — second words there
+# are not treated as multiword-alias probes.
+GH_SUBCOMMANDS_BY_TOP: dict[str, frozenset[str]] = {
+    "agent-task": frozenset({"create", "list", "view"}),
+    "alias": frozenset({"delete", "import", "list", "set"}),
+    "attestation": frozenset({"download", "trusted-root", "verify"}),
+    "auth": frozenset(
+        {"login", "logout", "refresh", "setup-git", "status", "switch", "token"}
+    ),
+    "cache": frozenset({"delete", "list"}),
+    "codespace": frozenset(
+        {
+            "code",
+            "cp",
+            "create",
+            "delete",
+            "edit",
+            "jupyter",
+            "list",
+            "logs",
+            "ports",
+            "rebuild",
+            "ssh",
+            "stop",
+            "view",
+        }
+    ),
+    "config": frozenset({"clear-cache", "get", "list", "set"}),
+    "discussion": frozenset({"comment", "create", "edit", "list", "view"}),
+    "extension": frozenset(
+        {
+            "browse",
+            "create",
+            "exec",
+            "install",
+            "list",
+            "remove",
+            "search",
+            "upgrade",
+        }
+    ),
+    "gist": frozenset(
+        {"clone", "create", "delete", "edit", "list", "rename", "view"}
+    ),
+    "gpg-key": frozenset({"add", "delete", "list"}),
+    "issue": frozenset(
+        {
+            "artifact",
+            "close",
+            "comment",
+            "create",
+            "delete",
+            "develop",
+            "edit",
+            "list",
+            "lock",
+            "pin",
+            "reopen",
+            "status",
+            "transfer",
+            "unlock",
+            "unpin",
+            "view",
+        }
+    ),
+    "label": frozenset({"clone", "create", "delete", "edit", "list"}),
+    "org": frozenset({"list"}),
+    "pr": GH_PR_SUBCOMMANDS,
+    "project": frozenset(
+        {
+            "close",
+            "copy",
+            "create",
+            "delete",
+            "edit",
+            "field-create",
+            "field-delete",
+            "field-list",
+            "item-add",
+            "item-archive",
+            "item-create",
+            "item-delete",
+            "item-edit",
+            "item-list",
+            "link",
+            "list",
+            "mark-template",
+            "unlink",
+            "view",
+        }
+    ),
+    "release": frozenset(
+        {
+            "create",
+            "delete",
+            "delete-asset",
+            "download",
+            "edit",
+            "list",
+            "upload",
+            "verify",
+            "verify-asset",
+            "view",
+        }
+    ),
+    "repo": frozenset(
+        {
+            "archive",
+            "autolink",
+            "clone",
+            "create",
+            "delete",
+            "deploy-key",
+            "edit",
+            "fork",
+            "gitignore",
+            "license",
+            "list",
+            "read-dir",
+            "read-file",
+            "rename",
+            "set-default",
+            "sync",
+            "unarchive",
+            "view",
+        }
+    ),
+    "ruleset": frozenset({"check", "list", "view"}),
+    "run": frozenset(
+        {"cancel", "delete", "download", "list", "rerun", "view", "watch"}
+    ),
+    "search": frozenset({"code", "commits", "issues", "prs", "repos"}),
+    "secret": frozenset({"delete", "list", "set"}),
+    "skill": frozenset(
+        {"install", "list", "preview", "publish", "search", "update"}
+    ),
+    "ssh-key": frozenset({"add", "delete", "list"}),
+    "variable": frozenset({"delete", "get", "list", "set"}),
+    "workflow": frozenset({"disable", "enable", "list", "run", "view"}),
+}
 GH_ALIAS_MUTATE = frozenset({"set", "import", "delete"})
 GH_GLOBAL_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
 
@@ -1247,8 +1388,9 @@ def _part_gh_alias_configures(part: str) -> bool:
 def _part_opaque_gh_command(part: str) -> bool:
     """True when ``gh`` invokes a possible alias rather than a known command path.
 
-    Covers ``gh sneak``, ``gh -R owner/repo sneak``, and multiword aliases such as
-    ``gh pr sneak`` (after ``gh alias set 'pr sneak' 'pr merge …'``).
+    Covers ``gh sneak``, ``gh -R owner/repo sneak``, and multiword aliases under
+    any namespaced command (``gh pr sneak``, ``gh repo sneak`` after
+    ``gh alias set 'repo sneak' 'pr merge …'``).
     """
     rest = _tokens_after_gh(part)
     if rest is None:
@@ -1261,12 +1403,19 @@ def _part_opaque_gh_command(part: str) -> bool:
         return False
     if sub not in GH_TOP_LEVEL_COMMANDS:
         return True
-    # Multiword alias under ``pr``: known top-level, unknown subcommand.
-    if sub == "pr" and len(rest) > 1:
-        nxt = rest[1]
-        if not nxt.startswith("-") and nxt not in GH_PR_SUBCOMMANDS:
-            return True
-    return False
+    # Multiword alias under a known namespace: skip flags, then require a known
+    # subcommand when we have an allowlist for that top-level command.
+    after = _skip_gh_leading_flags(rest[1:])
+    if not after:
+        return False
+    nxt = after[0]
+    if nxt.startswith("-"):
+        return False
+    known = GH_SUBCOMMANDS_BY_TOP.get(sub)
+    if known is None:
+        # Freeform tops (``api``, ``browse``, …) — second word is an argument.
+        return False
+    return nxt not in known
 
 
 def gh_alias_merge_risk(cmd: str) -> bool:
@@ -1274,7 +1423,7 @@ def gh_alias_merge_risk(cmd: str) -> bool:
 
     ``gh alias set sneak 'pr merge 2 -R owner/target'; gh sneak`` never matches
     ``is_gh_pr_merge``, so the gate would otherwise allow it. Fail closed on alias
-    mutation and on opaque ``gh <name>`` / ``gh pr <alias>`` invocations.
+    mutation and on opaque ``gh <name>`` / ``gh <ns> <alias>`` invocations.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     return any(
@@ -1495,15 +1644,13 @@ def _part_exports_tracked_gh(part: str) -> bool:
                 return True
         return False
     if head in ("declare", "typeset", "local"):
-        # ``declare -x NAME=…`` / ``declare -ax GH_HOST=…``
-        export_mark = False
+        # ``declare GH_HOST=…`` keeps an inherited export attribute; ``declare -x``
+        # also marks new exports. Either form mutates the merge child's env.
         for tok in rest[i + 1 :]:
-            if tok.startswith("-") and "=" not in tok:
-                if "x" in tok[1:]:
-                    export_mark = True
+            if tok.startswith("-") or tok.startswith("+"):
                 continue
-            key = tok.split("=", 1)[0]
-            if export_mark and _is_tracked_gh_name(key):
+            key, has_assign, _val = tok.partition("=")
+            if has_assign and _is_tracked_gh_name(key):
                 return True
         return False
     # ``printf -v GH_HOST …`` / sticky ``-vGH_HOST``
@@ -1574,7 +1721,8 @@ def _part_unsets_tracked_gh(part: str) -> bool:
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):
                 continue
-            if tok in GH_TRACKED_ENV_VARS:
+            # ``unset 'GH_HOST[0]'`` removes the scalar the same as ``unset GH_HOST``.
+            if _is_tracked_gh_name(tok):
                 return True
         return False
     if head == "export":
@@ -1586,7 +1734,7 @@ def _part_unsets_tracked_gh(part: str) -> bool:
                     drop_export = True
                 continue
             key = tok.split("=", 1)[0]
-            if drop_export and key in GH_TRACKED_ENV_VARS:
+            if drop_export and _is_tracked_gh_name(key):
                 return True
         return False
     if head not in ("declare", "typeset", "local"):
@@ -1601,7 +1749,7 @@ def _part_unsets_tracked_gh(part: str) -> bool:
         if tok.startswith("-"):
             continue
         key = tok.split("=", 1)[0]
-        if unexport_mark and key in GH_TRACKED_ENV_VARS:
+        if unexport_mark and _is_tracked_gh_name(key):
             return True
     return False
 
