@@ -1,6 +1,6 @@
 ---
 name: api-verification-writer
-version: 1.2.18
+version: 1.3.0
 dependencies:
   skills:
     - name: verification-writer
@@ -42,3 +42,7 @@ UI verification docs describe pages. This skill describes **operations**: REST e
 ## Stamp compatibility
 
 `verification-writer`'s version scan accepts `api-verification-writer@x.y.z` stamps and does not report them as malformed.
+
+## Installed directory
+
+AEC prompts for the shared `verification` directory (default `docs/verification`) and whether to install hooks. It creates the directory even if hooks are declined. The choice is stored in `.aec/directories.json` as `{"verification": "docs/verification"}`. Read that setting before writing docs or invoking tools; every `docs/verification` path in this skill is relative to that selected root. Track this configuration with the project so teammates use the same location. Existing projects without this file use `docs/verification`.

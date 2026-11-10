@@ -4,6 +4,7 @@
  * Exports testable functions. CLI entry point at bottom.
  */
 
+import { verificationDirectory } from './lib/directories.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, relative, basename, join, sep } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
@@ -309,7 +310,7 @@ export async function syncTests(docPath, manifestDir) {
  * A non-empty payload that isn't JSON (a writer cut off mid-payload) is
  * undefined as well: skipping the sync there must not look like success.
  */
-export function resolveDocArg(argv, readStdin) {
+export function resolveDocArg(argv, readStdin, repoRoot = process.cwd()) {
   if (argv[2] && !argv[2].startsWith('-')) return argv[2];
   const text = readStdin();
   if (text === undefined) return undefined;
@@ -321,7 +322,10 @@ export function resolveDocArg(argv, readStdin) {
   }
   // The hook fires on every Edit/Write, not just verification docs — ignore
   // anything that isn't one rather than rewriting the manifest for a stray file.
-  return /verification\/.*\.md$/.test(edited ?? '') ? edited : null;
+  if (typeof edited !== 'string') return null;
+  const doc = resolve(repoRoot, edited);
+  const root = verificationDirectory(repoRoot) + sep;
+  return doc.startsWith(root) && doc.endsWith('.md') ? edited : null;
 }
 
 /**

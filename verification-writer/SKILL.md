@@ -1,7 +1,7 @@
 ---
 name: verification-writer
 description: Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.
-version: 3.7.11
+version: 3.8.0
 author: Bernier LLC
 ---
 
@@ -1215,3 +1215,7 @@ HTML visualization: [flow-views | sitemap | both | none]
 - About to generate a checklist item without a bold `**ID**` — Format A is mandatory for all generated items; derive or skip the item before writing without an ID
 - About to remove an item for a reverted feature — removal orphans downstream references; add a `<!-- DEFERRED: reason -->` annotation instead
 - A flow doc has steps with no Format A IDs and the test generator has been invoked — report the gap to the user; do not generate flow step IDs on behalf of the verification-writer
+
+## Installed directory
+
+AEC prompts for the shared `verification` directory (default `docs/verification`) and whether to install hooks. It creates the directory even if hooks are declined. The choice is stored in `.aec/directories.json` as `{"verification": "docs/verification"}`. Read that setting before writing docs or invoking tools; every `docs/verification` path in this skill is relative to that selected root. Track this configuration with the project so teammates use the same location. Existing projects without this file use `docs/verification`.

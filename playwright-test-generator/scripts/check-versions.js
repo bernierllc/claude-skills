@@ -15,7 +15,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { acquireLockSync, migrateManifest, manifestDirFor } from './lib/manifest.js';
 
-const VERIFICATION_ROOT = join('docs', 'verification');
+import { verificationDirectory } from './lib/directories.js';
 const PLAYWRIGHT_ROOT = join('tests', 'verification-playwright');
 const EXCLUDED_DIRS = new Set(['findings', 'logs', 'visualizations']);
 const EXCLUDED_TOP_FILES = new Set(['index.md', 'README.md']);
@@ -186,7 +186,7 @@ export function classifyDoc(docPath, projectDir, repoRoot = projectDir) {
 
 /** Classify every verification doc in the project. */
 export function checkVersions(projectDir, repoRoot = projectDir) {
-  const docs = discoverDocs(join(projectDir, VERIFICATION_ROOT));
+  const docs = discoverDocs(verificationDirectory(repoRoot));
   const results = docs.map((d) => classifyDoc(d, projectDir, repoRoot));
   const counts = {};
   for (const r of results) counts[r.status] = (counts[r.status] || 0) + 1;

@@ -41,11 +41,12 @@ done
 # Check 1 — verification docs exist
 # ---------------------------------------------------------------------------
 
-PAGES_DIR="$ROOT/docs/verification/pages"
+VERIFICATION_DIR=$(node "$(dirname "$0")/lib/directories.js" "$ROOT")
+PAGES_DIR="$VERIFICATION_DIR/pages"
 
 if [ ! -d "$PAGES_DIR" ]; then
   cat <<EOF
-ERROR: $SKILL_NAME requires verification docs at docs/verification/pages/
+ERROR: $SKILL_NAME requires verification docs at $PAGES_DIR/
 
 This skill depends on output from the verification-writer skill, which has
 not been run in this repo yet (or the docs were deleted).
@@ -70,7 +71,7 @@ if [ "$PAGE_COUNT" -eq 0 ]; then
   cat <<EOF
 ERROR: $SKILL_NAME requires at least one verification page doc
 
-The directory docs/verification/pages/ exists but contains no .md files.
+The directory $PAGES_DIR/ exists but contains no .md files.
 This usually means verification-writer started a scaffold but did not finish
 generating page docs.
 
