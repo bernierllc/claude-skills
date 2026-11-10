@@ -82,6 +82,9 @@ jobs:
       - name: pr-merge-flow guard tests
         run: python3 pr-merge-flow/tests/test_pr_guard.py
 
+      - name: review-gate tests
+        run: python3 review-gate/tests/test_check_review_gate.py
+
       - name: Changed skills bump their version
         if: github.event_name == 'pull_request'
         env:

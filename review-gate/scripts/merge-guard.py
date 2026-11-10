@@ -21,11 +21,13 @@ _spec.loader.exec_module(gate)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\b")
+# `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
+REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
 
 
 def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     repo = None
-    m_repo = re.search(r"(?:-R|--repo(?:=|\s+))(\S+)", cmd)
+    m_repo = REPO_FLAG.search(cmd)
     if m_repo:
         repo = m_repo.group(1).strip("'\"")
     m = re.search(r"\bpr\s+merge\s+(\d+)\b", cmd)

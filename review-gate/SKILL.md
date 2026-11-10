@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.0
+version: 1.0.1
 author: Bernier LLC
 ---
 
@@ -32,7 +32,7 @@ gh api -X PUT "repos/<owner>/<repo>/rulesets/<id>" --input - <<'EOF'
 EOF
 ```
 
-Email_demo and Prevost already have `required_review_thread_resolution: true` (2026-10-17/18). Add the workflow as a **required check** on those rulesets beside CI.
+Email_demo and Prevost already have `required_review_thread_resolution: true` (2026-10-17/18). Add **`Review Gate`** (the job display name / Checks API context — not the workflow file name alone) as a **required check** on those rulesets beside CI.
 
 Doctor:
 
@@ -43,18 +43,22 @@ aec run-script skill:review-gate doctor-review-gate.py
 
 ## What the workflow does
 
-### Job `cancel-ci-on-review-comment`
+### Job `cancel-ci-on-finding`
 
-On `pull_request_review_comment` created: cancel in-progress workflow runs for that PR's head SHA (skips the `Review Gate` workflow itself). Saves runner minutes when a review arrives mid-CI.
+On `pull_request_review_comment` created: cancel in-progress non-gate CI **only** for new top-level P0/P1 findings. Replies, closing tokens (Notion / `fixed in` / `not-a-finding:`), and P2-only comments do **not** cancel CI — those paths often need no new head, and a cancelled required check would otherwise stick.
 
-### Job `gate`
+### Job `gate` (display name `Review Gate`)
 
-On PR open/sync/edit/label and on review / review_comment events: fail the required check unless all hold:
+On eligible events (`pull_request`, `pull_request_review`): fail unless all hold:
 
-1. A completed Codex review exists on the **current head**, or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude`).
+1. A completed Codex review exists on the **current head**, or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`).
 2. PR body contains a `## Review` section.
 3. Every review thread whose **root** comment matches `\bp2\b` has a reply with a closing token: Notion link, `fixed in <sha>`, or `not-a-finding: …`.
 4. When `base` is `main`: label `review:high` or `review:ultra` is present.
+
+### Job `gate-refresh-on-comment`
+
+`pull_request_review_comment` is **not** an eligible Actions event for required checks. That job re-evaluates the gate and publishes a Checks API run named `Review Gate` on the head SHA so a closing reply can clear a prior failure without a dummy push.
 
 Unresolved threads are **not** checked here — that is GitHub's `required_review_thread_resolution` on the ruleset (free, instant on resolve).
 
