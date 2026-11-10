@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 REVIEW_GATE_CONTEXT = "Review Gate"
+# Branches the install instructions say must carry Review Gate + conversation rules.
+MERGE_BRANCHES = ("main", "staging")
 
 
 def gh_json(args: list[str]) -> object | None:
@@ -27,6 +29,39 @@ def gh_json(args: list[str]) -> object | None:
 def ruleset_is_enforcing(detail: dict) -> bool:
     """True when the ruleset actively blocks merges (not disabled/evaluate)."""
     return detail.get("enforcement") == "active"
+
+
+def ruleset_targets_merge_branches(detail: dict) -> bool:
+    """True when ruleset ``conditions.ref_name`` covers ``main`` and/or ``staging``."""
+    conditions = detail.get("conditions") or {}
+    ref_name = conditions.get("ref_name") or {}
+    include = [str(x) for x in (ref_name.get("include") or [])]
+    exclude = [str(x) for x in (ref_name.get("exclude") or [])]
+    if not include:
+        return False
+
+    def _excluded(branch: str) -> bool:
+        ref = f"refs/heads/{branch}"
+        return ref in exclude or branch in exclude
+
+    def _covered(branch: str) -> bool:
+        if _excluded(branch):
+            return False
+        ref = f"refs/heads/{branch}"
+        for pat in include:
+            if pat in ("~ALL", ref, branch):
+                return True
+            if pat == "~DEFAULT_BRANCH" and branch == "main":
+                return True
+            if pat in ("refs/heads/*", "refs/heads/**"):
+                return True
+            if pat.endswith("/*") or pat.endswith("/**"):
+                prefix = pat.rstrip("*").rstrip("/")
+                if ref.startswith(prefix + "/") or ref == prefix:
+                    return True
+        return False
+
+    return any(_covered(b) for b in MERGE_BRANCHES)
 
 
 def ruleset_requires_review_gate(detail: dict) -> bool:
@@ -87,6 +122,7 @@ def main() -> int:
     status_check_rulesets = 0
     enforcing_seen = 0
     skipped_non_enforcing = 0
+    skipped_wrong_branch = 0
     for rs in rulesets:
         rid = rs.get("id")
         name = rs.get("name")
@@ -99,6 +135,13 @@ def main() -> int:
             print(
                 f"WARN ruleset {name!r} enforcement={enf!r} "
                 "(disabled/evaluate does not block merges); ignored"
+            )
+            continue
+        if not ruleset_targets_merge_branches(detail):
+            skipped_wrong_branch += 1
+            print(
+                f"WARN ruleset {name!r} does not target main/staging "
+                "(conditions.ref_name); ignored for Review Gate coverage"
             )
             continue
         enforcing_seen += 1
@@ -129,12 +172,13 @@ def main() -> int:
                     f"required_review_thread_resolution is not true"
                 )
     if enforcing_seen == 0:
-        print(
-            "WARN no actively enforcing rulesets found "
-            f"(saw {skipped_non_enforcing} disabled/evaluate)"
-            if skipped_non_enforcing
-            else "WARN no actively enforcing rulesets found"
-        )
+        bits: list[str] = []
+        if skipped_non_enforcing:
+            bits.append(f"{skipped_non_enforcing} disabled/evaluate")
+        if skipped_wrong_branch:
+            bits.append(f"{skipped_wrong_branch} not targeting main/staging")
+        suffix = f" (saw {', '.join(bits)})" if bits else ""
+        print(f"WARN no actively enforcing main/staging rulesets found{suffix}")
     if checked == 0:
         print("WARN no pull_request rules found on any enforcing ruleset")
     elif missing_flag:

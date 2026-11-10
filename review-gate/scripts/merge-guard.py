@@ -788,6 +788,138 @@ def _shell_c_payloads(part: str) -> list[str]:
     return payloads
 
 
+def _extract_command_substitutions(text: str) -> list[str]:
+    """Return bodies of ``$(…)``, backtick, ``<(…)``, and ``>(…)`` regions."""
+    bodies: list[str] = []
+    i = 0
+    n = len(text)
+    in_single = False
+    in_double = False
+    while i < n:
+        c = text[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+                i += 1
+                continue
+            # Command substitutions still expand inside double quotes.
+            if c == "$" and i + 1 < n and text[i + 1] == "(":
+                body, nxt = _read_balanced(text, i + 2, "(", ")")
+                bodies.append(body)
+                bodies.extend(_extract_command_substitutions(body))
+                i = nxt
+                continue
+            if c == "`":
+                body, nxt = _read_backtick(text, i + 1)
+                bodies.append(body)
+                i = nxt
+                continue
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            body, nxt = _read_balanced(text, i + 2, "(", ")")
+            bodies.append(body)
+            bodies.extend(_extract_command_substitutions(body))
+            i = nxt
+            continue
+        if c in "<>" and i + 1 < n and text[i + 1] == "(":
+            body, nxt = _read_balanced(text, i + 2, "(", ")")
+            bodies.append(body)
+            bodies.extend(_extract_command_substitutions(body))
+            i = nxt
+            continue
+        if c == "`":
+            body, nxt = _read_backtick(text, i + 1)
+            bodies.append(body)
+            i = nxt
+            continue
+        i += 1
+    return bodies
+
+
+def _read_balanced(text: str, start: int, open_ch: str, close_ch: str) -> tuple[str, int]:
+    """Read from ``start`` until matching ``close_ch``; return (body, index_after)."""
+    depth = 1
+    i = start
+    n = len(text)
+    in_single = False
+    in_double = False
+    while i < n:
+        c = text[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start:i], i + 1
+        i += 1
+    return text[start:], n
+
+
+def _read_backtick(text: str, start: int) -> tuple[str, int]:
+    i = start
+    n = len(text)
+    while i < n:
+        if text[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if text[i] == "`":
+            return text[start:i], i + 1
+        i += 1
+    return text[start:], n
+
+
+def nested_merge_in_segment(part: str) -> bool:
+    """True when ``$(gh … pr merge)`` / backticks nest inside the segment.
+
+    Covers ``X=\"$(gh -R target pr merge 2)\" gh -R safe pr merge 1`` where the
+    outer tokens look like a direct merge so the shell-wrapped predicate skips.
+    """
+    for body in _extract_command_substitutions(part):
+        if MERGE_RE.search(body) or is_gh_pr_merge(body):
+            return True
+        if dynamic_gh_pr_merge(body) or quote_smashed_merge(body):
+            return True
+    return False
+
+
 def opaque_shell_wrapper_pr_merge(part: str) -> bool:
     """True when a shell ``-c``/eval payload hides a dynamic ``pr``…``merge``.
 
@@ -1181,6 +1313,40 @@ def redefines_prefix_builtin(cmd: str) -> bool:
         if PREFIX_FUNC_RE.search(candidate) or PREFIX_ALIAS_RE.search(candidate):
             return True
     return False
+
+
+def _part_declares_nameref(part: str) -> bool:
+    """True when the segment runs ``declare -n`` / ``typeset -n`` / ``local -n``."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] not in ("declare", "typeset", "local"):
+        return False
+    for tok in rest[i + 1 :]:
+        if tok.startswith("-") and "=" not in tok:
+            if "n" in tok[1:]:
+                return True
+            continue
+        if tok.startswith("+") and "=" not in tok:
+            if "n" in tok[1:]:
+                return True
+            continue
+        break
+    return False
+
+
+def nameref_with_merge(cmd: str) -> bool:
+    """True when a nameref appears in a compound command that also merges.
+
+    ``declare -n host=GH_HOST; host=ghe.example; gh … pr merge`` mutates the
+    tracked export without naming ``GH_HOST`` in a literal assignment.
+    """
+    if not MERGE_RE.search(cmd):
+        return False
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    return any(_part_declares_nameref(p) for p in parts)
 
 
 def inherited_shadowing_function(
@@ -2057,6 +2223,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "(trailing NAME=VALUE become env); set GH_* as a leading assign on the "
             "merge command itself"
         )
+    # Nameref can retarget GH_HOST/… without a literal tracked-name assignment.
+    if nameref_with_merge(cmd):
+        return (
+            "review-gate: `declare -n`/`typeset -n`/`local -n` with `gh pr merge` "
+            "(can mutate GH_HOST/config via nameref); set GH_* on the merge command itself"
+        )
     # Wrapped / substituted merges in ANY segment — even when another segment is
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).
     # `is_gh_pr_merge` false means the merge is inside `$()` / quotes / eval text;
@@ -2065,6 +2237,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: shell-wrapped `gh pr merge` detected "
             "(e.g. `bash -c` / `eval` / `$(…)`); run `gh -R owner/repo pr merge <n>` directly"
+        )
+    # Nested `$(gh … pr merge)` inside the same segment as a direct merge.
+    if any(nested_merge_in_segment(p) for p in parts):
+        return (
+            "review-gate: nested `$(gh pr merge)` / backtick merge beside a direct "
+            "`gh pr merge`; run a single literal `gh -R owner/repo pr merge <n>`"
         )
     if not any(is_gh_pr_merge(p) for p in parts):
         return None

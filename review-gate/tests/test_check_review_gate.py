@@ -694,6 +694,24 @@ subshell_merge = (
 )
 wrapped = mg.check_command(subshell_merge, cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
+# Nested $(merge) in the SAME segment as a direct merge
+nested_same = (
+    'X="$(gh -R owner/target pr merge 2 --auto)" '
+    "gh -R owner/safe pr merge 1 --auto"
+)
+assert mg.nested_merge_in_segment(nested_same)
+nested_err = mg.check_command(nested_same, cwd="/tmp")
+assert nested_err and ("nested" in nested_err or "shell-wrapped" in nested_err)
+# Nameref can mutate GH_HOST without naming it in an assignment
+nameref_cmd = (
+    "declare -n host=GH_HOST; host=ghe.example; "
+    "gh -R owner/target pr merge 42"
+)
+assert mg.nameref_with_merge(nameref_cmd)
+nameref_err = mg.check_command(nameref_cmd, cwd="/tmp")
+assert nameref_err and (
+    "nameref" in nameref_err.lower() or "declare -n" in nameref_err
+)
 # Prior export of GH_HOST/config is not mirrored into the merge-segment gate env
 export_host = "export GH_HOST=ghe.example; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_export(export_host)
@@ -1094,6 +1112,33 @@ assert _doctor.ruleset_is_enforcing({"enforcement": "active"})
 assert not _doctor.ruleset_is_enforcing({"enforcement": "disabled"})
 assert not _doctor.ruleset_is_enforcing({"enforcement": "evaluate"})
 assert not _doctor.ruleset_is_enforcing({})
+assert _doctor.ruleset_targets_merge_branches(
+    {
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/main"], "exclude": []}
+        }
+    }
+)
+assert _doctor.ruleset_targets_merge_branches(
+    {"conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
+)
+assert not _doctor.ruleset_targets_merge_branches(
+    {
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/experimental"], "exclude": []}
+        }
+    }
+)
+assert not _doctor.ruleset_targets_merge_branches(
+    {
+        "conditions": {
+            "ref_name": {
+                "include": ["~ALL"],
+                "exclude": ["refs/heads/main", "refs/heads/staging"],
+            }
+        }
+    }
+)
 
 # Thread pagination embeds the first comments page (avoid N+1 gh api calls)
 _paginate_src = inspect.getsource(g._paginate_threads)
