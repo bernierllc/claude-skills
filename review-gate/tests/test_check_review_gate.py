@@ -263,6 +263,25 @@ assert err is None and len(segs) == 1
 assert mg.extract_repo(segs[0][0]) == "owner/r"
 # GH_REPO assignment selects the target repo
 assert mg.extract_repo("GH_REPO=owner/target gh pr merge 99") == "owner/target"
+# Escaped newline is a line continuation, not a chain boundary / fake cd
+segs, err = mg.iter_merge_segments(
+    "echo \\\ncd /workspace/safe && gh pr merge 42", "/tmp/start"
+)
+assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
+# source / . can change cwd — fail closed without -R
+segs, err = mg.iter_merge_segments(
+    "source /tmp/move-to-other-repo.sh && gh pr merge 42", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+segs, err = mg.iter_merge_segments(
+    ". /tmp/move-to-other-repo.sh && gh pr merge 42", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+segs, err = mg.iter_merge_segments(
+    "source /tmp/move-to-other-repo.sh && gh -R owner/r pr merge 42", "/tmp/start"
+)
+assert err is None and len(segs) == 1
+assert mg.extract_repo(segs[0][0]) == "owner/r"
 # -R on a later merge must not waive scoped-dir on an earlier merge segment
 segs, err = mg.iter_merge_segments(
     "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"

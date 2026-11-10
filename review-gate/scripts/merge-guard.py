@@ -151,6 +151,19 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
             buf.append(c)
             i += 1
             continue
+        # Outside quotes: backslash escapes the next char / continues a line.
+        if c == "\\" and i + 1 < n:
+            nxt = cmd[i + 1]
+            if nxt == "\n":
+                # Line continuation — do not treat the newline as a chain boundary.
+                if buf and not buf[-1].isspace():
+                    buf.append(" ")
+                i += 2
+                continue
+            buf.append(c)
+            buf.append(nxt)
+            i += 2
+            continue
         if c == "&" and i + 1 < n and cmd[i + 1] == "&":
             flush("&&")
             i += 2
@@ -368,6 +381,25 @@ def _cd_target_unresolvable(target: str | None) -> bool:
 
 
 DIR_BUILTINS = frozenset({"cd", "pushd"})
+# Sourced scripts run in the current shell and may change cwd.
+SOURCE_BUILTINS = frozenset({"source", "."})
+# Control-flow prefixes where a later `cd` is a real builtin (`if cd …`).
+SHELL_KEYWORDS = frozenset(
+    {
+        "if",
+        "then",
+        "else",
+        "elif",
+        "while",
+        "until",
+        "for",
+        "do",
+        "case",
+        "select",
+        "time",
+        "!",
+    }
+)
 
 
 def parse_dir_builtin(part: str, builtin: str) -> str | None:
@@ -427,6 +459,9 @@ def iter_merge_segments(
             if tokens and tokens[0].startswith("("):
                 unresolved_cd = True
                 continue
+            if tokens and tokens[0] in SOURCE_BUILTINS:
+                unresolved_cd = True
+                continue
             leading = _leading_dir_builtin(tokens)
             if leading == "popd":
                 unresolved_cd = True
@@ -445,10 +480,10 @@ def iter_merge_segments(
                 cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
                 unresolved_cd = False
                 continue
-            # `if cd …`, `then pushd …`, etc. — use tokens so quoted text is ignored.
-            if any(
+            # `if cd …`, `then pushd …` — not `echo cd` (cd as a plain argument).
+            if tokens and tokens[0] in SHELL_KEYWORDS and any(
                 t in DIR_BUILTINS or t == "popd" or t.lstrip("(") in DIR_BUILTINS
-                for t in tokens
+                for t in tokens[1:]
             ):
                 unresolved_cd = True
                 continue
