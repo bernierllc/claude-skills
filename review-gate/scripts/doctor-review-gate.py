@@ -71,7 +71,11 @@ def _github_path_fnmatch(name: str, pat: str) -> bool:
                 out.append(re.escape(ch))
                 i += 1
             else:
-                out.append(pat[i : j + 1])
+                klass = pat[i : j + 1]
+                # fnmatch ``[!abc]`` → regex ``[^abc]`` (GitHub/Ruby FNMATCH).
+                if len(klass) > 2 and klass[1] == "!":
+                    klass = "[^" + klass[2:]
+                out.append(klass)
                 i = j + 1
             continue
         out.append(re.escape(ch))

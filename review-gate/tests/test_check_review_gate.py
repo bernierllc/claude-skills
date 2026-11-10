@@ -784,6 +784,13 @@ assert mg.prior_tracked_gh_export(declare_plain)
 assert mg.check_command(declare_plain, cwd="/tmp") and "exported" in mg.check_command(
     declare_plain, cwd="/tmp"
 )
+# readonly NAME=value also assigns before locking (keeps inherited export)
+readonly_host = "readonly GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+assert mg._part_exports_tracked_gh("readonly GH_HOST=ghe.example")
+assert mg.prior_tracked_gh_export(readonly_host)
+assert mg.check_command(readonly_host, cwd="/tmp") and "exported" in mg.check_command(
+    readonly_host, cwd="/tmp"
+)
 # Same-segment leading assign is still OK (mirrored by _child_gh_env)
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
@@ -1315,6 +1322,23 @@ assert not _doctor.ruleset_covered_branches(
 assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/*")
 assert _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/*")
 assert _doctor._github_path_fnmatch("refs/heads/main", "refs/**")
+# fnmatch [!m] is negation, not a literal '!' class member
+assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/[!m]*")
+assert _doctor._github_path_fnmatch("refs/heads/staging", "refs/heads/[!m]*")
+assert "main" not in _doctor.ruleset_covered_branches(
+    {
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/[!m]*"], "exclude": []}
+        }
+    }
+)
+assert _doctor.ruleset_covered_branches(
+    {
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/[!m]*"], "exclude": []}
+        }
+    }
+) == ["staging"]
 assert set(
     _doctor.ruleset_covered_branches(
         {"conditions": {"ref_name": {"include": ["refs/heads/*"], "exclude": []}}}

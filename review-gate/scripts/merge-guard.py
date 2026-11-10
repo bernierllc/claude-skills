@@ -1643,9 +1643,9 @@ def _part_exports_tracked_gh(part: str) -> bool:
             if _is_tracked_gh_name(key):
                 return True
         return False
-    if head in ("declare", "typeset", "local"):
-        # ``declare GH_HOST=…`` keeps an inherited export attribute; ``declare -x``
-        # also marks new exports. Either form mutates the merge child's env.
+    if head in ("declare", "typeset", "local", "readonly"):
+        # ``declare``/``readonly GH_HOST=…`` keeps an inherited export attribute;
+        # ``declare -x`` also marks new exports. Either form mutates the merge child.
         for tok in rest[i + 1 :]:
             if tok.startswith("-") or tok.startswith("+"):
                 continue
