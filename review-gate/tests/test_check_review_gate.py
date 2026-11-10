@@ -776,6 +776,14 @@ trap_cmd = (
 assert mg.shell_mutation_before_merge(trap_cmd)
 trap_err = mg.check_command(trap_cmd, cwd="/tmp")
 assert trap_err and "trap" in trap_err
+# trap AFTER the inspected merge still fires on EXIT
+trap_after = (
+    'm=merge; gh -R owner/safe pr merge 1; '
+    "trap '/usr/bin/gh -R owner/target pr \"$m\" 2' EXIT"
+)
+assert mg.shell_mutation_before_merge(trap_after)
+trap_after_err = mg.check_command(trap_after, cwd="/tmp")
+assert trap_after_err and "trap" in trap_after_err
 # Prefix/wrappers stripped as harmless can be shadowed functions
 prefix_redef = (
     'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
@@ -986,5 +994,39 @@ printf_err = mg.check_command(
 assert printf_err and "PATH" in printf_err
 assert mg.sets_path_override("read PATH")
 assert not mg.sets_path_override("gh -R owner/safe pr merge 1")
+
+# Doctor must detect required Review Gate status-check context
+_doctor_path = Path(__file__).parent.parent / "scripts" / "doctor-review-gate.py"
+_doctor_spec = importlib.util.spec_from_file_location("doctor_review_gate", _doctor_path)
+_doctor = importlib.util.module_from_spec(_doctor_spec)
+assert _doctor_spec.loader is not None
+_doctor_spec.loader.exec_module(_doctor)
+assert _doctor.ruleset_requires_review_gate(
+    {
+        "rules": [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "Review Gate"}],
+                },
+            }
+        ]
+    }
+)
+assert not _doctor.ruleset_requires_review_gate(
+    {
+        "rules": [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "CI"}],
+                },
+            }
+        ]
+    }
+)
+assert not _doctor.ruleset_requires_review_gate(
+    {"rules": [{"type": "pull_request", "parameters": {}}]}
+)
 
 print("ok")

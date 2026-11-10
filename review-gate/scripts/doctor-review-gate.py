@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+REVIEW_GATE_CONTEXT = "Review Gate"
+
 
 def gh_json(args: list[str]) -> object | None:
     proc = subprocess.run(["gh", *args], capture_output=True, text=True)
@@ -20,6 +22,20 @@ def gh_json(args: list[str]) -> object | None:
         return json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def ruleset_requires_review_gate(detail: dict) -> bool:
+    """True when a ruleset detail requires the ``Review Gate`` status check."""
+    for rule in detail.get("rules") or []:
+        if rule.get("type") != "required_status_checks":
+            continue
+        params = rule.get("parameters") or {}
+        for check in params.get("required_status_checks") or []:
+            if not isinstance(check, dict):
+                continue
+            if check.get("context") == REVIEW_GATE_CONTEXT:
+                return True
+    return False
 
 
 def main() -> int:
@@ -62,12 +78,27 @@ def main() -> int:
 
     checked = 0
     missing_flag = []
+    gate_required_on: list[str] = []
+    status_check_rulesets = 0
     for rs in rulesets:
         rid = rs.get("id")
         name = rs.get("name")
         detail = gh_json(["api", f"repos/{full}/rulesets/{rid}"])
         if not isinstance(detail, dict):
             continue
+        if any(
+            rule.get("type") == "required_status_checks"
+            for rule in (detail.get("rules") or [])
+        ):
+            status_check_rulesets += 1
+            if ruleset_requires_review_gate(detail):
+                gate_required_on.append(str(name))
+                print(f"OK ruleset {name!r} requires status check {REVIEW_GATE_CONTEXT!r}")
+            else:
+                print(
+                    f"WARN ruleset {name!r} has required_status_checks but "
+                    f"missing context {REVIEW_GATE_CONTEXT!r}"
+                )
         for rule in detail.get("rules") or []:
             if rule.get("type") != "pull_request":
                 continue
@@ -87,6 +118,16 @@ def main() -> int:
         print(
             "HINT flip with gh api -X PUT repos/.../rulesets/<id> "
             "(see email_demo plan 2026-10-16 §6a)"
+        )
+    if status_check_rulesets == 0:
+        print(
+            f"WARN no required_status_checks rules found — add {REVIEW_GATE_CONTEXT!r} "
+            "as a required check on staging/main rulesets"
+        )
+    elif not gate_required_on:
+        print(
+            f"HINT add required check context {REVIEW_GATE_CONTEXT!r} on staging/main "
+            "rulesets (Checks API name from the review-gate workflow job)"
         )
     return 0
 

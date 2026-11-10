@@ -1045,16 +1045,21 @@ def _part_has_shell_mutation(part: str) -> bool:
 
 
 def shell_mutation_before_merge(cmd: str) -> bool:
-    """True when ``eval``/``source``/``.``/``trap`` precedes a merge."""
+    """True when ``eval``/``source``/``.``/``trap`` shares a compound with a merge.
+
+    Order does not matter: a ``trap … EXIT`` *after* a validated merge still runs
+    on shell exit and can perform an unchecked second merge.
+    """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
-    seen = False
+    has_merge = False
+    has_mutation = False
     for part in parts:
         if is_gh_pr_merge(part):
-            if seen:
-                return True
-            continue
-        if _part_has_shell_mutation(part):
-            seen = True
+            has_merge = True
+        elif _part_has_shell_mutation(part):
+            has_mutation = True
+        if has_merge and has_mutation:
+            return True
     return False
 
 
@@ -1886,10 +1891,11 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "(not mirrored into the gate); clear via `env -u … gh -R owner/repo pr merge <n>` "
             "on the merge command itself"
         )
-    # `eval` / `source` / `.` / `trap` can hide merges the gate never inspects.
+    # `eval` / `source` / `.` / `trap` can hide merges the gate never inspects
+    # (including traps installed *after* the validated merge segment).
     if shell_mutation_before_merge(cmd):
         return (
-            "review-gate: `eval`/`source`/`.`/`trap` before `gh pr merge` "
+            "review-gate: `eval`/`source`/`.`/`trap` with `gh pr merge` "
             "(can redefine `gh` or run a merge from a trap); run literal "
             "`gh -R owner/repo pr merge <n>` without sourcing, eval, or trap"
         )
