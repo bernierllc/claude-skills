@@ -222,6 +222,12 @@ assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feat
 # URL selector must carry owner/repo, not only the number
 n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/7 --squash")
 assert e is None and n == 7 and r == "owner/other"
+# Enterprise pull URLs retain the hostname for gate queries
+n, r, e = mg.resolve_pr_number(
+    "gh pr merge https://ghe.example/owner/repo/pull/7 --squash"
+)
+assert e is None and n == 7 and r == "ghe.example/owner/repo"
+assert g.parse_repo_with_host(r) == ("ghe.example", "owner", "repo")
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
 assert g.parse_repo_with_host("owner/repo") == (None, "owner", "repo")
@@ -233,6 +239,11 @@ assert g.parse_repo_with_host("ghe.example/owner/repo") == (
 )
 assert mg.extract_repo("gh pr merge 7 -Rowner/other --squash") == "owner/other"
 assert mg.extract_repo("gh -Rowner/other pr merge 7") == "owner/other"
+# Last repeated -R/--repo wins (matches gh)
+assert mg.extract_repo("gh pr merge 7 -R owner/safe -R owner/target") == "owner/target"
+assert mg.extract_repo("gh pr merge 7 --repo=owner/safe --repo=owner/target") == (
+    "owner/target"
+)
 # -R inside --body text must not count as the repository flag
 assert mg.extract_repo("gh pr merge 7 --body 'note -R owner/safe'") is None
 segs, err = mg.iter_merge_segments(

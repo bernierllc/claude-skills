@@ -25,10 +25,12 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 # Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
 MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
+# Any host (github.com or Enterprise); groups: host, owner, repo, number.
 PULL_URL = re.compile(
-    r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
+    r"(?:https?://)?(?:www\.)?([^/\s]+)/([^/]+)/([^/]+)/pull/(\d+)",
     re.I,
 )
+DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 # Subshell `(cd` / `( cd` — require `-R` (env wrappers handled via tokens).
 SUBSHELL_CD_RE = re.compile(r"\(\s*cd\b", re.I)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
@@ -247,28 +249,44 @@ def _repo_operand_unresolvable(repo: str | None) -> bool:
     return "$" in repo or "`" in repo
 
 
-def extract_repo(cmd: str) -> str | None:
-    """Return -R/--repo from argv, or a leading GH_REPO= assignment.
+def _normalize_repo_operand(val: str) -> str:
+    return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
 
-    Returns the sentinel ``$UNRESOLVED`` when the operand is dynamic so callers
-    can fail closed (empty string would be ambiguous with “no repo”).
+
+def repo_from_pull_url_match(m: re.Match[str]) -> str:
+    """Build `[HOST/]OWNER/REPO` from a PULL_URL match (Enterprise host retained)."""
+    host, owner, name = m.group(1), m.group(2), m.group(3)
+    if host.lower() in DOTCOM_PULL_HOSTS:
+        return f"{owner}/{name}"
+    return f"{host}/{owner}/{name}"
+
+
+def extract_repo(cmd: str) -> str | None:
+    """Return the last -R/--repo from argv, or a leading GH_REPO= assignment.
+
+    gh uses the last repeated inherited ``-R``/``--repo``. Returns the sentinel
+    ``$UNRESOLVED`` when the operand is dynamic so callers can fail closed.
     """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
+    found: str | None = None
     i = 0
     while i < len(rest):
         tok = rest[i]
         if tok in ("-R", "--repo"):
             if i + 1 < len(rest):
-                val = rest[i + 1]
-                return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
+                found = _normalize_repo_operand(rest[i + 1])
+                i += 2
+                continue
             return None
         if tok.startswith("--repo="):
-            val = tok.split("=", 1)[1]
-            return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
+            found = _normalize_repo_operand(tok.split("=", 1)[1])
+            i += 1
+            continue
         if tok.startswith("-R") and tok != "-R":
-            val = tok[2:]
-            return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
+            found = _normalize_repo_operand(tok[2:])
+            i += 1
+            continue
         if tok.startswith("-"):
             if "=" in tok:
                 i += 1
@@ -281,10 +299,12 @@ def extract_repo(cmd: str) -> str | None:
             i += 1
             continue
         i += 1
+    if found is not None:
+        return found
     gh_repo = assignments.get("GH_REPO")
     if gh_repo is None or gh_repo == "":
         return None
-    return "$UNRESOLVED" if _repo_operand_unresolvable(gh_repo) else gh_repo
+    return _normalize_repo_operand(gh_repo)
 
 
 def extract_merge_selector(cmd: str) -> str | None:
@@ -370,8 +390,8 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
     if selector:
         m_url = PULL_URL.search(selector)
         if m_url:
-            url_repo = f"{m_url.group(1)}/{m_url.group(2)}"
-            return int(m_url.group(3)), repo or url_repo, None
+            url_repo = repo_from_pull_url_match(m_url)
+            return int(m_url.group(4)), repo or url_repo, None
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         args.insert(2, selector)
@@ -398,7 +418,7 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
     if not repo:
         m_url = PULL_URL.search(data.get("url") or "")
         if m_url:
-            repo = f"{m_url.group(1)}/{m_url.group(2)}"
+            repo = repo_from_pull_url_match(m_url)
     return number, repo, None
 
 
