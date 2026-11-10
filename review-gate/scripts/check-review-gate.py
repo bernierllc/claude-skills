@@ -387,10 +387,17 @@ def pr_payload(
 
 
 def codex_done_on_head(pr: dict[str, Any]) -> bool:
+    """True when a non-pending Codex review exists on the current head OID.
+
+    Fail closed when ``commit.oid`` is missing (e.g. reviewed commit deleted) —
+    an empty commit must not satisfy the current head.
+    """
     head = pr.get("headRefOid") or ""
+    if not head:
+        return False
     for rev in pr.get("reviews", {}).get("nodes") or []:
         commit = (rev.get("commit") or {}).get("oid") or ""
-        if head and commit and commit != head:
+        if not commit or commit != head:
             continue
         author = ((rev.get("author") or {}).get("login") or "")
         if not is_codex_author(author):

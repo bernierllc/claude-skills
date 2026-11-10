@@ -183,6 +183,41 @@ assert not mg.has_override(
 assert not mg.has_override(
     'gh pr merge 42 --body "notes # review-gate-ok: placeholder"'
 )
+# Heredoc / prior-line markers are not attached to the merge segment
+assert not mg.has_override(
+    "cat <<'EOF'\n# review-gate-ok: fake\nEOF\ngh pr merge 42"
+)
+assert not mg.has_override("# review-gate-ok: prior line\ngh pr merge 42")
+assert mg.has_override("gh pr merge 42  # review-gate-ok: attached")
+# Codex review with missing commit.oid must not satisfy the current head
+assert not g.codex_done_on_head(
+    pr(
+        reviews={
+            "nodes": [
+                {
+                    "state": "COMMENTED",
+                    "body": "Codex findings",
+                    "commit": None,
+                    "author": {"login": "chatgpt-codex-connector"},
+                }
+            ]
+        }
+    )
+)
+assert not g.codex_done_on_head(
+    pr(
+        reviews={
+            "nodes": [
+                {
+                    "state": "COMMENTED",
+                    "body": "Codex findings",
+                    "commit": {},
+                    "author": {"login": "chatgpt-codex-connector"},
+                }
+            ]
+        }
+    )
+)
 # Compound commands require literal -R (cwd/cd/export chains are not modeled)
 segs, err = mg.iter_merge_segments(
     "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"

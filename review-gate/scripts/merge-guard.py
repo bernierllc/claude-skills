@@ -103,8 +103,20 @@ def shell_comments(cmd: str) -> list[str]:
 
 
 def has_override(cmd: str) -> bool:
-    """True only when `# review-gate-ok:` appears in a real shell comment."""
-    return any(OVERRIDE.search(c) for c in shell_comments(cmd))
+    """True when `# review-gate-ok:` is a shell comment on a merge segment.
+
+    Overrides must be attached to the ``gh pr merge`` invocation itself — not
+    buried in heredoc data or a prior unrelated line (those can look like
+    comments to a naive scanner).
+    """
+    chains = split_shell_chains(cmd)
+    parts = [p for p, _ in chains] if chains else [cmd]
+    for part in parts:
+        if not is_gh_pr_merge(part):
+            continue
+        if any(OVERRIDE.search(c) for c in shell_comments(part)):
+            return True
+    return False
 
 
 def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
@@ -167,9 +179,11 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
             buf.append(nxt)
             i += 2
             continue
-        # Shell comment — ignore through end of line (do not split on `&&` inside it).
+        # Shell comment — keep text on the segment (for `# review-gate-ok:`) but do
+        # not treat `&&` / `|` inside the comment as chain operators.
         if c == "#" and (i == 0 or cmd[i - 1].isspace()):
             while i < n and cmd[i] != "\n":
+                buf.append(cmd[i])
                 i += 1
             continue
         if c == "&" and i + 1 < n and cmd[i + 1] == "&":
