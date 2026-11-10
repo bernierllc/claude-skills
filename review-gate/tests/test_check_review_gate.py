@@ -441,6 +441,13 @@ assert bash_hd_err and "heredoc" in bash_hd_err
 # Unquoted heredoc expands $(gh … pr merge) even for cat
 unquoted_hd = "cat <<EOF\n$(gh -R owner/target pr merge 2)\nEOF"
 assert mg.executable_heredoc_merge(unquoted_hd)
+# Array-assembled merge: a=(g\h … pr merge); "${a[@]}"
+array_merge = 'a=(g\\h -R owner/target pr merge 2); "${a[@]}"'
+assert mg.array_assembled_merge(array_merge)
+array_err = mg.check_command(array_merge, cwd="/tmp")
+assert array_err and "array" in array_err
+assert mg.array_assembled_merge("cmds=(gh -R owner/safe pr merge 1)")
+assert not mg.array_assembled_merge('echo "${PATH[@]}"')
 # Same-line command after heredoc opener must still be gated
 same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
 assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
@@ -1189,6 +1196,19 @@ assert set(
         {"conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
     )
 ) == {"main", "staging"}
+# ~DEFAULT_BRANCH follows repository default (not hardcoded main)
+assert _doctor.ruleset_covered_branches(
+    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
+    default_branch="staging",
+) == ["staging"]
+assert _doctor.ruleset_covered_branches(
+    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
+    default_branch="main",
+) == ["main"]
+assert not _doctor.ruleset_covered_branches(
+    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
+    default_branch="develop",
+)
 assert _doctor.ruleset_requires_conversation_resolution(
     {
         "rules": [

@@ -1049,6 +1049,51 @@ def quote_smashed_merge(cmd: str) -> bool:
     return False
 
 
+_ARRAY_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")
+_ARRAY_EXPAND_TOKEN_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[(@|\*)\]\}$")
+_PR_MERGE_LOOSE_RE = re.compile(r"\bpr\b.*\bmerge\b", re.S | re.I)
+
+
+def _part_array_assign_has_merge(part: str) -> bool:
+    """True when ``name=(…)`` / ``name+=(…)`` argv looks like a ``gh pr merge``."""
+    if not _ARRAY_ASSIGN_RE.search(part):
+        return False
+    for candidate in (part, _dequote_shell_text(part)):
+        if MERGE_RE.search(candidate) or _PR_MERGE_LOOSE_RE.search(candidate):
+            return True
+    return False
+
+
+def _part_is_array_expand_command(part: str) -> bool:
+    """True when the executed command is ``${a[@]}`` / ``${a[*]}`` (array expand)."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    i = 0
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(tokens):
+        return False
+    return bool(_ARRAY_EXPAND_TOKEN_RE.match(tokens[i]))
+
+
+def array_assembled_merge(cmd: str) -> bool:
+    """True when a Bash array is built with merge argv or expanded as a command.
+
+    Example: ``a=(g\\h -R owner/target pr merge 2); \"${a[@]}\"`` — quote removal
+    makes element 0 ``gh``, and the expand runs an unchecked merge while neither
+    segment matches ``is_gh_pr_merge``.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if any(_part_array_assign_has_merge(p) for p in parts):
+        return True
+    if any(_part_is_array_expand_command(p) for p in parts) and (
+        MERGE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(_dequote_shell_text(cmd))
+    ):
+        return True
+    return False
+
+
 def env_wraps_merge(part: str) -> bool:
     """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
@@ -2229,6 +2274,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         )
     cmd = strip_heredoc_bodies(cmd)
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    # `a=(gh … pr merge); "${a[@]}"` — array-assembled merges bypass token checks.
+    if array_assembled_merge(cmd) or any(array_assembled_merge(p) for p in parts):
+        return (
+            "review-gate: array-assembled `gh pr merge` "
+            "(e.g. `a=(gh … pr merge); \"${a[@]}\"`); run literal "
+            "`gh -R owner/repo pr merge <n>` without array argv"
+        )
     # Quote-smashed `g''h` inside `bash -c` / eval — Bash concatenates to `gh`.
     if quote_smashed_merge(cmd) or any(quote_smashed_merge(p) for p in parts):
         return (

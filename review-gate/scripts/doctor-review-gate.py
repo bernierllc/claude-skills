@@ -32,31 +32,41 @@ def ruleset_is_enforcing(detail: dict) -> bool:
     return detail.get("enforcement") == "active"
 
 
-def _fnmatch_ref(pat: str, ref: str, branch: str) -> bool:
+def _fnmatch_ref(
+    pat: str, ref: str, branch: str, *, default_branch: str = "main"
+) -> bool:
     """True when a GitHub ruleset fnmatch pattern matches ``ref`` / ``branch``."""
     if pat == "~ALL":
         return True
     if pat == "~DEFAULT_BRANCH":
-        return branch == "main"
+        return branch == default_branch
     if fnmatch.fnmatchcase(ref, pat) or fnmatch.fnmatchcase(branch, pat):
         return True
     return False
 
 
 def _branch_covered_by_ref_name(
-    branch: str, include: list[str], exclude: list[str]
+    branch: str,
+    include: list[str],
+    exclude: list[str],
+    *,
+    default_branch: str = "main",
 ) -> bool:
     ref = f"refs/heads/{branch}"
     # Exclusions use the same fnmatch semantics as GitHub rulesets.
     for pat in exclude:
-        if _fnmatch_ref(pat, ref, branch):
+        if _fnmatch_ref(pat, ref, branch, default_branch=default_branch):
             return False
     if not include:
         return False
-    return any(_fnmatch_ref(pat, ref, branch) for pat in include)
+    return any(
+        _fnmatch_ref(pat, ref, branch, default_branch=default_branch) for pat in include
+    )
 
 
-def ruleset_covered_branches(detail: dict) -> list[str]:
+def ruleset_covered_branches(
+    detail: dict, *, default_branch: str = "main"
+) -> list[str]:
     """Return ``main``/``staging`` branches this ruleset's ref conditions cover."""
     conditions = detail.get("conditions") or {}
     ref_name = conditions.get("ref_name") or {}
@@ -64,12 +74,20 @@ def ruleset_covered_branches(detail: dict) -> list[str]:
     exclude = [str(x) for x in (ref_name.get("exclude") or [])]
     if not include:
         return []
-    return [b for b in MERGE_BRANCHES if _branch_covered_by_ref_name(b, include, exclude)]
+    return [
+        b
+        for b in MERGE_BRANCHES
+        if _branch_covered_by_ref_name(
+            b, include, exclude, default_branch=default_branch
+        )
+    ]
 
 
-def ruleset_targets_merge_branches(detail: dict) -> bool:
+def ruleset_targets_merge_branches(
+    detail: dict, *, default_branch: str = "main"
+) -> bool:
     """True when ruleset ``conditions.ref_name`` covers ``main`` and/or ``staging``."""
-    return bool(ruleset_covered_branches(detail))
+    return bool(ruleset_covered_branches(detail, default_branch=default_branch))
 
 
 def ruleset_requires_review_gate(detail: dict) -> bool:
@@ -127,6 +145,25 @@ def main() -> int:
         print("WARN could not resolve repo via gh; skip ruleset check")
         return 0
     full = repo.stdout.strip()
+    default_branch_proc = subprocess.run(
+        [
+            "gh",
+            "repo",
+            "view",
+            full,
+            "--json",
+            "defaultBranchRef",
+            "-q",
+            ".defaultBranchRef.name",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    default_branch = (
+        default_branch_proc.stdout.strip()
+        if default_branch_proc.returncode == 0 and default_branch_proc.stdout.strip()
+        else "main"
+    )
     rulesets = gh_json(["api", f"repos/{full}/rulesets"])
     if rulesets is None:
         print("WARN could not list rulesets (need admin:repo_hook or similar)")
@@ -154,7 +191,7 @@ def main() -> int:
                 "(disabled/evaluate does not block merges); ignored"
             )
             continue
-        covered = ruleset_covered_branches(detail)
+        covered = ruleset_covered_branches(detail, default_branch=default_branch)
         if not covered:
             skipped_wrong_branch += 1
             print(
