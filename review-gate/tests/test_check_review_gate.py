@@ -1425,6 +1425,16 @@ assert mg.path_override_for_merge(
     "select PATH in /tmp/a; do gh -R owner/safe pr merge 1; break; done"
 )
 assert mg.sets_path_override('for "$v" in /tmp/fake')
+# Shell-level unset PATH clears lookup before a later merge / := reassignment
+assert mg.sets_path_override("unset PATH")
+unset_path = "unset PATH; : ${PATH:=/tmp/fake}; gh -R owner/safe pr merge 1"
+assert mg.path_override_for_merge(unset_path)
+unset_path_err = mg.check_command(unset_path, cwd="/tmp")
+assert unset_path_err and "PATH" in unset_path_err
+assert mg.sets_path_override('unset "$v"')
+assert mg.path_override_for_merge(
+    'unset "$v"; gh -R owner/safe pr merge 1'
+)
 # Arithmetic / let assignment to PATH keeps export and swaps lookup
 assert mg.sets_path_override("((PATH=0))")
 arith_path = "((PATH=0)); gh -R owner/safe pr merge 1"

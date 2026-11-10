@@ -1731,8 +1731,9 @@ def sets_path_override(part: str) -> bool:
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
     exported scalar into an array used for command lookup), loop targets
     (``for PATH in …`` / ``select PATH in …``), ``getopts`` name targets,
-    arithmetic / ``let`` assignments (``((PATH=0))``), and dynamic writers such
-    as ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
+    arithmetic / ``let`` assignments (``((PATH=0))``), shell-level
+    ``unset PATH`` (literal or dynamic), and dynamic writers such as
+    ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
     """
     if any(
         _is_path_name(n) or _var_target_dynamic(n)
@@ -1816,6 +1817,15 @@ def sets_path_override(part: str) -> bool:
             _is_path_name(rest[i + 2]) or _var_target_dynamic(rest[i + 2])
         ):
             return True
+        return False
+    # ``unset PATH`` / ``unset "$v"`` clears PATH for later merge children
+    # (e.g. ``unset PATH; : ${PATH:=/tmp/fake}; gh …``).
+    if head == "unset":
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if _is_path_name(tok) or _var_target_dynamic(tok):
+                return True
         return False
     return False
 
