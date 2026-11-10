@@ -850,11 +850,60 @@ def _merge_words_from_printf_values(tokens: list[str]) -> set[str]:
     return found
 
 
+def _merge_words_from_text(text: str) -> set[str]:
+    """Collect literal ``gh``/``pr``/``merge`` tokens inside free-form text."""
+    found: set[str] = set()
+    for piece in text.split():
+        word = _assignment_value_merge_word(piece)
+        if word:
+            found.add(word)
+    return found
+
+
+def _merge_words_from_read_redirects(tokens: list[str]) -> set[str]:
+    """Collect merge words from ``read`` here-string / heredoc payloads."""
+    found: set[str] = set()
+    j = 0
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok.startswith("<<<"):
+            payload = tok[3:]
+            if payload:
+                found |= _merge_words_from_text(payload)
+            elif j + 1 < len(tokens):
+                found |= _merge_words_from_text(tokens[j + 1])
+            return found
+        if tok == "<<<":
+            if j + 1 < len(tokens):
+                found |= _merge_words_from_text(tokens[j + 1])
+            return found
+        if tok.startswith("<<") and not tok.startswith("<<<"):
+            raw = tok[2:]
+            if raw.startswith("-"):
+                raw = raw[1:]
+            delim = _dequote_shell_text(raw.strip("'\"")) if raw else None
+            start = j + 1
+            if not delim and start < len(tokens):
+                delim = _dequote_shell_text(tokens[start].strip("'\""))
+                start += 1
+            body: list[str] = []
+            if delim:
+                for t in tokens[start:]:
+                    if _dequote_shell_text(t.strip("'\"")) == delim:
+                        break
+                    body.append(t)
+            found |= _merge_words_from_text(" ".join(body))
+            return found
+        j += 1
+    return found
+
+
 def _part_assigns_merge_assembly_words(part: str) -> set[str]:
     """Collect literal ``gh``/``pr``/``merge`` values assigned in ``part``.
 
     Covers ``NAME=gh``, declaration-style assigns, and builtins that write
-    variables such as ``printf -v c gh`` / sticky ``printf -vc gh``.
+    variables such as ``printf -v c gh`` / sticky ``printf -vc gh``, and
+    ``read m <<< merge`` / ``read -a a <<< "gh pr merge"``.
     """
     found: set[str] = set()
     tokens = _shell_tokens(part)
@@ -907,6 +956,10 @@ def _part_assigns_merge_assembly_words(part: str) -> set[str]:
                 j += 1
                 continue
             break
+        return found
+    # ``read m <<< merge`` / ``read -a a <<< "gh pr merge"`` / heredoc bodies.
+    if head == "read":
+        found |= _merge_words_from_read_redirects(rest[i + 1 :])
     return found
 
 
@@ -937,7 +990,7 @@ def variable_assembled_merge(cmd: str) -> bool:
     Example: ``c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" 42 -R owner/repo`` —
     no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
     ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
-    Also covers ``printf -v c gh; printf -v p pr; printf -v m merge; …``.
+    Also covers ``printf -v c gh; …`` and ``read m <<< merge; …``.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(is_gh_pr_merge(p) for p in parts):

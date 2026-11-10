@@ -594,6 +594,19 @@ assert mg._part_assigns_merge_assembly_words("printf -vc pr") == {"pr"}
 assert mg._part_assigns_merge_assembly_words("printf -v m %s merge") == {"merge"}
 printf_asm_err = mg.check_command(printf_asm, cwd="/tmp")
 assert printf_asm_err and "variable-assembled" in printf_asm_err
+# read here-string / array form also assigns merge words
+read_asm = 'c=gh; p=pr; read m <<< merge; "$c" "$p" "$m" 42 -R owner/repo'
+assert mg.variable_assembled_merge(read_asm)
+assert mg._part_assigns_merge_assembly_words("read m <<< merge") == {"merge"}
+assert mg._part_assigns_merge_assembly_words("read m <<<merge") == {"merge"}
+assert mg._part_assigns_merge_assembly_words(
+    'read -a a <<< "gh pr merge"'
+) == {"gh", "pr", "merge"}
+assert mg._part_assigns_merge_assembly_words(
+    "read m <<EOF\nmerge\nEOF"
+) == {"merge"}
+read_asm_err = mg.check_command(read_asm, cwd="/tmp")
+assert read_asm_err and "variable-assembled" in read_asm_err
 # Dynamic argv after merge may expand into -Rowner/target
 dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
 assert mg.dynamic_merge_argv(dyn_repo_flag)
