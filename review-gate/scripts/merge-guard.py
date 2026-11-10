@@ -1700,6 +1700,8 @@ def _index_after_env_wrapper(tokens: list[str]) -> int:
 # Shell words that may precede a local ``gh`` / builtin (control flow / wrappers).
 # Includes ``if``/``while``/``until`` so ``if getopts …`` / ``while getopts …``
 # still reach the getopts/PATH scanners (``for``/``select`` stay heads, not prefixes).
+# Brace-group ``{`` keeps assignments in the current shell (``{ PATH=/tmp; }; gh …``);
+# split segments often start with ``{`` alone, so strip it like other prefixes.
 SHELL_PREFIX_KEYWORDS = frozenset(
     {
         "if",
@@ -1709,6 +1711,7 @@ SHELL_PREFIX_KEYWORDS = frozenset(
         "do",
         "else",
         "elif",
+        "{",
         "time",
         "command",
         "builtin",

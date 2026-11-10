@@ -1530,6 +1530,17 @@ if_assign_err = mg.check_command(if_assign, cwd="/tmp")
 assert if_assign_err and "exported" in if_assign_err
 assert mg._part_exports_tracked_gh("while GH_CONFIG_DIR=/tmp/a")
 assert mg.sets_path_override("if PATH=/tmp/fake")
+# Brace-group PATH writes persist in the current shell (split leaves ``{ PATH=…``).
+assert mg.sets_path_override("{ PATH=/tmp/fake")
+brace_path = "{ PATH=/tmp/fake; }; gh -R owner/safe pr merge 1"
+assert mg.path_override_for_merge(brace_path)
+brace_path_err = mg.check_command(brace_path, cwd="/tmp")
+assert brace_path_err and "PATH" in brace_path_err
+assert mg.sets_path_override("{ export PATH=/tmp/fake")
+assert mg.sets_path_override("{ unset PATH")
+assert mg.prior_tracked_gh_export(
+    "{ GH_HOST=evil.example; }; gh -R owner/safe pr merge 1"
+)
 # Shell-level unset PATH clears lookup before a later merge / := reassignment
 assert mg.sets_path_override("unset PATH")
 unset_path = "unset PATH; : ${PATH:=/tmp/fake}; gh -R owner/safe pr merge 1"
