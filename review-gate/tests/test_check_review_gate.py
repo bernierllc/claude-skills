@@ -1352,6 +1352,17 @@ idx_path_err = mg.check_command(
 )
 assert idx_path_err and "PATH" in idx_path_err
 assert mg.sets_path_override("printf -v 'PATH[0]' /tmp/fake")
+# for/select PATH targets keep inherited export and swap which gh runs
+assert mg.sets_path_override("for PATH in /tmp/fake")
+for_path = "for PATH in /tmp/fake; do gh -R owner/safe pr merge 1; done"
+assert mg.path_override_for_merge(for_path)
+for_path_err = mg.check_command(for_path, cwd="/tmp")
+assert for_path_err and "PATH" in for_path_err
+assert mg.sets_path_override("select PATH in /tmp/a /tmp/b")
+assert mg.path_override_for_merge(
+    "select PATH in /tmp/a; do gh -R owner/safe pr merge 1; break; done"
+)
+assert mg.sets_path_override('for "$v" in /tmp/fake')
 
 # Doctor must detect required Review Gate status-check context
 _doctor_path = Path(__file__).parent.parent / "scripts" / "doctor-review-gate.py"

@@ -1634,8 +1634,9 @@ def sets_path_override(part: str) -> bool:
     """True when the segment assigns/clears PATH (can swap which ``gh`` runs).
 
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
-    exported scalar into an array used for command lookup) and dynamic writers
-    such as ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
+    exported scalar into an array used for command lookup), loop targets
+    (``for PATH in …`` / ``select PATH in …``), and dynamic writers such as
+    ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1699,6 +1700,14 @@ def sets_path_override(part: str) -> bool:
                 continue
             if _is_path_name(tok) or _var_target_dynamic(tok):
                 return True
+        return False
+    # ``for PATH in …`` / ``select PATH in …`` assign each element to NAME while
+    # keeping an inherited export — same class as ``PATH=…`` before a merge.
+    if head in ("for", "select"):
+        if i + 1 < len(rest) and (
+            _is_path_name(rest[i + 1]) or _var_target_dynamic(rest[i + 1])
+        ):
+            return True
         return False
     return False
 
