@@ -39,33 +39,43 @@ PULL_URL = re.compile(
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 # Subshell `(cd` / `(pushd` / `(popd` — cwd change we refuse to model without -R.
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
+# Optional ``if``/``while``/``until`` before a definition (condition position).
+_CTRL_FLOW_DEF_PREFIX = r"(?:(?:if|while|until)\s+)?"
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
-GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
+GH_FUNC_RE = re.compile(
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}(?:function\s+gh\b|gh\s*\(\s*\))",
+    re.I,
+)
 # Local ``command_not_found_handle(){…}`` / ``function command_not_found_handle``.
 CNF_FUNC_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:function\s+command_not_found_handle\b|"
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    r"(?:function\s+command_not_found_handle\b|"
     r"command_not_found_handle\s*\(\s*\))",
     re.I,
 )
 # ``alias gh=…`` / ``builtin alias`` / ``builtin builtin alias`` / ``command alias``
 GH_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    r"(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
     re.I,
 )
 # ``hash -p … gh`` / ``builtin hash`` / ``builtin builtin hash`` / ``command hash``
 GH_HASH_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*hash\s+[^\n;&|]*\bgh\b",
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    r"(?:(?:builtin|command)\s+)*hash\s+[^\n;&|]*\bgh\b",
     re.I,
 )
 # Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
 SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time", "env"})
 PREFIX_FUNC_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:function\s+(?:command|builtin|exec|time|env)\b|"
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    r"(?:function\s+(?:command|builtin|exec|time|env)\b|"
     r"(?:command|builtin|exec|time|env)\s*\(\s*\))",
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+"
+    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    r"(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+"
     r"(?:command|builtin|exec|time|env)=",
     re.I,
 )

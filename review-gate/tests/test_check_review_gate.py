@@ -968,6 +968,18 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# gh() defined behind if/while/until still shadows later merges
+if_redef = "if gh(){ /tmp/evil; }; then :; fi; gh -R owner/safe pr merge 1"
+assert mg.redefines_gh(if_redef)
+assert mg.GH_FUNC_RE.search("if gh(){ /tmp/evil; }")
+if_redef_err = mg.check_command(if_redef, cwd="/tmp")
+assert if_redef_err and ("function" in if_redef_err or "alias" in if_redef_err)
+assert mg.redefines_gh(
+    "while gh(){ /tmp/evil; }; do break; done; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(
+    "until alias gh=/tmp/fake; do break; done; gh -R owner/safe pr merge 1"
+)
 # ``builtin hash`` / ``command hash`` remember a pathname for gh
 builtin_hash = "builtin hash -p /tmp/fake gh; gh -R owner/safe pr merge 1"
 assert mg.redefines_gh(builtin_hash)
