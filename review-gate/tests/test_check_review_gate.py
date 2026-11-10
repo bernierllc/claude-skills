@@ -770,6 +770,28 @@ assert mg.redefines_gh(
 assert mg.redefines_prefix_builtin(
     "alias c'ommand'=true; command gh -R owner/safe pr merge 1"
 )
+# Backslash quote-removal: g\h → gh
+bs_alias = (
+    "shopt -s expand_aliases; "
+    "m=merge; "
+    r"alias g\h='/usr/bin/gh -R owner/target pr \"$m\" 2; # '; "
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(bs_alias)
+bs_err = mg.check_command(bs_alias, cwd="/tmp")
+assert bs_err and ("alias" in bs_err or "function" in bs_err)
+# Dynamically assembled gh inside bash -c
+dyn_wrap = "bash -c 'x=g; x+=h; \"$x\" -R owner/target pr merge 2'"
+assert mg.opaque_shell_wrapper_pr_merge(dyn_wrap)
+dyn_wrap_err = mg.check_command(dyn_wrap, cwd="/tmp")
+assert dyn_wrap_err and (
+    "shell-wrapped" in dyn_wrap_err or "dynamic" in dyn_wrap_err
+)
+assert mg.opaque_shell_wrapper_pr_merge(
+    "eval 'x=g; x+=h; \"$x\" -R owner/target pr merge 2'"
+)
+assert not mg.opaque_shell_wrapper_pr_merge("bash -c 'echo hello'")
+assert not mg.opaque_shell_wrapper_pr_merge("bash -c 'echo pr merge'")
 # eval/source/. can install a shadowing gh the regex never sees
 eval_redef = (
     "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "

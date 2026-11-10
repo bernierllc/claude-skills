@@ -726,8 +726,90 @@ def _collapse_empty_quotes(text: str) -> str:
 
 
 def _dequote_shell_text(text: str) -> str:
-    """Strip ``'`` / ``"`` so quote-concatenated names normalize (``g'h'`` → ``gh``)."""
-    return text.replace("'", "").replace('"', "")
+    """Approximate Bash quote-removal for static name matching.
+
+    Strips ``'`` / ``"`` and removes a backslash that escapes the next character
+    (``g'h'`` → ``gh``, ``g\\h`` → ``gh``), matching how alias/function names form.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+# Interpreters whose ``-c``/``--command`` operand is a nested shell script.
+SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+
+
+def _shell_c_payloads(part: str) -> list[str]:
+    """Extract ``bash/sh -c`` / ``eval`` script strings from a segment."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    payloads: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "eval":
+            if i + 1 < len(tokens):
+                payloads.append(" ".join(tokens[i + 1 :]))
+            break
+        name = tok.rsplit("/", 1)[-1]
+        if name in SHELL_INTERPRETERS:
+            j = i + 1
+            while j < len(tokens):
+                t = tokens[j]
+                if t in ("-c", "--command"):
+                    if j + 1 < len(tokens):
+                        payloads.append(tokens[j + 1])
+                    break
+                if t.startswith("--"):
+                    j += 1
+                    continue
+                if t.startswith("-") and t != "-":
+                    # ``-lc`` / ``-eu`` clusters — ``c`` takes the next operand.
+                    if "c" in t.lstrip("-"):
+                        if j + 1 < len(tokens):
+                            payloads.append(tokens[j + 1])
+                        break
+                    j += 1
+                    continue
+                break
+        i += 1
+    return payloads
+
+
+def opaque_shell_wrapper_pr_merge(part: str) -> bool:
+    """True when a shell ``-c``/eval payload hides a dynamic ``pr``…``merge``.
+
+    Example: ``bash -c 'x=g; x+=h; \"$x\" -R owner/target pr merge 2'`` — Bash
+    runs ``gh``, but the outer tokenizer never sees ``gh`` / ``MERGE_RE``. Inspect
+    nested script segments with the same dynamic-merge detectors.
+    """
+    for payload in _shell_c_payloads(part):
+        subparts = [p for p, _ in split_shell_chains(payload)] or [payload]
+        if any(dynamic_gh_pr_merge(p) for p in subparts):
+            return True
+        if any(dynamic_gh_subcommand_merge(p) for p in subparts):
+            return True
+        if quote_smashed_merge(payload) or any(quote_smashed_merge(p) for p in subparts):
+            return True
+        # Nested quote-smashed / escaped ``gh`` that only appears after dequote.
+        norm = _dequote_shell_text(payload)
+        if norm != payload:
+            norm_parts = [p for p, _ in split_shell_chains(norm)] or [norm]
+            if MERGE_RE.search(norm) or any(dynamic_gh_pr_merge(p) for p in norm_parts):
+                return True
+    return False
 
 
 def quote_smashed_merge(cmd: str) -> bool:
@@ -1853,6 +1935,15 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: quote-concatenated `gh` with `pr merge` "
             "(e.g. `bash -c 'g''h … pr merge'`); run literal "
             "`gh -R owner/repo pr merge <n>`"
+        )
+    # `bash -c 'x=g; x+=h; "$x" … pr merge'` — nested dynamic assembly.
+    if opaque_shell_wrapper_pr_merge(cmd) or any(
+        opaque_shell_wrapper_pr_merge(p) for p in parts
+    ):
+        return (
+            "review-gate: shell-wrapped dynamic `pr merge` "
+            "(e.g. `bash -c` / `eval` assembling `gh`); run literal "
+            "`gh -R owner/repo pr merge <n>` directly"
         )
     # Every segment — including those after a literal `gh pr merge` — must not
     # hide a dynamically named merge (`$'\\x67\\x68'`, `./[g]h`, …).
