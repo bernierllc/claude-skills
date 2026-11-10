@@ -416,6 +416,16 @@ blocked = mg.check_command(compound_dyn, cwd="/tmp")
 assert blocked and "dynamic" in blocked
 assert not mg.dynamic_gh_pr_merge("something pr merge 42")
 assert not mg.dynamic_gh_pr_merge("gh -R owner/target pr merge 42")
+# Dynamic pr/merge subcommands after literal gh
+assert mg.dynamic_gh_subcommand_merge('gh "$x" "$y" 42 -R owner/target')
+assert mg.dynamic_gh_subcommand_merge('gh pr "$y" 42 -R owner/target')
+assert mg.dynamic_gh_subcommand_merge('gh "$x" merge 42 -R owner/target')
+assert not mg.dynamic_gh_subcommand_merge("gh pr merge 42 -R owner/target")
+assert not mg.dynamic_gh_subcommand_merge('gh issue "$x"')
+blocked = mg.check_command(
+    'x=pr; y=merge; gh "$x" "$y" 42 -R owner/target', cwd="/tmp"
+)
+assert blocked and "subcommand" in blocked
 # env -S can construct gh inside the split-string operand
 assert mg.env_split_string_merge_risk("env -S 'g''h -R owner/target' pr merge 42")
 assert mg.env_split_string_merge_risk("env -S 'gh -R owner/target pr merge 42'")

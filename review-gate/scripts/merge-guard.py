@@ -477,6 +477,44 @@ def dynamic_gh_pr_merge(part: str) -> bool:
     return _command_name_dynamic(cmd)
 
 
+def dynamic_gh_subcommand_merge(part: str) -> bool:
+    """True when literal ``gh`` has dynamically expanded ``pr``/``merge`` verbs.
+
+    Example: ``gh "$x" "$y" 42 -R owner/target`` with ``x=pr; y=merge`` — Bash
+    runs a real merge, but tokenizers only see ``$x``/``$y``. Fail closed.
+    """
+    if is_gh_pr_merge(part):
+        return False
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    i = _index_after_env_wrapper(tokens)
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(tokens) or tokens[i] != "gh":
+        return False
+    i += 1
+    verbs: list[str] = []
+    while i < len(tokens) and len(verbs) < 2:
+        tok = tokens[i]
+        if tok == "--":
+            break
+        if tok.startswith("-"):
+            next_i, _repo, _missing = _consume_merge_argv_flag(tokens, i)
+            i = next_i
+            continue
+        verbs.append(tok)
+        i += 1
+    if len(verbs) < 2:
+        return False
+    a, b = verbs[0], verbs[1]
+    a_dyn, b_dyn = _command_name_dynamic(a), _command_name_dynamic(b)
+    if not (a_dyn or b_dyn):
+        return False
+    # Shape must be able to become `pr merge` after expansion.
+    a_ok = a_dyn or a == "pr"
+    b_ok = b_dyn or b == "merge"
+    return a_ok and b_ok
+
+
 def env_wraps_merge(part: str) -> bool:
     """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
@@ -1193,6 +1231,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: dynamic `gh` executable name "
             "(e.g. $'\\x67\\x68' / $(…) / `…` / ./[g]h); "
+            "run literal `gh -R owner/repo pr merge <n>`"
+        )
+    # `gh "$x" "$y"` / `gh pr "$y"` with x=pr y=merge — dynamic subcommands.
+    if any(dynamic_gh_subcommand_merge(p) for p in parts):
+        return (
+            "review-gate: dynamic `gh` subcommand "
+            "(e.g. `gh \"$x\" \"$y\"` / `gh pr \"$m\"`); "
             "run literal `gh -R owner/repo pr merge <n>`"
         )
     # `env -S` can assemble `gh` inside the split-string operand.
