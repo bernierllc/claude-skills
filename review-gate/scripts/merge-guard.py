@@ -41,9 +41,9 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
-# ``alias gh=…`` / ``alias -- gh=…`` / ``alias -p gh=…``
+# ``alias gh=…`` / ``builtin alias gh=…`` / ``command alias -- gh=…``
 GH_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?alias(?:\s+(?:--|-[\w]+))*\s+gh=",
     re.I,
 )
 GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
@@ -55,7 +55,7 @@ PREFIX_FUNC_RE = re.compile(
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*alias(?:\s+(?:--|-[\w]+))*\s+"
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?alias(?:\s+(?:--|-[\w]+))*\s+"
     r"(?:command|builtin|exec|time|env)=",
     re.I,
 )
@@ -685,16 +685,42 @@ def _env_wrapper_state(
     return out, cleared
 
 
-def is_gh_pr_merge(part: str) -> bool:
-    """True when tokens contain `gh` … `pr` … `merge` (flags allowed between)."""
+def _direct_gh_pr_subcommand(part: str) -> str | None:
+    """Return the ``gh pr <subcommand>`` verb for a ``gh`` token stream.
+
+    Skips ``gh`` / ``pr`` flags so ``gh pr -R owner/repo merge 42`` resolves to
+    ``merge`` while ``gh pr comment 42 --body merge`` resolves to ``comment``.
+    Scans for a ``gh`` token (not only argv[0]) so imperfect heredoc stripping
+    like ``cat  gh -R … pr merge`` still classifies the merge verb.
+    """
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
-    try:
-        gh_i = tokens.index("gh")
-        pr_i = next(i for i in range(gh_i + 1, len(tokens)) if tokens[i] == "pr")
-        next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
-        return True
-    except (ValueError, StopIteration):
-        return False
+    for i, tok in enumerate(tokens):
+        if tok != "gh":
+            continue
+        rest = _skip_gh_leading_flags(tokens[i + 1 :])
+        if not rest or rest[0] != "pr":
+            continue
+        j = 1
+        while j < len(rest):
+            cur = rest[j]
+            if cur == "--":
+                break
+            if cur.startswith("-"):
+                j, _repo, _missing = _consume_merge_argv_flag(rest, j)
+                continue
+            return cur
+    return None
+
+
+def is_gh_pr_merge(part: str) -> bool:
+    """True when tokens contain ``gh … pr … merge`` with merge as the subcommand."""
+    return _direct_gh_pr_subcommand(part) == "merge"
+
+
+def _direct_gh_pr_non_merge(part: str) -> bool:
+    """True when the segment is a ``gh pr <other>`` (merge only as flag/body data)."""
+    sub = _direct_gh_pr_subcommand(part)
+    return sub is not None and sub != "merge"
 
 
 def _command_name_dynamic(tok: str) -> bool:
@@ -1432,17 +1458,23 @@ def path_override_for_merge(cmd: str) -> bool:
     return any(sets_path_override(p) for p in parts)
 
 
+def _is_tracked_gh_name(name: str) -> bool:
+    """True when ``name`` is a tracked gh/config var (optionally indexed)."""
+    return _env_key_base(name) in GH_TRACKED_ENV_VARS
+
+
 def _part_exports_tracked_gh(part: str) -> bool:
     """True when the segment mutates a tracked gh/config env var for later children.
 
-    Covers ``export``, ``declare -x``, ``typeset -x``, ``local -x``, and standalone
-    ``GH_HOST=…`` assignments (Bash keeps the export attribute on reassignment, so
-    an inherited exported value is updated for the merge child only).
+    Covers ``export``, ``declare -x``, ``typeset -x``, ``local -x``, standalone
+    ``GH_HOST=…`` assignments, and indirect writers (``printf -v``, ``read``,
+    ``mapfile``/``readarray``). Bash keeps the export attribute on reassignment,
+    so an inherited exported value is updated for the merge child only.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
     # Bare ``NAME=value`` segment with no command — persists in the shell.
-    if any(k in GH_TRACKED_ENV_VARS for k in leading) and not rest:
+    if any(_is_tracked_gh_name(k) for k in leading) and not rest:
         return True
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
@@ -1455,21 +1487,48 @@ def _part_exports_tracked_gh(part: str) -> bool:
             if tok.startswith("-") and "=" not in tok:
                 continue
             key = tok.split("=", 1)[0]
-            if key in GH_TRACKED_ENV_VARS:
+            if _is_tracked_gh_name(key):
                 return True
         return False
-    if head not in ("declare", "typeset", "local"):
+    if head in ("declare", "typeset", "local"):
+        # ``declare -x NAME=…`` / ``declare -ax GH_HOST=…``
+        export_mark = False
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") and "=" not in tok:
+                if "x" in tok[1:]:
+                    export_mark = True
+                continue
+            key = tok.split("=", 1)[0]
+            if export_mark and _is_tracked_gh_name(key):
+                return True
         return False
-    # ``declare -x NAME=…`` / ``declare -ax GH_HOST=…``
-    export_mark = False
-    for tok in rest[i + 1 :]:
-        if tok.startswith("-") and "=" not in tok:
-            if "x" in tok[1:]:
-                export_mark = True
-            continue
-        key = tok.split("=", 1)[0]
-        if export_mark and key in GH_TRACKED_ENV_VARS:
-            return True
+    # ``printf -v GH_HOST …`` / sticky ``-vGH_HOST``
+    if head == "printf":
+        j = i + 1
+        while j < len(rest):
+            tok = rest[j]
+            if tok in ("-v",):
+                if j + 1 < len(rest) and _is_tracked_gh_name(rest[j + 1]):
+                    return True
+                j += 2
+                continue
+            if tok.startswith("-") and tok != "-" and "=" not in tok:
+                if "v" in tok[1:]:
+                    sticky = tok.lstrip("-").lstrip("v")
+                    if sticky and _is_tracked_gh_name(sticky):
+                        return True
+                j += 1
+                continue
+            break
+        return False
+    # ``read GH_HOST`` / ``mapfile`` / ``readarray``
+    if head in ("read", "mapfile", "readarray"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if _is_tracked_gh_name(tok):
+                return True
+        return False
     return False
 
 
@@ -2559,7 +2618,11 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).
     # `is_gh_pr_merge` false means the merge is inside `$()` / quotes / eval text;
     # non-direct wrappers (`xargs`/`ssh`) still flow through `iter_merge_segments`.
-    if any(MERGE_RE.search(p) and not is_gh_pr_merge(p) for p in parts):
+    # Skip direct ``gh pr comment|view|…`` where ``merge`` is only flag/body data.
+    if any(
+        MERGE_RE.search(p) and not is_gh_pr_merge(p) and not _direct_gh_pr_non_merge(p)
+        for p in parts
+    ):
         return (
             "review-gate: shell-wrapped `gh pr merge` detected "
             "(e.g. `bash -c` / `eval` / `$(…)`); run `gh -R owner/repo pr merge <n>` directly"

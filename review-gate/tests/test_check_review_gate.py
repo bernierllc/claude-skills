@@ -172,6 +172,10 @@ assert mg.MERGE_RE.search("gh pr merge 1 --squash")
 assert mg.is_gh_pr_merge("gh pr merge 1 --squash")
 assert mg.is_gh_pr_merge("gh pr -R owner/target merge 42")
 assert not mg.is_gh_pr_merge("gh pr view 1")
+# ``merge`` as --body data is not the pr subcommand
+assert not mg.is_gh_pr_merge("gh pr comment 42 --body merge")
+assert mg._direct_gh_pr_non_merge("gh pr comment 42 --body merge")
+assert mg.check_command("gh pr comment 42 --body merge", cwd="/tmp") is None
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
 assert mg.has_override("gh pr merge 1  # review-gate-ok: matt said so")
@@ -776,6 +780,17 @@ assert mg.prior_tracked_gh_export(standalone_assign)
 assert mg.check_command(standalone_assign, cwd="/tmp") and "exported" in mg.check_command(
     standalone_assign, cwd="/tmp"
 )
+# Indirect writers (printf -v / read / mapfile) also mutate inherited exports
+printf_host = "printf -v GH_HOST ghe.example; gh -R owner/target pr merge 42"
+assert mg._part_exports_tracked_gh("printf -v GH_HOST ghe.example")
+assert mg.prior_tracked_gh_export(printf_host)
+printf_err = mg.check_command(printf_host, cwd="/tmp")
+assert printf_err and "exported" in printf_err
+assert mg._part_exports_tracked_gh("printf -vGH_HOST ghe.example")
+assert mg._part_exports_tracked_gh("read GH_HOST")
+assert mg.prior_tracked_gh_export(
+    "mapfile GH_CONFIG_DIR; gh -R owner/target pr merge 42"
+)
 # Prior unset of tracked GH_* is not mirrored into the gate env
 unset_host = "unset GH_HOST; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_unset(unset_host)
@@ -813,6 +828,24 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# ``builtin alias`` / ``command alias`` define the same shell alias
+builtin_alias = (
+    "shopt -s expand_aliases; "
+    "m=merge; "
+    "builtin alias gh='/usr/bin/gh -R owner/target pr \"$m\" 2; # '; "
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(builtin_alias)
+builtin_alias_err = mg.check_command(builtin_alias, cwd="/tmp")
+assert builtin_alias_err and (
+    "alias" in builtin_alias_err or "function" in builtin_alias_err
+)
+assert mg.redefines_gh(
+    "command alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_prefix_builtin(
+    "builtin alias command=true; command gh -R owner/safe pr merge 1"
+)
 # Quote-concatenated alias name: g'h' → gh after Bash quote-removal
 quote_alias = (
     "shopt -s expand_aliases\n"
