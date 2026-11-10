@@ -41,8 +41,9 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Optional ``if``/``while``/``until`` before a definition (condition position).
 _CTRL_FLOW_DEF_PREFIX = r"(?:(?:if|while|until)\s+)?"
-# Lead: line/chain start, or a ``case`` arm closer ``)`` before the definition.
-_DEF_LEAD = rf"(?:^|[\n;&|]|(?<=\)))\s*{_CTRL_FLOW_DEF_PREFIX}"
+# Lead: line/chain start, brace-group ``{``, or a ``case`` arm closer ``)``.
+# Brace groups keep definitions in the current shell (``{ gh(){…;}; }; gh …``).
+_DEF_LEAD = rf"(?:^|[\n;&|{{]|(?<=\)))\s*{_CTRL_FLOW_DEF_PREFIX}"
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(
     rf"{_DEF_LEAD}(?:function\s+gh\b|gh\s*\(\s*\))",

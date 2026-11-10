@@ -1002,6 +1002,23 @@ assert mg.redefines_gh(
 assert mg.redefines_gh(
     "until alias gh=/tmp/fake; do break; done; gh -R owner/safe pr merge 1"
 )
+# gh()/alias/hash defined inside a brace group still shadows later merges
+brace_redef = "{ gh(){ /tmp/evil; }; }; gh -R owner/safe pr merge 1"
+assert mg.redefines_gh(brace_redef)
+assert mg.GH_FUNC_RE.search("{ gh(){ /tmp/evil; }; }")
+brace_redef_err = mg.check_command(brace_redef, cwd="/tmp")
+assert brace_redef_err and (
+    "function" in brace_redef_err or "alias" in brace_redef_err
+)
+assert mg.redefines_gh(
+    "{ alias gh=/tmp/fake; }; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(
+    "{ hash -p /tmp/fake gh; }; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_prefix_builtin(
+    "{ command(){ /tmp/evil; }; }; gh -R owner/safe pr merge 1"
+)
 # gh()/alias/hash defined inside a case arm still shadows later merges
 case_redef = "case x in x) gh(){ /tmp/evil; };; esac; gh -R owner/safe pr merge 1"
 assert mg.redefines_gh(case_redef)
