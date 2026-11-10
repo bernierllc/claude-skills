@@ -23,6 +23,7 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\b")
 # `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
 REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
+CD_RE = re.compile(r"^cd\s+(?:--\s+)?(\S+)")
 
 
 def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
@@ -49,12 +50,33 @@ def payload_cwd(payload: dict, inp: dict) -> str:
     return os.getcwd()
 
 
-def check_command(cmd: str, cwd: str | None = None) -> str | None:
-    if not MERGE_RE.search(cmd):
-        return None
-    if OVERRIDE.search(cmd):
-        return None
-    number, repo = extract_pr_and_repo(cmd)
+def iter_merge_segments(cmd: str, start_cwd: str) -> list[tuple[str, str]]:
+    """Return (segment, cwd) for each `gh pr merge`, applying prior `cd` in the chain.
+
+    Covers agent patterns like `cd /other && gh pr merge 42`. Unresolvable cds
+    (`cd -`, `$VAR`) leave cwd unchanged so -R still wins when present.
+    """
+    cwd = start_cwd
+    out: list[tuple[str, str]] = []
+    for part in re.split(r"\s*(?:&&|;)\s*", cmd):
+        part = part.strip()
+        if not part:
+            continue
+        m_cd = CD_RE.match(part)
+        if m_cd and not MERGE_RE.search(part):
+            target = m_cd.group(1).strip("'\"")
+            if target.startswith("$") or target == "-":
+                continue
+            expanded = os.path.expanduser(target)
+            cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+            continue
+        if MERGE_RE.search(part):
+            out.append((part, cwd))
+    return out
+
+
+def check_one(segment: str, cwd: str | None) -> str | None:
+    number, repo = extract_pr_and_repo(segment)
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
@@ -69,6 +91,22 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return None
     if reasons:
         return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
+    return None
+
+
+def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    if not MERGE_RE.search(cmd):
+        return None
+    if OVERRIDE.search(cmd):
+        return None
+    start = cwd or os.getcwd()
+    segments = iter_merge_segments(cmd, start)
+    if not segments:
+        return check_one(cmd, start)
+    for segment, seg_cwd in segments:
+        err = check_one(segment, seg_cwd)
+        if err:
+            return err
     return None
 
 

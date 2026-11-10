@@ -142,7 +142,7 @@ jobs:
                   continue
               b = rev.get("body") or ""
               author = ((rev.get("author") or {}).get("login") or "").lower()
-              if (rev.get("state") or "").upper() == "PENDING":
+              if (rev.get("state") or "").upper() in ("PENDING", "DISMISSED"):
                   continue
               if "running" in b.lower() and len(b) < 400:
                   continue
@@ -254,7 +254,7 @@ jobs:
                   continue
               b = rev.get("body") or ""
               author = ((rev.get("author") or {}).get("login") or "").lower()
-              if (rev.get("state") or "").upper() == "PENDING":
+              if (rev.get("state") or "").upper() in ("PENDING", "DISMISSED"):
                   continue
               if "running" in b.lower() and len(b) < 400:
                   continue

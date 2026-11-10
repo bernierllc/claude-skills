@@ -70,6 +70,21 @@ fallback = pr(
 )
 assert g.evaluate(fallback) == []
 
+# Dismissed Codex review on head does not count
+dismissed = pr(
+    reviews={
+        "nodes": [
+            {
+                "state": "DISMISSED",
+                "body": "Codex findings",
+                "commit": {"oid": "abc123"},
+                "author": {"login": "chatgpt-codex-connector"},
+            }
+        ]
+    }
+)
+assert g.evaluate(dismissed)
+
 # Unanswered P2
 p2 = pr(
     reviewThreads={
@@ -122,6 +137,10 @@ assert mg.extract_pr_and_repo("gh --repo owner/repo pr merge 5") == (5, "owner/r
 assert mg.MERGE_RE.search("gh pr merge 1 --squash")
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
+# cd before merge must resolve the target repo from the post-cd directory
+assert mg.iter_merge_segments(
+    "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
+) == [("gh pr merge 42 --squash", "/workspace/other")]
 
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"

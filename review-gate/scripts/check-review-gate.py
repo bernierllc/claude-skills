@@ -110,7 +110,7 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
         body = rev.get("body") or ""
         author = ((rev.get("author") or {}).get("login") or "").lower()
         state = (rev.get("state") or "").upper()
-        if state == "PENDING":
+        if state in ("PENDING", "DISMISSED"):
             continue
         if "running" in body.lower() and len(body) < 400:
             continue
