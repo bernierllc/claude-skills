@@ -847,6 +847,20 @@ assert mg.prior_tracked_gh_unset(
 assert mg.check_command(
     "unset 'GH_HOST[0]'; gh -R owner/target pr merge 42", cwd="/tmp"
 )
+# Dynamic unset target may expand to GH_HOST at runtime
+assert mg._part_unsets_tracked_gh('unset "$v"')
+dyn_unset = 'v=GH_HOST; unset "$v"; gh -R owner/safe pr merge 1'
+assert mg.prior_tracked_gh_unset(dyn_unset)
+dyn_unset_err = mg.check_command(dyn_unset, cwd="/tmp")
+assert dyn_unset_err and "unset" in dyn_unset_err
+assert mg._part_unsets_tracked_gh('export -n "$v"')
+assert mg.prior_tracked_gh_unset(
+    'export -n "$v"; gh -R owner/safe pr merge 1'
+)
+assert mg._part_unsets_tracked_gh('declare +x "$v"')
+assert mg.prior_tracked_gh_unset(
+    'declare +x "$v"; gh -R owner/safe pr merge 1'
+)
 # declare +x / export -n remove export attribute (same class as unset)
 declare_plusx = "declare +x GH_HOST; gh -R owner/target pr merge 42"
 assert mg._part_unsets_tracked_gh("declare +x GH_HOST")

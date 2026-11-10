@@ -1831,7 +1831,8 @@ def _part_unsets_tracked_gh(part: str) -> bool:
             if tok.startswith("-"):
                 continue
             # ``unset 'GH_HOST[0]'`` removes the scalar the same as ``unset GH_HOST``.
-            if _is_tracked_gh_name(tok):
+            # ``unset "$v"`` may expand to a tracked name at runtime.
+            if _is_tracked_gh_name(tok) or _var_target_dynamic(tok):
                 return True
         return False
     if head == "export":
@@ -1843,7 +1844,9 @@ def _part_unsets_tracked_gh(part: str) -> bool:
                     drop_export = True
                 continue
             key = tok.split("=", 1)[0]
-            if drop_export and _is_tracked_gh_name(key):
+            if drop_export and (
+                _is_tracked_gh_name(key) or _var_target_dynamic(key)
+            ):
                 return True
         return False
     if head not in ("declare", "typeset", "local"):
@@ -1858,7 +1861,9 @@ def _part_unsets_tracked_gh(part: str) -> bool:
         if tok.startswith("-"):
             continue
         key = tok.split("=", 1)[0]
-        if unexport_mark and _is_tracked_gh_name(key):
+        if unexport_mark and (
+            _is_tracked_gh_name(key) or _var_target_dynamic(key)
+        ):
             return True
     return False
 
