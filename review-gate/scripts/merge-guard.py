@@ -1795,6 +1795,74 @@ def inherited_shadowing_function(
     return False
 
 
+def _part_sets_bash_env(part: str) -> bool:
+    """True when the segment assigns ``BASH_ENV`` (sourced by non-interactive Bash)."""
+    tokens = _shell_tokens(part)
+    rest, leading = _skip_leading_assignments(tokens)
+    if any(_env_key_base(k) == "BASH_ENV" for k in leading):
+        return True
+    env_assigns, _cleared = _env_wrapper_state(rest)
+    if any(_env_key_base(k) == "BASH_ENV" for k in env_assigns):
+        return True
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return False
+    head = rest[i]
+    if head in ("export", "declare", "typeset", "local", "readonly"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") or tok.startswith("+"):
+                continue
+            key = tok.split("=", 1)[0]
+            if _env_key_base(key) == "BASH_ENV":
+                return True
+        return False
+    if head == "printf":
+        j = i + 1
+        while j < len(rest):
+            tok = rest[j]
+            if tok in ("-v",):
+                if j + 1 < len(rest) and _env_key_base(rest[j + 1]) == "BASH_ENV":
+                    return True
+                j += 2
+                continue
+            if tok.startswith("-") and tok != "-" and "=" not in tok:
+                if "v" in tok[1:]:
+                    sticky = tok.lstrip("-").lstrip("v")
+                    if sticky and _env_key_base(sticky) == "BASH_ENV":
+                        return True
+                j += 1
+                continue
+            break
+        return False
+    if head in ("read", "mapfile", "readarray"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if _env_key_base(tok) == "BASH_ENV":
+                return True
+        return False
+    return False
+
+
+def inherited_bash_env(cmd: str, env: dict[str, str] | None = None) -> bool:
+    """True when nonempty ``BASH_ENV`` may source unchecked defs around a merge.
+
+    Non-interactive Bash sources ``BASH_ENV``; a non-exported ``gh()`` defined
+    there never appears as ``BASH_FUNC_gh%%`` in the gate process environment, so
+    ``inherited_shadowing_function`` misses it. Fail closed on inherited or
+    command-scoped ``BASH_ENV``.
+    """
+    if not MERGE_RE.search(cmd):
+        return False
+    e = os.environ if env is None else env
+    if (e.get("BASH_ENV") or "").strip():
+        return True
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    return any(_part_sets_bash_env(p) for p in parts)
+
+
 def _part_enables_set_option(part: str, letter: str, option: str) -> bool:
     """True when the segment turns on ``set -<letter>`` / ``set -o <option>``."""
     tokens = _shell_tokens(part)
@@ -2652,6 +2720,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: inherited Bash function shadows `gh`/`command`/`env`/… "
             "(BASH_FUNC_*%%); unset -f those names before `gh -R owner/repo pr merge <n>`"
+        )
+    # Non-exported defs via BASH_ENV are invisible as BASH_FUNC_*%%.
+    if inherited_bash_env(cmd):
+        return (
+            "review-gate: nonempty `BASH_ENV` with `gh pr merge` "
+            "(non-interactive Bash sources it and can shadow `gh`); "
+            "unset BASH_ENV before `gh -R owner/repo pr merge <n>`"
         )
     # `set -a` makes later assignments export into the merge child (e.g. GH_HOST).
     if allexport_before_merge(cmd):

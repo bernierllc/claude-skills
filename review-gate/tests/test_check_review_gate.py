@@ -907,6 +907,29 @@ finally:
         os.environ.pop(_bash_func_key, None)
     else:
         os.environ[_bash_func_key] = _prev_bash_func
+# Non-exported gh() via BASH_ENV never appears as BASH_FUNC_gh%%
+assert mg.inherited_bash_env(
+    "gh -R owner/safe pr merge 1",
+    env={"BASH_ENV": "/tmp/evil-bashrc"},
+)
+assert not mg.inherited_bash_env("gh -R owner/safe pr merge 1", env={})
+assert not mg.inherited_bash_env(
+    "gh -R owner/safe pr merge 1", env={"BASH_ENV": ""}
+)
+assert mg.inherited_bash_env(
+    "BASH_ENV=/tmp/evil-bashrc gh -R owner/safe pr merge 1", env={}
+)
+assert mg._part_sets_bash_env("export BASH_ENV=/tmp/evil-bashrc")
+_prev_bash_env = os.environ.get("BASH_ENV")
+os.environ["BASH_ENV"] = "/tmp/evil-bashrc"
+try:
+    bash_env_err = mg.check_command("gh -R owner/safe pr merge 1", cwd="/tmp")
+    assert bash_env_err and "BASH_ENV" in bash_env_err
+finally:
+    if _prev_bash_env is None:
+        os.environ.pop("BASH_ENV", None)
+    else:
+        os.environ["BASH_ENV"] = _prev_bash_env
 # eval/source/. can install a shadowing gh the regex never sees
 eval_redef = (
     "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "
