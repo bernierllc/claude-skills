@@ -252,6 +252,24 @@ assert mg.extract_repo("GH_HOST=github.com gh -R owner/target pr merge 42") == (
 assert mg.extract_repo('GH_HOST="$HOST" gh -R owner/target pr merge 42') == (
     "$UNRESOLVED"
 )
+# ``env GH_HOST=…`` wrappers also prefix hostless -R (matches gh help environment)
+assert (
+    mg.extract_repo("env GH_HOST=ghe.example gh -R owner/target pr merge 42")
+    == "ghe.example/owner/target"
+)
+assert (
+    mg.extract_repo("env -C /tmp GH_HOST=ghe.example gh -R owner/target pr merge 42")
+    == "ghe.example/owner/target"
+)
+assert (
+    mg.extract_repo(
+        "env --chdir=/tmp GH_HOST=ghe.example GH_REPO=owner/target gh pr merge 42"
+    )
+    == "ghe.example/owner/target"
+)
+assert mg.extract_repo('env GH_HOST="$HOST" gh -R owner/target pr merge 42') == (
+    "$UNRESOLVED"
+)
 assert g.parse_repo_with_host(r) == ("ghe.example", "owner", "repo")
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")

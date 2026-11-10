@@ -215,6 +215,61 @@ def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, s
     return tokens[i:], env
 
 
+# Value-taking options from `env --help` that can appear before NAME=VALUE / COMMAND.
+ENV_VALUE_FLAGS = frozenset(
+    {
+        "-C",
+        "--chdir",
+        "-u",
+        "--unset",
+        "-S",
+        "--split-string",
+        "--block-signal",
+        "--default-signal",
+        "--ignore-signal",
+    }
+)
+
+
+def _env_wrapper_assignments(tokens: list[str]) -> dict[str, str]:
+    """Collect NAME=VALUE args from an `env` wrapper before `gh`.
+
+    Handles ``env GH_HOST=… gh …`` and ``env -C /tmp GH_HOST=… gh …``.
+    """
+    try:
+        env_i = next(i for i, t in enumerate(tokens) if t == "env")
+        gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
+    except StopIteration:
+        return {}
+    if env_i >= gh_i:
+        return {}
+    out: dict[str, str] = {}
+    i = env_i + 1
+    while i < gh_i:
+        tok = tokens[i]
+        if ASSIGNMENT_RE.match(tok):
+            key, _, val = tok.partition("=")
+            out[key] = val
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if tok.startswith("--") and "=" in tok:
+                i += 1
+                continue
+            # Sticky ``-C/path`` (no separate operand).
+            if tok.startswith("-C") and tok != "-C":
+                i += 1
+                continue
+            base = tok.split("=", 1)[0]
+            if base in ENV_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
+            continue
+        break
+    return out
+
+
 def is_gh_pr_merge(part: str) -> bool:
     """True when tokens contain `gh` … `pr` … `merge` (flags allowed between)."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
@@ -262,10 +317,11 @@ def repo_from_pull_url_match(m: re.Match[str]) -> str:
 
 
 def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
-    """Prefix a hostless OWNER/REPO with a leading GH_HOST= assignment.
+    """Prefix a hostless OWNER/REPO with a GH_HOST assignment.
 
-    Matches ``gh help environment``: GH_HOST selects the API host when the
-    repository slug does not already embed one. Dynamic hosts fail closed.
+    Matches ``gh help environment``: GH_HOST (leading or via ``env``) selects
+    the API host when the repository slug does not already embed one. Dynamic
+    hosts fail closed.
     """
     if not repo or repo == "$UNRESOLVED":
         return repo
@@ -283,14 +339,16 @@ def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
 
 
 def extract_repo(cmd: str) -> str | None:
-    """Return the last -R/--repo from argv, or a leading GH_REPO= assignment.
+    """Return the last -R/--repo from argv, or a leading/env GH_REPO= assignment.
 
     gh uses the last repeated inherited ``-R``/``--repo``. Leading ``GH_HOST=``
-    is applied to hostless slugs. Returns the sentinel ``$UNRESOLVED`` when the
-    operand is dynamic so callers can fail closed.
+    and ``env GH_HOST=…`` are applied to hostless slugs. Returns the sentinel
+    ``$UNRESOLVED`` when the operand is dynamic so callers can fail closed.
     """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
+    # ``env NAME=VALUE … gh`` overlays leading assignments (matches the child env).
+    assignments = {**assignments, **_env_wrapper_assignments(rest)}
     found: str | None = None
     i = 0
     while i < len(rest):
