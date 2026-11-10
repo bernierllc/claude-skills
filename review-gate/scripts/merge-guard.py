@@ -863,27 +863,61 @@ def prior_tracked_gh_export(cmd: str) -> bool:
 
 
 def _part_unsets_tracked_gh(part: str) -> bool:
-    """True when the segment ``unset``s a tracked gh/config env var."""
+    """True when the segment drops a tracked gh/config var from the child env.
+
+    Covers ``unset NAME``, ``export -n NAME``, and ``declare``/``typeset``/
+    ``local +x NAME`` (removes the export attribute so the merge child no longer
+    inherits an exported hook-process value).
+    """
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    if i >= len(rest) or rest[i] != "unset":
+    if i >= len(rest):
         return False
+    head = rest[i]
+    if head == "unset":
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if tok in GH_TRACKED_ENV_VARS:
+                return True
+        return False
+    if head == "export":
+        # ``export -n GH_HOST`` removes the export attribute.
+        drop_export = False
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") and "=" not in tok:
+                if "n" in tok[1:]:
+                    drop_export = True
+                continue
+            key = tok.split("=", 1)[0]
+            if drop_export and key in GH_TRACKED_ENV_VARS:
+                return True
+        return False
+    if head not in ("declare", "typeset", "local"):
+        return False
+    # ``declare +x GH_HOST`` / ``typeset +x GH_HOST``
+    unexport_mark = False
     for tok in rest[i + 1 :]:
+        if tok.startswith("+") and "=" not in tok:
+            if "x" in tok[1:]:
+                unexport_mark = True
+            continue
         if tok.startswith("-"):
             continue
-        if tok in GH_TRACKED_ENV_VARS:
+        key = tok.split("=", 1)[0]
+        if unexport_mark and key in GH_TRACKED_ENV_VARS:
             return True
     return False
 
 
 def prior_tracked_gh_unset(cmd: str) -> bool:
-    """True when an earlier segment unsets GH_HOST/config before a merge.
+    """True when an earlier segment unsets/unexports GH_HOST/config before a merge.
 
-    The merge child loses the var while the gate keeps the hook process env —
-    fail closed rather than validating the wrong host/config.
+    The merge child loses the exported var while the gate keeps the hook process
+    env — fail closed rather than validating the wrong host/config.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     seen_unset = False
@@ -942,8 +976,8 @@ def redefines_prefix_builtin(cmd: str) -> bool:
     return bool(PREFIX_FUNC_RE.search(cmd) or PREFIX_ALIAS_RE.search(cmd))
 
 
-def _part_enables_allexport(part: str) -> bool:
-    """True when the segment turns on ``set -a`` / ``set -o allexport``."""
+def _part_enables_set_option(part: str, letter: str, option: str) -> bool:
+    """True when the segment turns on ``set -<letter>`` / ``set -o <option>``."""
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
@@ -955,7 +989,7 @@ def _part_enables_allexport(part: str) -> bool:
     while j < len(rest):
         tok = rest[j]
         if tok in ("-o",):
-            if j + 1 < len(rest) and rest[j + 1] == "allexport":
+            if j + 1 < len(rest) and rest[j + 1] == option:
                 return True
             j += 2
             continue
@@ -963,12 +997,38 @@ def _part_enables_allexport(part: str) -> bool:
             j += 1
             continue
         if tok.startswith("+"):
-            # ``set +a`` disables; ignore for enable detection.
+            # ``set +a`` / ``set +k`` disables; ignore for enable detection.
             j += 1
             continue
-        if tok.startswith("-") and "a" in tok[1:]:
+        if tok.startswith("-") and letter in tok[1:]:
             return True
         j += 1
+    return False
+
+
+def _part_enables_allexport(part: str) -> bool:
+    """True when the segment turns on ``set -a`` / ``set -o allexport``."""
+    return _part_enables_set_option(part, "a", "allexport")
+
+
+def _part_enables_keyword(part: str) -> bool:
+    """True when the segment turns on ``set -k`` / ``set -o keyword``."""
+    return _part_enables_set_option(part, "k", "keyword")
+
+
+def _set_option_before_merge(
+    cmd: str, enable_fn
+) -> bool:
+    """True when ``enable_fn(part)`` fires in an earlier segment before a merge."""
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen:
+                return True
+            continue
+        if enable_fn(part):
+            seen = True
     return False
 
 
@@ -978,16 +1038,16 @@ def allexport_before_merge(cmd: str) -> bool:
     Modeling ``set +a`` toggles is brittle; once allexport was enabled in an
     earlier segment, fail closed for any later merge in the compound command.
     """
-    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
-    seen = False
-    for part in parts:
-        if is_gh_pr_merge(part):
-            if seen:
-                return True
-            continue
-        if _part_enables_allexport(part):
-            seen = True
-    return False
+    return _set_option_before_merge(cmd, _part_enables_allexport)
+
+
+def keyword_before_merge(cmd: str) -> bool:
+    """True when ``set -k``/keyword precedes a merge (trailing assigns become env).
+
+    Under keyword mode, ``gh … pr merge 42 GH_HOST=…`` exports the trailing
+    assignment to the real child while the gate never sees it — fail closed.
+    """
+    return _set_option_before_merge(cmd, _part_enables_keyword)
 
 
 def _repo_operand_unresolvable(repo: str | None) -> bool:
@@ -1702,12 +1762,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "before `gh pr merge` (not modeled across segments); set them on the "
             "merge command itself (e.g. `GH_HOST=… gh -R owner/repo pr merge <n>`)"
         )
-    # Prior `unset GH_HOST` (etc.) drops the var for the merge but not the gate.
+    # Prior `unset` / `declare +x` / `export -n` drops the var for the merge only.
     if prior_tracked_gh_unset(cmd):
         return (
-            "review-gate: `unset` of GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME "
-            "before `gh pr merge` (not mirrored into the gate); unset via "
-            "`env -u … gh -R owner/repo pr merge <n>` on the merge command itself"
+            "review-gate: `unset`/`declare +x`/`export -n` of "
+            "GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME before `gh pr merge` "
+            "(not mirrored into the gate); clear via `env -u … gh -R owner/repo pr merge <n>` "
+            "on the merge command itself"
         )
     # `eval` / `source` / `.` can install a shadowing `gh` the regexes never see.
     if shell_mutation_before_merge(cmd):
@@ -1734,6 +1795,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: `set -a`/`set -o allexport` before `gh pr merge` "
             "(assignments become exports); set GH_* on the merge command itself"
+        )
+    # `set -k` puts trailing assignment args into the merge child's environment.
+    if keyword_before_merge(cmd):
+        return (
+            "review-gate: `set -k`/`set -o keyword` before `gh pr merge` "
+            "(trailing NAME=VALUE become env); set GH_* as a leading assign on the "
+            "merge command itself"
         )
     # Wrapped / substituted merges in ANY segment — even when another segment is
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).

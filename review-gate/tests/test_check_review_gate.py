@@ -682,6 +682,13 @@ unset_host = "unset GH_HOST; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_unset(unset_host)
 unset_err = mg.check_command(unset_host, cwd="/tmp")
 assert unset_err and "unset" in unset_err
+# declare +x / export -n remove export attribute (same class as unset)
+declare_plusx = "declare +x GH_HOST; gh -R owner/target pr merge 42"
+assert mg._part_unsets_tracked_gh("declare +x GH_HOST")
+assert mg.prior_tracked_gh_unset(declare_plusx)
+assert mg.check_command(declare_plusx, cwd="/tmp")
+assert mg._part_unsets_tracked_gh("export -n GH_HOST")
+assert mg.prior_tracked_gh_unset("export -n GH_HOST; gh -R owner/target pr merge 42")
 # Inherited relative GH_CONFIG_DIR + chdir → fail closed
 _prev_gh_cfg = os.environ.get("GH_CONFIG_DIR")
 os.environ["GH_CONFIG_DIR"] = ".gh"
@@ -744,6 +751,13 @@ assert mg._part_enables_allexport("set -o allexport")
 assert not mg._part_enables_allexport("set +a")
 allexport_err = mg.check_command(allexport_cmd, cwd="/tmp")
 assert allexport_err and "allexport" in allexport_err
+# set -k makes trailing NAME=VALUE part of the merge child's environment
+keyword_cmd = "set -k; gh -R owner/target pr merge 42 GH_HOST=ghe.example"
+assert mg._part_enables_keyword("set -k")
+assert mg._part_enables_keyword("set -o keyword")
+assert mg.keyword_before_merge(keyword_cmd)
+keyword_err = mg.check_command(keyword_cmd, cwd="/tmp")
+assert keyword_err and "keyword" in keyword_err
 # Escaped whitespace before # is not a comment — keep `;` as a chain separator
 esc_hash = (
     r"m=merge; gh -R owner/target pr merge 1 --body=\ #x; "
