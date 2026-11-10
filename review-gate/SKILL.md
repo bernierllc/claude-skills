@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.50
+version: 1.0.51
 author: Bernier LLC
 ---
 
@@ -45,7 +45,7 @@ aec run-script skill:review-gate doctor-review-gate.py
 
 ## What the workflow does
 
-Triggers **only** `pull_request_target` so the workflow YAML always comes from the PR **base** (trusted). Same-repo `pull_request_review` / `pull_request_review_comment` would execute PR-modified workflow code with write tokens — not used. After Codex completes (or a P2 closing reply) with no push, re-fire the gate via a label toggle or PR body edit (agents: see `adversarial-review`); do not reintroduce review-event workflow triggers.
+Triggers **only** `pull_request_target` so the workflow YAML always comes from the PR **base** (trusted). Same-repo `pull_request_review` / `pull_request_review_comment` would execute PR-modified workflow code with write tokens — not used. After Codex completes, a new P2 thread, or a P2 closing reply with no push, **re-fire the gate** via a label toggle or PR body edit (agents: see `adversarial-review`); do not reintroduce review-event workflow triggers. A green Checks API run can otherwise go stale relative to later threads — the PreToolUse merge guard still re-evaluates live before `gh pr merge`.
 
 ### Job `gate` (display name / Checks API name `Review Gate`)
 

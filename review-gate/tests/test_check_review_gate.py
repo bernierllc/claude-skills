@@ -913,6 +913,9 @@ assert "check-runs/$check_id" in yml
 assert "cancel-ci-on-finding" not in yml
 assert "gate-refresh-on-comment" not in yml
 assert "actions: write" not in yml
+# Documented residual: no review-event triggers; refresh via label/edit + merge-guard
+assert "Stale-check residual" in yml
+assert "label toggle" in yml
 
 skill = (Path(__file__).parent.parent / "SKILL.md").read_text()
 assert '$(aec path skill review-gate)/scripts/install-workflow.py' in skill
@@ -934,6 +937,16 @@ assert mg.sets_path_override("env -u PATH gh -R owner/safe pr merge 1")
 assert mg.path_override_for_merge(
     "export PATH=/tmp/fake:$PATH; gh -R owner/safe pr merge 1"
 )
+# printf -v PATH / read PATH keep export attribute and swap the gh binary
+assert mg.sets_path_override("printf -v PATH /tmp/fake")
+assert mg.path_override_for_merge(
+    "printf -v PATH /tmp/fake; gh -R owner/safe pr merge 1"
+)
+printf_err = mg.check_command(
+    "printf -v PATH /tmp/fake; gh -R owner/safe pr merge 1", cwd="/tmp"
+)
+assert printf_err and "PATH" in printf_err
+assert mg.sets_path_override("read PATH")
 assert not mg.sets_path_override("gh -R owner/safe pr merge 1")
 
 print("ok")

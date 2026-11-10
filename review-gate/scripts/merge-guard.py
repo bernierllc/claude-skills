@@ -790,17 +790,47 @@ def sets_path_override(part: str) -> bool:
     env_assigns, cleared = _env_wrapper_state(rest)
     if "PATH" in env_assigns or "PATH" in cleared:
         return True
-    # ``export PATH=…`` / ``export PATH`` in a prior or same segment.
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    if i < len(rest) and rest[i] == "export":
+    if i >= len(rest):
+        return False
+    head = rest[i]
+    # ``export PATH=…`` / ``declare PATH=…`` / ``typeset`` / ``local`` / ``readonly``
+    if head in ("export", "declare", "typeset", "local", "readonly"):
         for tok in rest[i + 1 :]:
-            if tok.startswith("-"):
+            if tok.startswith("-") or tok.startswith("+"):
                 continue
             key, _, _val = tok.partition("=")
             if key == "PATH":
                 return True
+        return False
+    # ``printf -v PATH …`` assigns into PATH (keeps export attribute).
+    if head == "printf":
+        j = i + 1
+        while j < len(rest):
+            tok = rest[j]
+            if tok in ("-v",):
+                if j + 1 < len(rest) and rest[j + 1] == "PATH":
+                    return True
+                j += 2
+                continue
+            if tok.startswith("-") and tok != "-" and "=" not in tok:
+                # sticky ``-vPATH`` / ``-vvPATH`` etc.
+                if "v" in tok[1:] and tok.endswith("PATH") and len(tok) > 2:
+                    return True
+                j += 1
+                continue
+            break
+        return False
+    # ``read PATH`` / ``read -r PATH`` / ``mapfile PATH`` / ``readarray PATH``
+    if head in ("read", "mapfile", "readarray"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if tok == "PATH":
+                return True
+        return False
     return False
 
 

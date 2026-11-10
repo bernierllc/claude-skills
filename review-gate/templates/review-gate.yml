@@ -10,6 +10,13 @@
 # from the repository default branch (a PR base ref can be a contributor-
 # controlled branch when the PR targets a non-default base).
 #
+# Stale-check residual: review/thread events are intentionally not triggers, so
+# a green "Review Gate" on a head SHA can outlive a later P2 thread. Mitigations:
+# (1) PreToolUse merge-guard re-runs the checker live before `gh pr merge`;
+# (2) after any thread change without a push, re-fire via label toggle or PR
+# body edit (agents: adversarial-review). Do not reintroduce review-event
+# workflow triggers.
+#
 # Required-check context is the Checks API check run named "Review Gate"
 # published on pull_request.head.sha (Actions job alone attaches to the base).
 name: Review Gate
