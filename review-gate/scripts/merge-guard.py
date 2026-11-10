@@ -25,9 +25,10 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 # Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
 MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
-# Any host (github.com or Enterprise); groups: host, owner, repo, number.
+# Pull *URL* selectors must include a scheme (gh treats scheme-less paths as branch names).
+# Groups: host, owner, repo, number.
 PULL_URL = re.compile(
-    r"(?:https?://)?(?:www\.)?([^/\s]+)/([^/]+)/([^/]+)/pull/(\d+)",
+    r"https?://(?:www\.)?([^/\s]+)/([^/]+)/([^/]+)/pull/(\d+)",
     re.I,
 )
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
@@ -335,18 +336,56 @@ def env_wraps_merge(part: str) -> bool:
     return any(t == "env" for t in tokens[:gh_i])
 
 
-# Wrappers that append stdin/args onto the command — selectors are not on argv.
-ARGUMENT_WRAPPERS = frozenset({"xargs", "parallel"})
+def _index_after_env_wrapper(tokens: list[str]) -> int:
+    """Return index of the command after an optional leading ``env`` wrapper."""
+    if not tokens or tokens[0] != "env":
+        return 0
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if ASSIGNMENT_RE.match(tok):
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if tok in ("-", "-i", "--ignore-environment"):
+                i += 1
+                continue
+            if tok.startswith("--") and "=" in tok:
+                i += 1
+                continue
+            if tok.startswith("-u") and tok != "-u":
+                i += 1
+                continue
+            if tok.startswith("-C") and tok != "-C":
+                i += 1
+                continue
+            base = tok.split("=", 1)[0]
+            if base in ENV_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
+            continue
+        break
+    return i
 
 
-def argument_wraps_merge(part: str) -> bool:
-    """True when xargs/parallel precedes `gh` (appends PR selectors we cannot see)."""
+# Shell words that may precede a local ``gh`` (control flow / trivial builtins).
+SHELL_PREFIX_KEYWORDS = frozenset(
+    {"then", "do", "else", "elif", "time", "command", "builtin", "exec", "!"}
+)
+
+
+def gh_is_direct_command(part: str) -> bool:
+    """True when ``gh`` is the executed binary (optional ``env`` / shell keywords).
+
+    Rejects ``ssh``/``xargs``/``docker``/… wrappers that run merge in another
+    environment or append unseen argv — fail closed; require a direct ``gh``.
+    """
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
-    try:
-        gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
-    except StopIteration:
-        return False
-    return any(t in ARGUMENT_WRAPPERS for t in tokens[:gh_i])
+    i = _index_after_env_wrapper(tokens)
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    return i < len(tokens) and tokens[i] == "gh"
 
 
 def scoped_dir_requires_repo(part: str) -> bool:
@@ -759,10 +798,10 @@ def iter_merge_segments(
                 "review-gate: multiple `gh pr merge` invocations in one shell "
                 "segment; run them as separate commands"
             )
-        if argument_wraps_merge(part):
+        if not gh_is_direct_command(part):
             return [], (
-                "review-gate: argument-producing wrapper around `gh pr merge` "
-                "(e.g. `xargs`); run `gh -R owner/repo pr merge <n>` directly"
+                "review-gate: `gh pr merge` must be the directly executed command "
+                "(no ssh/xargs/docker/… wrappers); run `gh -R owner/repo pr merge <n>`"
             )
         if scoped_dir_requires_repo(part) and not has_literal_repo(part):
             return [], (
@@ -813,10 +852,10 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if seg_err:
         return seg_err
     if not segments:
-        if argument_wraps_merge(cmd):
+        if not gh_is_direct_command(cmd):
             return (
-                "review-gate: argument-producing wrapper around `gh pr merge` "
-                "(e.g. `xargs`); run `gh -R owner/repo pr merge <n>` directly"
+                "review-gate: `gh pr merge` must be the directly executed command "
+                "(no ssh/xargs/docker/… wrappers); run `gh -R owner/repo pr merge <n>`"
             )
         if scoped_dir_requires_repo(cmd) and not has_literal_repo(cmd):
             return (
