@@ -2234,17 +2234,99 @@ def _part_hash_override_risk(part: str) -> bool:
     return False
 
 
+def _is_bash_cmds_override_target(name: str) -> bool:
+    """True when ``name`` assigns ``BASH_CMDS[gh]`` (or a dynamic/opaque key).
+
+    Bash inserts ``BASH_CMDS`` elements into the command hash table, so
+    ``BASH_CMDS[gh]=/tmp/fake`` is equivalent to ``hash -p /tmp/fake gh``.
+    """
+    base = _env_key_base(name)
+    if base != "BASH_CMDS":
+        return False
+    if "[" not in name:
+        # Whole-array / scalar write is opaque — fail closed.
+        return True
+    idx = name.split("[", 1)[1]
+    if idx.endswith("]"):
+        idx = idx[:-1]
+    idx_plain = _dequote_shell_text(idx.strip("'\""))
+    if idx_plain == "gh" or idx_plain in SHADOWABLE_PREFIXES:
+        return True
+    if _var_target_dynamic(idx) or _var_target_dynamic(name):
+        return True
+    return False
+
+
+def _part_bash_cmds_override(part: str) -> bool:
+    """True when the segment writes ``BASH_CMDS[gh]`` / dynamic keys into the hash."""
+    tokens = _shell_tokens(part)
+    rest, leading = _skip_leading_assignments(tokens)
+    if any(_is_bash_cmds_override_target(k) for k in leading):
+        return True
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return False
+    head = rest[i]
+    if head == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and _part_bash_cmds_override(body)
+    m_head = ASSIGNMENT_RE.match(head)
+    if m_head and _is_bash_cmds_override_target(m_head.group(1)):
+        return True
+    if head in ("export", "declare", "typeset", "local", "readonly"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") or tok.startswith("+"):
+                continue
+            key, _, _val = tok.partition("=")
+            if _is_bash_cmds_override_target(key):
+                return True
+        return False
+    if head == "printf":
+        j = i + 1
+        while j < len(rest):
+            tok = rest[j]
+            if tok in ("-v",):
+                if j + 1 < len(rest) and (
+                    _is_bash_cmds_override_target(rest[j + 1])
+                    or _var_target_dynamic(rest[j + 1])
+                ):
+                    return True
+                j += 2
+                continue
+            if tok.startswith("-") and tok != "-" and "=" not in tok:
+                if "v" in tok[1:]:
+                    sticky = tok.lstrip("-").lstrip("v")
+                    if sticky and _is_bash_cmds_override_target(sticky):
+                        return True
+                j += 1
+                continue
+            break
+        return False
+    if head in ("read", "mapfile", "readarray"):
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-"):
+                continue
+            if _is_bash_cmds_override_target(tok) or _var_target_dynamic(tok):
+                return True
+        return False
+    return False
+
+
 def redefines_gh(cmd: str) -> bool:
     """True when the command defines a ``gh`` function/alias/hash override.
 
     Also inspects a quote-stripped form so ``alias g'h'=…`` / ``g''h(){…}`` match
-    after Bash quote-removal turns the name into ``gh``, and ``hash -p`` with a
-    dynamic name (``\"$x\"``) that may expand to ``gh``.
+    after Bash quote-removal turns the name into ``gh``, and ``hash -p`` /
+    ``BASH_CMDS[gh]=…`` with a dynamic name (``\"$x\"``) that may expand to ``gh``.
     """
     if not MERGE_RE.search(cmd):
         return False
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(_part_hash_override_risk(p) for p in parts):
+        return True
+    if any(_part_bash_cmds_override(p) for p in parts):
         return True
     for candidate in (cmd, _dequote_shell_text(cmd)):
         if (

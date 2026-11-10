@@ -968,6 +968,18 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# BASH_CMDS[gh]=… inserts into the command hash table (like hash -p)
+assert mg._part_bash_cmds_override("BASH_CMDS[gh]=/tmp/fake")
+bash_cmds = "BASH_CMDS[gh]=/tmp/fake; gh -R owner/safe pr merge 1"
+assert mg.redefines_gh(bash_cmds)
+bash_cmds_err = mg.check_command(bash_cmds, cwd="/tmp")
+assert bash_cmds_err and (
+    "function" in bash_cmds_err or "alias" in bash_cmds_err or "hash" in bash_cmds_err
+)
+assert mg.redefines_gh('BASH_CMDS["$x"]=/tmp/fake; gh -R owner/safe pr merge 1')
+assert mg.redefines_gh(
+    "case x in x) BASH_CMDS[gh]=/tmp/fake;; esac; gh -R owner/safe pr merge 1"
+)
 # gh() defined behind if/while/until still shadows later merges
 if_redef = "if gh(){ /tmp/evil; }; then :; fi; gh -R owner/safe pr merge 1"
 assert mg.redefines_gh(if_redef)
