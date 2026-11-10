@@ -431,6 +431,16 @@ assert mg.check_command(heredoc_cmd, cwd="/tmp") is None
 assert not any(
     mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(heredoc_cmd)
 )
+# Same-line command after heredoc opener must still be gated
+same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
+assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
+# Here-strings are not heredocs
+assert "<<<" in mg.strip_heredoc_bodies("cat <<<'gh pr merge 42'")
+# Relative config after prior pushd (compound) — fail closed
+pushd_rel = "(pushd /tmp/enterprise; GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42)"
+assert mg.gh_config_relative_after_chdir(pushd_rel)
+blocked = mg.check_command(pushd_rel, cwd="/tmp")
+assert blocked and "relative" in blocked
 # Dynamic pr/merge subcommands after literal gh
 assert mg.dynamic_gh_subcommand_merge('gh "$x" "$y" 42 -R owner/target')
 assert mg.dynamic_gh_subcommand_merge('gh pr "$y" 42 -R owner/target')

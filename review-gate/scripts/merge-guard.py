@@ -32,8 +32,8 @@ PULL_URL = re.compile(
     re.I,
 )
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
-# Subshell `(cd` / `( cd` — require `-R` (env wrappers handled via tokens).
-SUBSHELL_CD_RE = re.compile(r"\(\s*cd\b", re.I)
+# Subshell `(cd` / `(pushd` / `(popd` — cwd change we refuse to model without -R.
+SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
 # Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
@@ -270,6 +270,11 @@ def strip_heredoc_bodies(cmd: str) -> str:
             out.append(cmd[i + 1])
             i += 2
             continue
+        # Here-string <<<… — not a heredoc; keep as-is.
+        if c == "<" and i + 2 < n and cmd[i + 1] == "<" and cmd[i + 2] == "<":
+            out.append("<<<")
+            i += 3
+            continue
         # Heredoc: <<[-]['"]?WORD['"]?
         if c == "<" and i + 1 < n and cmd[i + 1] == "<":
             j = i + 2
@@ -302,8 +307,11 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 out.append(c)
                 i += 1
                 continue
-            # Skip remainder of the opener line (e.g. trailing redirects).
+            # Replace <<DELIM with a space, but keep the rest of the opener line
+            # (e.g. `cat <<EOF; gh … pr merge` — the merge must remain visible).
+            out.append(" ")
             while j < n and cmd[j] != "\n":
+                out.append(cmd[j])
                 j += 1
             if j < n and cmd[j] == "\n":
                 j += 1
@@ -320,7 +328,6 @@ def strip_heredoc_bodies(cmd: str) -> str:
                     break
                 if j < n and cmd[j] == "\n":
                     j += 1
-            out.append(" ")
             i = j
             continue
         out.append(c)
@@ -970,15 +977,9 @@ def _env_has_chdir(part: str) -> bool:
     return False
 
 
-def gh_config_relative_after_chdir(cmd: str) -> bool:
-    """True when a relative gh config path is set under ``env -C`` / subshell cd.
-
-    The merge child resolves ``GH_CONFIG_DIR=.gh`` against the chdir'd cwd; the
-    gate subprocess would resolve it against the hook cwd — fail closed.
-    """
-    if not (_env_has_chdir(cmd) or bool(SUBSHELL_CD_RE.search(cmd))):
-        return False
-    tokens = _shell_tokens(cmd)
+def _part_has_relative_gh_config(part: str) -> bool:
+    """True when the segment sets a relative GH_CONFIG_DIR/XDG/HOME overlay."""
+    tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
     env_assigns, _cleared = _env_wrapper_state(rest)
     overlays = {**leading, **env_assigns}
@@ -991,6 +992,37 @@ def gh_config_relative_after_chdir(cmd: str) -> bool:
         if not os.path.isabs(val):
             return True
     return False
+
+
+def _part_may_chdir(part: str) -> bool:
+    """True when the segment can change cwd (cd/pushd/popd/env -C/subshell)."""
+    if _env_has_chdir(part) or bool(SUBSHELL_CD_RE.search(part)):
+        return True
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    i = _index_after_env_wrapper(tokens)
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(tokens):
+        return False
+    head = tokens[i].lstrip("(")
+    return head in DIR_BUILTINS or head == "popd"
+
+
+def gh_config_relative_after_chdir(cmd: str) -> bool:
+    """True when a relative gh config path may resolve against a different cwd.
+
+    Covers ``env -C``, subshell ``(cd|pushd|…)``, and earlier compound segments
+    that ``cd``/``pushd`` before the merge (chain splitting drops those segments
+    from the merge argv, but the child still inherits their cwd).
+    """
+    chains = split_shell_chains(cmd)
+    parts = [p for p, _ in chains] if chains else [cmd]
+    if not any(_part_has_relative_gh_config(p) for p in parts):
+        return False
+    if any(_part_may_chdir(p) for p in parts):
+        return True
+    # Full-string subshell / env -C even when not split into its own part.
+    return bool(SUBSHELL_CD_RE.search(cmd)) or _env_has_chdir(cmd)
 
 
 def _tokens_have_pr_merge(tokens: list[str]) -> bool:
@@ -1354,6 +1386,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: `env -S`/`--split-string` with `pr merge` "
             "(can construct `gh` argv); run literal `gh -R owner/repo pr merge <n>`"
+        )
+    # Relative config after cd/pushd in an earlier segment (full command).
+    if gh_config_relative_after_chdir(cmd):
+        return (
+            "review-gate: relative GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME under "
+            "cd/pushd/env -C (cwd differs from the gate); pass an absolute path"
         )
     if not any(is_gh_pr_merge(p) for p in parts):
         # `bash -c 'gh pr merge …'` / `eval '…'` leave the merge inside one token.
