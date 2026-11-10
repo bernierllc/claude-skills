@@ -22,14 +22,14 @@ def pr(**kwargs):
     base = {
         "body": "## Review\n\nCodex round 1\n",
         "baseRefName": "staging",
-        "headRefOid": "abc123",
+        "headRefOid": "abc1234",
         "labels": {"nodes": []},
         "reviews": {
             "nodes": [
                 {
                     "state": "COMMENTED",
                     "body": "Codex findings",
-                    "commit": {"oid": "abc123"},
+                    "commit": {"oid": "abc1234"},
                     "author": {"login": "chatgpt-codex-connector"},
                 }
             ]
@@ -53,7 +53,7 @@ running = pr(
             {
                 "state": "COMMENTED",
                 "body": "Running",
-                "commit": {"oid": "abc123"},
+                "commit": {"oid": "abc1234"},
                 "author": {"login": "chatgpt-codex-connector"},
             }
         ]
@@ -63,12 +63,24 @@ running = pr(
 # does not match FALLBACK_REVIEWER (agy/superpowers/claude). So this should fail.
 assert g.evaluate(running)
 
-# Fallback named in ## Review
-fallback = pr(
+# Fallback named in ## Review must also attest the current head SHA
+fallback_stale = pr(
     body="## Review\n\nagy headless round 1\n",
     reviews={"nodes": []},
 )
+assert g.evaluate(fallback_stale), "fallback without head SHA must fail after push"
+fallback = pr(
+    body="## Review\n\nagy headless round 1\nhead: abc1234\n",
+    reviews={"nodes": []},
+)
 assert g.evaluate(fallback) == []
+# New head invalidates a fallback attestation for the previous SHA
+fallback_old_head = pr(
+    body="## Review\n\nagy headless round 1\nhead: abc1234\n",
+    headRefOid="dddddddfffffffffff",
+    reviews={"nodes": []},
+)
+assert g.evaluate(fallback_old_head)
 
 # Dismissed Codex review on head does not count
 dismissed = pr(
@@ -77,7 +89,7 @@ dismissed = pr(
             {
                 "state": "DISMISSED",
                 "body": "Codex findings",
-                "commit": {"oid": "abc123"},
+                "commit": {"oid": "abc1234"},
                 "author": {"login": "chatgpt-codex-connector"},
             }
         ]
@@ -93,7 +105,7 @@ human_mentions = pr(
             {
                 "state": "COMMENTED",
                 "body": "Codex did not run; please re-request.",
-                "commit": {"oid": "abc123"},
+                "commit": {"oid": "abc1234"},
                 "author": {"login": "mbernier"},
             }
         ]
@@ -212,6 +224,13 @@ n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/
 assert e is None and n == 7 and r == "owner/other"
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
+assert g.parse_repo_with_host("owner/repo") == (None, "owner", "repo")
+assert g.parse_repo_with_host("github.com/owner/repo") == (None, "owner", "repo")
+assert g.parse_repo_with_host("ghe.example/owner/repo") == (
+    "ghe.example",
+    "owner",
+    "repo",
+)
 assert mg.extract_repo("gh pr merge 7 -Rowner/other --squash") == "owner/other"
 assert mg.extract_repo("gh -Rowner/other pr merge 7") == "owner/other"
 # -R inside --body text must not count as the repository flag
@@ -322,24 +341,24 @@ assert g.parse_repo("owner/name", cwd="/tmp/ignored") == ("owner", "name")
 
 # check_command must resolve the repo from the Bash tool cwd, not the hook process cwd
 _seen = {}
-_orig_parse = mg.gate.parse_repo
+_orig_parse = mg.gate.parse_repo_with_host
 _orig_payload = mg.gate.pr_payload
 _orig_eval = mg.gate.evaluate
 
 
 def _capture_parse(repo, cwd=None):
     _seen["cwd"] = cwd
-    return ("owner", "repo")
+    return (None, "owner", "repo")
 
 
-mg.gate.parse_repo = _capture_parse
+mg.gate.parse_repo_with_host = _capture_parse
 mg.gate.pr_payload = lambda *a, **k: pr()
 mg.gate.evaluate = lambda *_: []
 try:
     assert mg.check_command("gh pr merge 7 --squash", cwd="/tmp/target-repo") is None
     assert _seen["cwd"] == "/tmp/target-repo"
 finally:
-    mg.gate.parse_repo = _orig_parse
+    mg.gate.parse_repo_with_host = _orig_parse
     mg.gate.pr_payload = _orig_payload
     mg.gate.evaluate = _orig_eval
 

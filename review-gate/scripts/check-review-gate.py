@@ -24,8 +24,18 @@ MAIN_REVIEW_LABELS = {"review:high", "review:ultra"}
 CODEX_AUTHORS = frozenset({"chatgpt-codex-connector"})
 
 
-def run_gh(args: list[str], repo: str | None = None) -> Any:
+DOTCOM_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def run_gh(
+    args: list[str],
+    repo: str | None = None,
+    hostname: str | None = None,
+) -> Any:
+    """Run `gh api`, optionally targeting an Enterprise host."""
     cmd = ["gh", "api"]
+    if hostname:
+        cmd.extend(["--hostname", hostname])
     if repo:
         cmd.extend(["-R", repo])
     cmd.extend(args)
@@ -37,28 +47,57 @@ def run_gh(args: list[str], repo: str | None = None) -> Any:
     return json.loads(proc.stdout)
 
 
-def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
-    """Resolve OWNER/NAME. Prefer an explicit --repo; else `gh repo view` in cwd.
+def parse_repo_with_host(
+    repo: str | None, cwd: str | None = None
+) -> tuple[str | None, str, str]:
+    """Resolve (hostname|None, owner, name).
 
-    Accepts gh's `[HOST/]OWNER/REPO` form (e.g. `github.com/owner/repo`).
+    Accepts gh's `[HOST/]OWNER/REPO` form. `github.com` is normalized to
+    hostname=None (gh's default). Enterprise hosts are preserved for `--hostname`.
     """
     if repo and "/" in repo:
         parts = [p for p in repo.strip().strip("/").split("/") if p]
         if len(parts) >= 2:
-            # Drop optional host; last two segments are owner/repo.
             owner, name = parts[-2], parts[-1]
             if name.endswith(".git"):
                 name = name[: -len(".git")]
-            return owner, name
+            host: str | None = None
+            if len(parts) >= 3:
+                host = parts[0]
+                if host.lower() in DOTCOM_HOSTS:
+                    host = None
+            return host, owner, name
+    view_cmd = [
+        "gh",
+        "repo",
+        "view",
+        "--json",
+        "owner,name,url",
+        "-q",
+        ".owner.login + \"/\" + .name + \" \" + .url",
+    ]
     proc = subprocess.run(
-        ["gh", "repo", "view", "--json", "owner,name", "-q", ".owner.login + \"/\" + .name"],
+        view_cmd,
         capture_output=True,
         text=True,
         cwd=cwd or None,
     )
     if proc.returncode != 0 or "/" not in proc.stdout:
         raise RuntimeError("could not resolve owner/repo; pass --repo OWNER/NAME")
-    owner, name = proc.stdout.strip().split("/", 1)
+    slug_and_url = proc.stdout.strip().split(None, 1)
+    slug = slug_and_url[0]
+    owner, name = slug.split("/", 1)
+    host = None
+    if len(slug_and_url) > 1:
+        m = re.match(r"https?://([^/]+)/", slug_and_url[1], re.I)
+        if m and m.group(1).lower() not in DOTCOM_HOSTS:
+            host = m.group(1)
+    return host, owner, name
+
+
+def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
+    """Resolve OWNER/NAME. Prefer an explicit --repo; else `gh repo view` in cwd."""
+    _host, owner, name = parse_repo_with_host(repo, cwd=cwd)
     return owner, name
 
 
@@ -67,15 +106,17 @@ def is_codex_author(login: str | None) -> bool:
     return (login or "").lower() in CODEX_AUTHORS
 
 
-def _graphql(query: str, **variables: Any) -> dict[str, Any]:
+def _graphql(
+    query: str, hostname: str | None = None, **variables: Any
+) -> dict[str, Any]:
     args = ["graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         args.extend(["-F", f"{key}={value}"])
-    data = run_gh(args)
+    data = run_gh(args, hostname=hostname)
     return (data or {}).get("data") or {}
 
 
-def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+def _paginate_threads(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
     """Fetch every review thread and every comment on each thread."""
     threads: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -124,7 +165,7 @@ def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]
             }
             """
             conn = (
-                _graphql(first_q, owner=owner, name=name, number=number)
+                _graphql(first_q, hostname=hostname, owner=owner, name=name, number=number)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("reviewThreads")
@@ -132,7 +173,7 @@ def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]
             )
         else:
             conn = (
-                _graphql(thread_q, owner=owner, name=name, number=number, cursor=cursor)
+                _graphql(thread_q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("reviewThreads")
@@ -158,10 +199,10 @@ def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]
                       }
                     }
                     """
-                    c_conn = (_graphql(c_first, id=thread_id).get("node") or {}).get("comments") or {}
+                    c_conn = (_graphql(c_first, hostname=hostname, id=thread_id).get("node") or {}).get("comments") or {}
                 else:
                     c_conn = (
-                        _graphql(comment_q, id=thread_id, cursor=c_cursor).get("node") or {}
+                        _graphql(comment_q, hostname=hostname, id=thread_id, cursor=c_cursor).get("node") or {}
                     ).get("comments") or {}
                 comments.extend(c_conn.get("nodes") or [])
                 if not (c_conn.get("pageInfo") or {}).get("hasNextPage"):
@@ -179,7 +220,7 @@ def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]
     return threads
 
 
-def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+def _paginate_reviews(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
     """Fetch every submitted review (not just the last 40)."""
     reviews: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -203,7 +244,7 @@ def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]
             }
             """
             conn = (
-                _graphql(q, owner=owner, name=name, number=number)
+                _graphql(q, hostname=hostname, owner=owner, name=name, number=number)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("reviews")
@@ -228,7 +269,7 @@ def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]
             }
             """
             conn = (
-                _graphql(q, owner=owner, name=name, number=number, cursor=cursor)
+                _graphql(q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("reviews")
@@ -244,7 +285,7 @@ def _paginate_reviews(owner: str, name: str, number: int) -> list[dict[str, Any]
     return reviews
 
 
-def _paginate_labels(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+def _paginate_labels(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
     """Fetch every label on the PR."""
     labels: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -263,7 +304,7 @@ def _paginate_labels(owner: str, name: str, number: int) -> list[dict[str, Any]]
             }
             """
             conn = (
-                _graphql(q, owner=owner, name=name, number=number)
+                _graphql(q, hostname=hostname, owner=owner, name=name, number=number)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("labels")
@@ -283,7 +324,7 @@ def _paginate_labels(owner: str, name: str, number: int) -> list[dict[str, Any]]
             }
             """
             conn = (
-                _graphql(q, owner=owner, name=name, number=number, cursor=cursor)
+                _graphql(q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("labels")
@@ -299,7 +340,9 @@ def _paginate_labels(owner: str, name: str, number: int) -> list[dict[str, Any]]
     return labels
 
 
-def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
+def pr_payload(
+    owner: str, name: str, number: int, hostname: str | None = None
+) -> dict[str, Any]:
     q = """
     query($owner:String!, $name:String!, $number:Int!) {
       repository(owner:$owner, name:$name) {
@@ -312,13 +355,15 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
       }
     }
     """
-    data = _graphql(q, owner=owner, name=name, number=number)
+    data = _graphql(q, hostname=hostname, owner=owner, name=name, number=number)
     pr = (data.get("repository") or {}).get("pullRequest")
     if not pr:
         raise RuntimeError(f"PR #{number} not found in {owner}/{name}")
-    pr["labels"] = {"nodes": _paginate_labels(owner, name, number)}
-    pr["reviews"] = {"nodes": _paginate_reviews(owner, name, number)}
-    pr["reviewThreads"] = {"nodes": _paginate_threads(owner, name, number)}
+    pr["labels"] = {"nodes": _paginate_labels(owner, name, number, hostname=hostname)}
+    pr["reviews"] = {"nodes": _paginate_reviews(owner, name, number, hostname=hostname)}
+    pr["reviewThreads"] = {
+        "nodes": _paginate_threads(owner, name, number, hostname=hostname)
+    }
     return pr
 
 
@@ -341,14 +386,27 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
     return False
 
 
-def review_section_names_fallback(body: str) -> bool:
+def review_section_names_fallback(body: str, head: str | None = None) -> bool:
+    """True when ## Review names a fallback *and* attests the current head SHA.
+
+    Naming `agy`/`claude` alone must not survive a new push; require the current
+    `headRefOid` (full or ≥7-char prefix) inside the ## Review section.
+    """
     m = REVIEW_SECTION.search(body or "")
     if not m:
         return False
     rest = (body or "")[m.end() :]
     next_h = re.search(r"(?m)^##\s+", rest)
     section = rest[: next_h.start()] if next_h else rest
-    return bool(FALLBACK_REVIEWER.search(section))
+    if not FALLBACK_REVIEWER.search(section):
+        return False
+    if not head or len(head) < 7:
+        return False
+    # Prefer full OID; also accept the conventional short SHA prefix.
+    if head in section:
+        return True
+    short = head[:7]
+    return short in section
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
@@ -372,11 +430,13 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
 def evaluate(pr: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     body = pr.get("body") or ""
+    head = pr.get("headRefOid") or ""
     if not REVIEW_SECTION.search(body):
         reasons.append("PR body missing ## Review section")
-    if not (codex_done_on_head(pr) or review_section_names_fallback(body)):
+    if not (codex_done_on_head(pr) or review_section_names_fallback(body, head)):
         reasons.append(
-            "No completed Codex review on current head, and ## Review does not name a fallback (agy/superpowers/claude)"
+            "No completed Codex review on current head, and ## Review does not name a "
+            "fallback (agy/superpowers/claude) bound to this head SHA"
         )
     reasons.extend(p2_threads_closed(pr))
     if (pr.get("baseRefName") or "") == "main":
@@ -411,8 +471,8 @@ def main(argv: list[str]) -> int:
         print("usage: check_review_gate.py --pr N [--repo OWNER/NAME]", file=sys.stderr)
         return 2
     try:
-        owner, name = parse_repo(repo)
-        pr = pr_payload(owner, name, number)
+        hostname, owner, name = parse_repo_with_host(repo)
+        pr = pr_payload(owner, name, number, hostname=hostname)
         reasons = evaluate(pr)
     except Exception as e:  # noqa: BLE001 — surface to CI/agent
         print(str(e), file=sys.stderr)

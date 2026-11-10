@@ -533,8 +533,8 @@ def check_one(segment: str, cwd: str | None) -> str | None:
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
-        owner, name = gate.parse_repo(repo, cwd=cwd)
-        pr = gate.pr_payload(owner, name, number)
+        hostname, owner, name = gate.parse_repo_with_host(repo, cwd=cwd)
+        pr = gate.pr_payload(owner, name, number, hostname=hostname)
         reasons = gate.evaluate(pr)
     except Exception as e:  # noqa: BLE001
         msg = str(e).lower()
