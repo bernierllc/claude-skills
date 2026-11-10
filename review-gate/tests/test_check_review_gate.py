@@ -1428,6 +1428,18 @@ assert mg._part_exports_tracked_gh("getopts x GH_HOST")
 assert mg.prior_tracked_gh_export(
     "getopts x GH_HOST -x; gh -R owner/safe pr merge 1"
 )
+# getopts behind if/while/until still mutates PATH before the merge
+assert mg.sets_path_override("if getopts x PATH -x")
+if_getopts = "if getopts x PATH -x; then gh -R owner/safe pr merge 1; fi"
+assert mg.path_override_for_merge(if_getopts)
+if_getopts_err = mg.check_command(if_getopts, cwd="/tmp")
+assert if_getopts_err and "PATH" in if_getopts_err
+assert mg.sets_path_override("while getopts x PATH")
+assert mg.path_override_for_merge(
+    "while getopts x PATH; do :; done; gh -R owner/safe pr merge 1"
+)
+assert mg.sets_path_override("until getopts x PATH")
+assert mg._part_exports_tracked_gh("if getopts x GH_HOST -x")
 
 # Doctor must detect required Review Gate status-check context
 _doctor_path = Path(__file__).parent.parent / "scripts" / "doctor-review-gate.py"

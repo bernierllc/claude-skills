@@ -1590,9 +1590,24 @@ def _index_after_env_wrapper(tokens: list[str]) -> int:
     return i
 
 
-# Shell words that may precede a local ``gh`` (control flow / trivial builtins).
+# Shell words that may precede a local ``gh`` / builtin (control flow / wrappers).
+# Includes ``if``/``while``/``until`` so ``if getopts …`` / ``while getopts …``
+# still reach the getopts/PATH scanners (``for``/``select`` stay heads, not prefixes).
 SHELL_PREFIX_KEYWORDS = frozenset(
-    {"then", "do", "else", "elif", "time", "command", "builtin", "exec", "!"}
+    {
+        "if",
+        "while",
+        "until",
+        "then",
+        "do",
+        "else",
+        "elif",
+        "time",
+        "command",
+        "builtin",
+        "exec",
+        "!",
+    }
 )
 
 
