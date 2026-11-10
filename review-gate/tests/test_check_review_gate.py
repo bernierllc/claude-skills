@@ -869,6 +869,27 @@ finally:
     else:
         os.environ["GH_CONFIG_DIR"] = _prev_gh_cfg
 
+# Inherited PATH with `.` + cd can run /tmp/fake/gh after chdir
+assert mg._path_has_relative_component(".:/usr/bin")
+assert mg._path_has_relative_component("/usr/bin:bin")
+assert not mg._path_has_relative_component("/usr/bin:/bin")
+_prev_path = os.environ.get("PATH")
+os.environ["PATH"] = ".:/usr/bin"
+try:
+    rel_path_cd = "cd /tmp/fake; gh -R owner/safe pr merge 1"
+    assert mg._inherited_relative_path()
+    assert mg.relative_path_after_chdir(rel_path_cd)
+    rel_path_err = mg.check_command(rel_path_cd, cwd="/tmp")
+    assert rel_path_err and "PATH" in rel_path_err
+    assert not mg.relative_path_after_chdir(
+        "gh -R owner/safe pr merge 1"
+    )  # no chdir
+finally:
+    if _prev_path is None:
+        os.environ.pop("PATH", None)
+    else:
+        os.environ["PATH"] = _prev_path
+
 # Function/alias/hash named gh shadows the binary under inspection
 gh_func = (
     'm=merge; gh(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '

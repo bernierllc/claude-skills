@@ -2574,6 +2574,42 @@ def gh_config_relative_after_chdir(cmd: str) -> bool:
     return bool(SUBSHELL_CD_RE.search(cmd)) or _env_has_chdir(cmd)
 
 
+def _path_has_relative_component(path: str) -> bool:
+    """True when ``PATH`` contains ``.`` / empty / other non-absolute entries."""
+    for entry in path.split(os.pathsep):
+        # Empty component means cwd (relative), same as ``.``.
+        if entry == "" or entry in (".", "..") or not os.path.isabs(entry):
+            return True
+    return False
+
+
+def _inherited_relative_path(env: dict[str, str] | None = None) -> bool:
+    """True when the process ``PATH`` includes a relative lookup component."""
+    e = os.environ if env is None else env
+    path = e.get("PATH")
+    if path is None:
+        return False
+    return _path_has_relative_component(path)
+
+
+def relative_path_after_chdir(
+    cmd: str, env: dict[str, str] | None = None
+) -> bool:
+    """True when a relative inherited PATH may resolve ``gh`` after a chdir.
+
+    ``cd /tmp/fake; gh -R owner/safe pr merge 1`` with inherited ``PATH``
+    containing ``.`` runs ``/tmp/fake/gh`` while the gate still uses start_cwd.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if not any(is_gh_pr_merge(p) for p in parts):
+        return False
+    if not _inherited_relative_path(env):
+        return False
+    if any(_part_may_chdir(p) for p in parts):
+        return True
+    return bool(SUBSHELL_CD_RE.search(cmd)) or _env_has_chdir(cmd)
+
+
 def _tokens_have_pr_merge(tokens: list[str]) -> bool:
     try:
         pr_i = next(i for i, t in enumerate(tokens) if t == "pr")
@@ -3000,6 +3036,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: relative GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME under "
             "cd/pushd/env -C (cwd differs from the gate); pass an absolute path"
+        )
+    # Inherited PATH with `.` / relative entries + cd can swap which `gh` runs.
+    if relative_path_after_chdir(cmd):
+        return (
+            "review-gate: relative inherited PATH under cd/pushd/env -C "
+            "(cwd changes which `gh` is found); use an absolute-only PATH or "
+            "run `gh -R owner/repo pr merge <n>` without changing directories"
         )
     # PATH=… / env -u PATH can replace the ``gh`` binary the shell runs.
     if path_override_for_merge(cmd):
