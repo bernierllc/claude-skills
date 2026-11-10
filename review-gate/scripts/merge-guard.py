@@ -1094,27 +1094,33 @@ def array_assembled_merge(cmd: str) -> bool:
     return False
 
 
-# First-level ``gh`` commands from ``gh help``. Unknown words may be aliases that
-# expand to ``pr merge`` (``gh alias set sneak 'pr merge …'`` → ``gh sneak``).
+# First-level ``gh`` commands from ``gh help`` (incl. preview builtins).
+# Unknown words may be aliases that expand to ``pr merge``.
 GH_TOP_LEVEL_COMMANDS = frozenset(
     {
+        "agent-task",
         "alias",
         "api",
         "attestation",
         "auth",
         "browse",
         "cache",
+        "co",
         "codespace",
         "completion",
         "config",
+        "copilot",
+        "discussion",
         "extension",
         "gist",
         "gpg-key",
         "help",
         "issue",
         "label",
+        "licenses",
         "org",
         "pr",
+        "preview",
         "project",
         "release",
         "repo",
@@ -1122,6 +1128,7 @@ GH_TOP_LEVEL_COMMANDS = frozenset(
         "run",
         "search",
         "secret",
+        "skill",
         "ssh-key",
         "status",
         "variable",
@@ -1129,7 +1136,32 @@ GH_TOP_LEVEL_COMMANDS = frozenset(
         "workflow",
     }
 )
+# ``gh pr`` subcommands from ``gh pr --help`` — anything else after ``pr`` may be
+# a multiword alias (``gh alias set 'pr sneak' 'pr merge …'`` → ``gh pr sneak``).
+GH_PR_SUBCOMMANDS = frozenset(
+    {
+        "checkout",
+        "checks",
+        "close",
+        "comment",
+        "create",
+        "diff",
+        "edit",
+        "list",
+        "lock",
+        "merge",
+        "ready",
+        "reopen",
+        "revert",
+        "review",
+        "status",
+        "unlock",
+        "update-branch",
+        "view",
+    }
+)
 GH_ALIAS_MUTATE = frozenset({"set", "import", "delete"})
+GH_GLOBAL_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
 
 
 def _tokens_after_gh(part: str) -> list[str] | None:
@@ -1143,9 +1175,36 @@ def _tokens_after_gh(part: str) -> list[str] | None:
     return tokens[i + 1 :]
 
 
+def _skip_gh_leading_flags(tokens: list[str]) -> list[str]:
+    """Consume global ``gh`` flags (``-R``/``--repo``/``--hostname``) before the command."""
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            return tokens[i + 1 :]
+        if tok in GH_GLOBAL_VALUE_FLAGS:
+            i += 2
+            continue
+        if tok.startswith("--repo=") or tok.startswith("--hostname="):
+            i += 1
+            continue
+        if tok.startswith("-R") and tok != "-R":
+            i += 1
+            continue
+        if tok in ("--help", "--version"):
+            i += 1
+            continue
+        break
+    return tokens[i:]
+
+
 def _part_gh_alias_configures(part: str) -> bool:
     """True when the segment runs ``gh alias set|import|delete``."""
     rest = _tokens_after_gh(part)
+    if rest is None:
+        return False
+    rest = _skip_gh_leading_flags(rest)
     if not rest or rest[0] != "alias":
         return False
     for tok in rest[1:]:
@@ -1156,16 +1215,28 @@ def _part_gh_alias_configures(part: str) -> bool:
 
 
 def _part_opaque_gh_command(part: str) -> bool:
-    """True when ``gh <word>`` uses a non-top-level name (possible alias)."""
+    """True when ``gh`` invokes a possible alias rather than a known command path.
+
+    Covers ``gh sneak``, ``gh -R owner/repo sneak``, and multiword aliases such as
+    ``gh pr sneak`` (after ``gh alias set 'pr sneak' 'pr merge …'``).
+    """
     rest = _tokens_after_gh(part)
+    if rest is None:
+        return False
+    rest = _skip_gh_leading_flags(rest)
     if not rest:
         return False
     sub = rest[0]
     if sub.startswith("-"):
         return False
-    if sub in GH_TOP_LEVEL_COMMANDS:
-        return False
-    return True
+    if sub not in GH_TOP_LEVEL_COMMANDS:
+        return True
+    # Multiword alias under ``pr``: known top-level, unknown subcommand.
+    if sub == "pr" and len(rest) > 1:
+        nxt = rest[1]
+        if not nxt.startswith("-") and nxt not in GH_PR_SUBCOMMANDS:
+            return True
+    return False
 
 
 def gh_alias_merge_risk(cmd: str) -> bool:
@@ -1173,7 +1244,7 @@ def gh_alias_merge_risk(cmd: str) -> bool:
 
     ``gh alias set sneak 'pr merge 2 -R owner/target'; gh sneak`` never matches
     ``is_gh_pr_merge``, so the gate would otherwise allow it. Fail closed on alias
-    mutation and on opaque ``gh <name>`` invocations.
+    mutation and on opaque ``gh <name>`` / ``gh pr <alias>`` invocations.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     return any(

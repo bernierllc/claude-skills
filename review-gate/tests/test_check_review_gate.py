@@ -459,6 +459,19 @@ assert mg.gh_alias_merge_risk("gh sneak")
 assert mg.gh_alias_merge_risk("gh alias set sneak 'pr merge 2'")
 assert not mg.gh_alias_merge_risk("gh alias list")
 assert not mg.gh_alias_merge_risk("gh -R owner/safe pr merge 1")
+# Multiword alias / flags before alias name
+assert mg.gh_alias_merge_risk("gh pr sneak")
+assert mg.gh_alias_merge_risk("gh -R owner/target sneak")
+assert mg.gh_alias_merge_risk(
+    "gh alias set 'pr sneak' 'pr merge 2 -R owner/target'; gh pr sneak"
+)
+# Built-ins must not be treated as opaque aliases
+assert not mg.gh_alias_merge_risk("gh discussion list")
+assert not mg.gh_alias_merge_risk("gh skill list")
+assert not mg.gh_alias_merge_risk("gh copilot")
+assert not mg.gh_alias_merge_risk("gh preview")
+assert not mg.gh_alias_merge_risk("gh agent-task list")
+assert not mg.gh_alias_merge_risk("gh licenses")
 # Same-line command after heredoc opener must still be gated
 same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
 assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
