@@ -34,6 +34,10 @@ PULL_URL = re.compile(
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 # Subshell `(cd` / `(pushd` / `(popd` — cwd change we refuse to model without -R.
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
+# Shell redefinitions that shadow the external ``gh`` binary.
+GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
+GH_ALIAS_RE = re.compile(r"(?:^|[\n;&|])\s*alias\s+gh=", re.I)
+GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
 # Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
@@ -791,6 +795,51 @@ def path_override_for_merge(cmd: str) -> bool:
     return any(sets_path_override(p) for p in parts)
 
 
+def _part_exports_tracked_gh(part: str) -> bool:
+    """True when the segment ``export``s a tracked gh/config env var."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] != "export":
+        return False
+    for tok in rest[i + 1 :]:
+        if tok.startswith("-") and "=" not in tok:
+            continue
+        key = tok.split("=", 1)[0]
+        if key in GH_TRACKED_ENV_VARS:
+            return True
+    return False
+
+
+def prior_tracked_gh_export(cmd: str) -> bool:
+    """True when an earlier segment exports GH_HOST/config before a merge.
+
+    ``export`` persists across ``;``/``&&`` while ``check_one`` only sees the
+    merge segment — fail closed rather than silently validating the wrong host.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen_export = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen_export:
+                return True
+            continue
+        if _part_exports_tracked_gh(part):
+            seen_export = True
+    return False
+
+
+def redefines_gh(cmd: str) -> bool:
+    """True when the command defines a ``gh`` function/alias/hash override."""
+    if not MERGE_RE.search(cmd):
+        return False
+    return bool(
+        GH_FUNC_RE.search(cmd) or GH_ALIAS_RE.search(cmd) or GH_HASH_RE.search(cmd)
+    )
+
+
 def _repo_operand_unresolvable(repo: str | None) -> bool:
     """True when -R/--repo/GH_REPO still contains shell expansion."""
     if not repo:
@@ -1480,6 +1529,19 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         return (
             "review-gate: command-scoped PATH override with `gh pr merge` "
             "(can swap the `gh` binary); unset PATH for the merge command"
+        )
+    # Prior `export GH_HOST=…` (etc.) is invisible to the merge-segment env mirror.
+    if prior_tracked_gh_export(cmd):
+        return (
+            "review-gate: exported GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME "
+            "before `gh pr merge` (not modeled across segments); set them on the "
+            "merge command itself (e.g. `GH_HOST=… gh -R owner/repo pr merge <n>`)"
+        )
+    # Function/alias/hash named `gh` shadows the binary the gate inspects.
+    if redefines_gh(cmd):
+        return (
+            "review-gate: `gh` function/alias/hash redefinition with `gh pr merge`; "
+            "run the real `gh` binary without shadowing it"
         )
     # Wrapped / substituted merges in ANY segment — even when another segment is
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).

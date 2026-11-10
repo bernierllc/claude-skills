@@ -656,6 +656,25 @@ subshell_merge = (
 )
 wrapped = mg.check_command(subshell_merge, cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
+# Prior export of GH_HOST/config is not mirrored into the merge-segment gate env
+export_host = "export GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+assert mg.prior_tracked_gh_export(export_host)
+export_err = mg.check_command(export_host, cwd="/tmp")
+assert export_err and "exported" in export_err
+# Same-segment leading assign is still OK (mirrored by _child_gh_env)
+assert not mg.prior_tracked_gh_export(
+    "GH_HOST=ghe.example gh -R owner/target pr merge 42"
+)
+# Function/alias/hash named gh shadows the binary under inspection
+gh_func = (
+    'm=merge; gh(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(gh_func)
+redef_err = mg.check_command(gh_func, cwd="/tmp")
+assert redef_err and ("function" in redef_err or "alias" in redef_err)
+assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
+assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
 # Bundled short flags: -dR owner/target (gh/cobra accepts this)
 assert mg.extract_repo("gh pr merge 42 -dR owner/target") == "owner/target"
 assert mg.extract_merge_selector("gh pr merge 42 -dR owner/target") == "42"
