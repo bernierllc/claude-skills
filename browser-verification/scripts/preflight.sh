@@ -29,11 +29,26 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-PAGES_DIR="$ROOT/docs/verification/pages"
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '%s\n' "ERROR: $SKILL_NAME requires Python 3 to read the verification directory setting. Install Python 3 with python3 on PATH, then rerun preflight." >&2
+  exit 1
+fi
+
+VERIFICATION_DIR=$(python3 - "$ROOT" <<'PYTHON'
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+config = root / ".aec/directories.json"
+settings = json.loads(config.read_text()) if config.exists() else {}
+print(root / settings.get("verification", "docs/verification"))
+PYTHON
+)
+PAGES_DIR="$VERIFICATION_DIR/pages"
 
 if [ ! -d "$PAGES_DIR" ]; then
   cat <<EOF
-ERROR: $SKILL_NAME requires verification docs at docs/verification/pages/
+ERROR: $SKILL_NAME requires verification docs at $PAGES_DIR/
 
 This skill depends on output from the verification-writer skill, which has
 not been run in this repo yet (or the docs were deleted).
@@ -58,7 +73,7 @@ if [ "$PAGE_COUNT" -eq 0 ]; then
   cat <<EOF
 ERROR: $SKILL_NAME requires at least one verification page doc
 
-The directory docs/verification/pages/ exists but contains no .md files.
+The directory $PAGES_DIR/ exists but contains no .md files.
 This usually means verification-writer started a scaffold but did not finish
 generating page docs.
 

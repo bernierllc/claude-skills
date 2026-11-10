@@ -4,8 +4,9 @@
  * Exports testable functions. CLI entry point at bottom.
  */
 
+import { verificationDirectory } from './lib/directories.js';
 import { execSync } from 'node:child_process';
-import { basename, resolve } from 'node:path';
+import { basename, resolve, relative, sep } from 'node:path';
 import { loadManifest, manifestDirFor } from './lib/manifest.js';
 import { resolveRepoRoot, isEntryPoint } from './lib/repo.js';
 import { isIndexEntryStale, staleIndexMessage } from './lib/index-drift.js';
@@ -21,7 +22,7 @@ export async function mapFilesToTags(files, importIndex, projectDir, repoRoot = 
   if (!importIndex) return { tags: [], warnings: [] };
 
   for (const file of files) {
-    if (file.startsWith('docs/verification/')) {
+    if (file.startsWith(relative(repoRoot, verificationDirectory(repoRoot)).split(sep).join('/') + '/')) {
       tags.add(`@${basename(file, '.md')}`);
       continue;
     }

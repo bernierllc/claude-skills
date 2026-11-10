@@ -38,6 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from verification_paths import verification_directory
 from typing import Any
 
 CACHE_TTL_DAYS = 7
@@ -262,19 +263,20 @@ def cache_entry_fresh(entry: dict[str, Any], current_sha: str) -> bool:
 
 def ensure_gitignore(repo_root: Path) -> bool:
     """Ensure docs/verification/.scan-cache.json is gitignored. Returns True if added."""
+    gitignore_entry = verification_directory(repo_root).relative_to(repo_root).as_posix() + "/.scan-cache.json"
     gi = repo_root / ".gitignore"
     if gi.is_file():
         existing = gi.read_text()
-        if GITIGNORE_ENTRY in existing or ".scan-cache.json" in existing:
+        if gitignore_entry in existing or ".scan-cache.json" in existing:
             return False
         sep = "" if existing.endswith("\n") else "\n"
-        gi.write_text(existing + sep + GITIGNORE_ENTRY + "\n")
+        gi.write_text(existing + sep + gitignore_entry + "\n")
         return True
-    gi.write_text(GITIGNORE_ENTRY + "\n")
+    gi.write_text(gitignore_entry + "\n")
     return True
 
 
-def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
+def scan_file(path: Path, cache: dict[str, Any], rel_key: str, verification_prefix: str = VERIFICATION_PREFIX) -> FileResult:
     sha = sha256_of(path)
     cached = cache.get(rel_key)
     if cached and cache_entry_fresh(cached, sha):
@@ -316,7 +318,7 @@ def scan_file(path: Path, cache: dict[str, Any], rel_key: str) -> FileResult:
         id_namespace = scalars.get("id_namespace")
         stamp = scalars.get("generated_by")
         # narrative API/MCP docs carry a sibling stamp and no checklist namespace
-        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.removeprefix(VERIFICATION_PREFIX).split("/")[0] in ("api", "mcp")
+        sibling = bool(stamp and SIBLING_STAMP_REGEX.match(stamp)) and rel_key.removeprefix(verification_prefix).split("/")[0] in ("api", "mcp")
         if not id_namespace and not sibling:
             issues.append("id_namespace-missing")
         if stamp:
@@ -521,7 +523,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(args.root).resolve()
-    verification_root = repo_root / "docs" / "verification"
+    verification_root = verification_directory(repo_root)
 
     if not verification_root.is_dir():
         sys.stderr.write(
@@ -544,7 +546,7 @@ def main() -> int:
 
     for f in files:
         rel = f.relative_to(repo_root).as_posix()
-        r = scan_file(f, file_cache, rel)
+        r = scan_file(f, file_cache, rel, verification_root.relative_to(repo_root).as_posix() + "/")
         results.append(r)
         new_file_cache[rel] = result_to_cache(r)
 

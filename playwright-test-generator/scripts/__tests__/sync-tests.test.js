@@ -345,7 +345,7 @@ describe('resolveDocArg', () => {
   it('falls back to the hook payload on stdin', () => {
     const argv = ['node', 'sync-tests.js'];
     const payload = { tool_input: { file_path: '/repo/docs/verification/pages/a.md' } };
-    expect(resolveDocArg(argv, stdin(payload))).toBe('/repo/docs/verification/pages/a.md');
+    expect(resolveDocArg(argv, stdin(payload), '/repo')).toBe('/repo/docs/verification/pages/a.md');
   });
 
   it('ignores edits to files that are not verification docs', () => {
@@ -359,7 +359,7 @@ describe('resolveDocArg', () => {
 
   it('tolerates a leading BOM on the hook payload', () => {
     const payload = '\uFEFF' + JSON.stringify({ tool_input: { file_path: '/r/docs/verification/a.md' } });
-    expect(resolveDocArg(['node', 'sync-tests.js'], () => payload)).toBe('/r/docs/verification/a.md');
+    expect(resolveDocArg(['node', 'sync-tests.js'], () => payload, '/r')).toBe('/r/docs/verification/a.md');
   });
 
   it('returns undefined for a truncated payload so the CLI fails loudly', () => {

@@ -10,7 +10,9 @@ const hooksJson = fileURLToPath(new URL('../../hooks.json', import.meta.url));
 async function preCommitCommand() {
   const { hooks } = JSON.parse(await readFile(hooksJson, 'utf8'));
   const hook = hooks.find((h) => h.id === 'ptg-check-changed-docs-pre-commit');
-  return hook.command;
+  // Render the declared default just as AEC does; installer execution is
+  // covered by AEC's cross-repository integration test.
+  return hook.command.replaceAll('{directory:verification}', "'docs/verification'");
 }
 
 // Runs the hook command in `repo` with a stubbed `aec` that logs its argv.

@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 4.0.3
+version: 4.1.0
 dependencies:
   skills:
     - name: verification-writer
@@ -853,3 +853,7 @@ Combines the per-doc manifest layout (was PR #39) with the running-app commit ga
 - Has a bash harness in `templates/hooks/__tests__/pre-commit.test.sh`.
 
 **CLI entry points resolve symlinks.** Every script compares real paths through `isEntryPoint()` in `lib/repo.js`. Before this, a script run through a symlinked `scripts/` directory exited silently.
+
+## Installed directory
+
+AEC prompts for the shared `verification` directory (default `docs/verification`) and whether to install hooks. It creates the directory even if hooks are declined. The choice is stored in `.aec/directories.json` as `{"verification": "docs/verification"}`. Read that setting before writing docs or invoking tools; every `docs/verification` path in this skill is relative to that selected root. Track this configuration with the project so teammates use the same location. Existing projects without this file use `docs/verification`.

@@ -204,8 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("guard"); g.add_argument("base_url")
     for name in ("plan", "run", "evaluate"):
         s = sub.add_parser(name)
-        s.add_argument("--manifest", default="docs/verification/access-manifest.json")
-        s.add_argument("--principals", default="docs/verification/principals.json")
+        s.add_argument("--manifest")
+        s.add_argument("--principals")
         s.add_argument("--flags-off", default="",
                        help="comma-separated feature flags that are off here: entries gated_by them must answer 404 or a denied status")
         if name == "run":
@@ -221,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
             msg = guard(args.base_url)
             print(msg or "ok")
             return 2 if msg else 0
+        config = Path(".aec/directories.json")
+        settings = json.loads(config.read_text()) if config.exists() else {}
+        directory = Path(settings.get("verification", "docs/verification"))
+        args.manifest = args.manifest or str(directory / "access-manifest.json")
+        args.principals = args.principals or str(directory / "principals.json")
         if args.cmd == "run":
             return cmd_run(args)
         plan = make_plan(load(args.manifest), load(args.principals), flags_off(args))

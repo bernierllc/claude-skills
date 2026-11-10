@@ -225,6 +225,21 @@ def test_block_lists_crlf_bom_and_hash_in_quotes():
         assert m["findings"] == [], m["findings"]
 
 
+
+def test_custom_directory_builds_manifest():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_path = Path(directory)
+        fixture(tmp_path)
+        custom = tmp_path / "quality docs" / "checks"
+        custom.parent.mkdir()
+        (tmp_path / "docs/verification").rename(custom)
+        (tmp_path / ".aec").mkdir()
+        (tmp_path / ".aec/directories.json").write_text(json.dumps({"verification": "quality docs/checks"}))
+        assert bam.main(["--root", str(tmp_path), "--quiet"]) == 0
+        manifest = json.loads((custom / "access-manifest.json").read_text())
+        assert manifest["entries"]
+        assert not (tmp_path / "docs/verification").exists()
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

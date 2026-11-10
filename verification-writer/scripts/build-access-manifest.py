@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from verification_paths import verification_directory
 from typing import Any
 
 VISIBILITIES = ("public", "internal", "admin", "draft")
@@ -206,7 +207,7 @@ def build_entry(
 
 
 def collect(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    vroot = root / "docs" / "verification"
+    vroot = verification_directory(root)
     entries: list[dict[str, Any]] = []
     findings: list[dict[str, str]] = []
     for dirname, surface in {**SURFACE_DIRS, "flows": None}.items():  # flows are linted but never become entries
@@ -310,12 +311,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
-    if not (root / "docs" / "verification").is_dir():
+    if not verification_directory(root).is_dir():
         print("build-access-manifest: no docs/verification/ in " + str(root), file=sys.stderr)
         return 1
 
     manifest = build(root)
-    target = root / MANIFEST_REL
+    target = verification_directory(root) / "access-manifest.json"
 
     if args.check:
         try:

@@ -1,6 +1,6 @@
 ---
 name: playwright-test-runner
-version: 1.3.1
+version: 1.4.1
 dependencies:
   skills:
     - name: verification-writer
@@ -494,3 +494,9 @@ When the failure count is high (>10 failures), consider parallel diagnosis:
 - Environment teardown failed — orphaned containers or processes remain. Report and guide manual cleanup.
 - Tests are running against a production or shared staging database — stop immediately
 - Test scope was never confirmed with the user — do not run tests without explicit scope agreement
+
+## Installed verification directory
+
+Runtime prerequisite: Python 3 must be available as `python3` on PATH. Preflight checks it explicitly before reading the directory configuration.
+
+Read `.aec/directories.json` before using verification docs. Its `verification` value is the shared directory selected during AEC setup; absent configuration defaults to `docs/verification`. All verification-document paths below that default in this skill use the selected root. Preflight reads the saved location automatically.
