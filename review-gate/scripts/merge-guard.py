@@ -1621,11 +1621,19 @@ def _is_path_name(name: str) -> bool:
     return _env_key_base(name) == "PATH"
 
 
+def _var_target_dynamic(name: str) -> bool:
+    """True when a variable-name operand may expand at runtime (``$v`` / ``${v}``)."""
+    if not name:
+        return False
+    return any(c in name for c in "$`") or "\\" in name
+
+
 def sets_path_override(part: str) -> bool:
     """True when the segment assigns/clears PATH (can swap which ``gh`` runs).
 
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
-    exported scalar into an array used for command lookup).
+    exported scalar into an array used for command lookup) and dynamic writers
+    such as ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1657,16 +1665,18 @@ def sets_path_override(part: str) -> bool:
             if tok.startswith("-") or tok.startswith("+"):
                 continue
             key, _, _val = tok.partition("=")
-            if _is_path_name(key):
+            if _is_path_name(key) or _var_target_dynamic(key):
                 return True
         return False
-    # ``printf -v PATH …`` / ``printf -v PATH[0] …``
+    # ``printf -v PATH …`` / ``printf -v "$v" …`` / sticky ``-vPATH``
     if head == "printf":
         j = i + 1
         while j < len(rest):
             tok = rest[j]
             if tok in ("-v",):
-                if j + 1 < len(rest) and _is_path_name(rest[j + 1]):
+                if j + 1 < len(rest) and (
+                    _is_path_name(rest[j + 1]) or _var_target_dynamic(rest[j + 1])
+                ):
                     return True
                 j += 2
                 continue
@@ -1680,12 +1690,12 @@ def sets_path_override(part: str) -> bool:
                 continue
             break
         return False
-    # ``read PATH`` / ``read PATH[0]`` / ``mapfile`` / ``readarray``
+    # ``read PATH`` / ``read "$v"`` / ``mapfile`` / ``readarray``
     if head in ("read", "mapfile", "readarray"):
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):
                 continue
-            if _is_path_name(tok):
+            if _is_path_name(tok) or _var_target_dynamic(tok):
                 return True
         return False
     return False
@@ -1747,13 +1757,16 @@ def _part_exports_tracked_gh(part: str) -> bool:
         if i + 1 < len(rest) and _is_tracked_gh_name(rest[i + 1]):
             return True
         return False
-    # ``printf -v GH_HOST …`` / sticky ``-vGH_HOST``
+    # ``printf -v GH_HOST …`` / ``printf -v "$v" …`` / sticky ``-vGH_HOST``
     if head == "printf":
         j = i + 1
         while j < len(rest):
             tok = rest[j]
             if tok in ("-v",):
-                if j + 1 < len(rest) and _is_tracked_gh_name(rest[j + 1]):
+                if j + 1 < len(rest) and (
+                    _is_tracked_gh_name(rest[j + 1])
+                    or _var_target_dynamic(rest[j + 1])
+                ):
                     return True
                 j += 2
                 continue
@@ -1766,12 +1779,12 @@ def _part_exports_tracked_gh(part: str) -> bool:
                 continue
             break
         return False
-    # ``read GH_HOST`` / ``mapfile`` / ``readarray``
+    # ``read GH_HOST`` / ``read "$v"`` / ``mapfile`` / ``readarray``
     if head in ("read", "mapfile", "readarray"):
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):
                 continue
-            if _is_tracked_gh_name(tok):
+            if _is_tracked_gh_name(tok) or _var_target_dynamic(tok):
                 return True
         return False
     return False
@@ -1961,14 +1974,60 @@ def eval_before_merge(cmd: str) -> bool:
     return shell_mutation_before_merge(cmd)
 
 
+def _part_hash_override_risk(part: str) -> bool:
+    """True when ``hash -p`` targets ``gh`` or a dynamically expanded name.
+
+    ``hash -p /tmp/fake \"$x\"`` with ``x=gh`` remembers an attacker path for
+    ``gh`` while the literal token is only ``$x``.
+    """
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] != "hash":
+        return False
+    j = i + 1
+    saw_p = False
+    names: list[str] = []
+    while j < len(rest):
+        tok = rest[j]
+        if tok == "-p":
+            saw_p = True
+            j += 2
+            continue
+        if tok.startswith("-p") and not tok.startswith("--") and tok != "-p":
+            saw_p = True
+            j += 1
+            continue
+        if tok.startswith("-"):
+            j += 1
+            continue
+        names.append(tok)
+        j += 1
+    if not saw_p:
+        return False
+    if not names:
+        # ``hash -p file`` with no name is opaque — fail closed.
+        return True
+    for n in names:
+        if n == "gh" or _dequote_shell_text(n) == "gh" or _var_target_dynamic(n):
+            return True
+    return False
+
+
 def redefines_gh(cmd: str) -> bool:
     """True when the command defines a ``gh`` function/alias/hash override.
 
     Also inspects a quote-stripped form so ``alias g'h'=…`` / ``g''h(){…}`` match
-    after Bash quote-removal turns the name into ``gh``.
+    after Bash quote-removal turns the name into ``gh``, and ``hash -p`` with a
+    dynamic name (``\"$x\"``) that may expand to ``gh``.
     """
     if not MERGE_RE.search(cmd):
         return False
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if any(_part_hash_override_risk(p) for p in parts):
+        return True
     for candidate in (cmd, _dequote_shell_text(cmd)):
         if (
             GH_FUNC_RE.search(candidate)

@@ -888,6 +888,14 @@ assert builtin_hash_err and (
 )
 assert mg.redefines_gh("command hash -p /tmp/fake gh; gh -R owner/safe pr merge 1")
 assert mg.redefines_gh("hash -p /tmp/fake gh; gh -R owner/safe pr merge 1")
+# Dynamic hash name: hash -p /tmp/fake "$x" with x=gh
+dyn_hash = 'x=gh; hash -p /tmp/fake "$x"; gh -R owner/safe pr merge 1'
+assert mg._part_hash_override_risk('hash -p /tmp/fake "$x"')
+assert mg.redefines_gh(dyn_hash)
+dyn_hash_err = mg.check_command(dyn_hash, cwd="/tmp")
+assert dyn_hash_err and (
+    "hash" in dyn_hash_err or "alias" in dyn_hash_err or "function" in dyn_hash_err
+)
 # ``builtin alias`` / ``command alias`` define the same shell alias
 builtin_alias = (
     "shopt -s expand_aliases; "
@@ -1261,6 +1269,13 @@ assert mg.sets_path_override("printf -v PATH /tmp/fake")
 assert mg.path_override_for_merge(
     "printf -v PATH /tmp/fake; gh -R owner/safe pr merge 1"
 )
+# Dynamic PATH writer target: printf -v "$v" with v=PATH
+assert mg.sets_path_override('printf -v "$v" /tmp/fake')
+dyn_path = 'v=PATH; printf -v "$v" /tmp/fake; gh -R owner/safe pr merge 1'
+assert mg.path_override_for_merge(dyn_path)
+dyn_path_err = mg.check_command(dyn_path, cwd="/tmp")
+assert dyn_path_err and "PATH" in dyn_path_err
+assert mg.sets_path_override('read "$v"')
 printf_err = mg.check_command(
     "printf -v PATH /tmp/fake; gh -R owner/safe pr merge 1", cwd="/tmp"
 )
