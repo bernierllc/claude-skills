@@ -1707,10 +1707,11 @@ def _is_tracked_gh_name(name: str) -> bool:
 def _part_exports_tracked_gh(part: str) -> bool:
     """True when the segment mutates a tracked gh/config env var for later children.
 
-    Covers ``export``, ``declare -x``, ``typeset -x``, ``local -x``, standalone
-    ``GH_HOST=…`` assignments, and indirect writers (``printf -v``, ``read``,
-    ``mapfile``/``readarray``). Bash keeps the export attribute on reassignment,
-    so an inherited exported value is updated for the merge child only.
+    Covers ``export``, ``declare``/``readonly``, standalone ``GH_HOST=…``,
+    indirect writers (``printf -v``, ``read``, ``mapfile``/``readarray``), and
+    shell-loop targets (``for GH_HOST in …`` / ``select GH_HOST in …``). Bash
+    keeps the export attribute on reassignment, so an inherited exported value
+    is updated for the merge child only.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1740,6 +1741,11 @@ def _part_exports_tracked_gh(part: str) -> bool:
             key, has_assign, _val = tok.partition("=")
             if has_assign and _is_tracked_gh_name(key):
                 return True
+        return False
+    # ``for GH_HOST in …`` / ``select GH_HOST in …`` assign each element to NAME.
+    if head in ("for", "select"):
+        if i + 1 < len(rest) and _is_tracked_gh_name(rest[i + 1]):
+            return True
         return False
     # ``printf -v GH_HOST …`` / sticky ``-vGH_HOST``
     if head == "printf":

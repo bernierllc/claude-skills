@@ -801,6 +801,17 @@ assert mg.prior_tracked_gh_export(readonly_host)
 assert mg.check_command(readonly_host, cwd="/tmp") and "exported" in mg.check_command(
     readonly_host, cwd="/tmp"
 )
+# for/select loop targets assign NAME while keeping inherited export
+assert mg._part_exports_tracked_gh("for GH_HOST in ghe.example")
+for_host = "for GH_HOST in ghe.example; do :; done; gh -R owner/safe pr merge 1"
+assert mg.prior_tracked_gh_export(for_host)
+for_err = mg.check_command(for_host, cwd="/tmp")
+assert for_err and "exported" in for_err
+assert mg._part_exports_tracked_gh("select GH_CONFIG_DIR in /tmp/a")
+assert mg.prior_tracked_gh_export(
+    "select GH_CONFIG_DIR in /tmp/a; do break; done; "
+    "gh -R owner/target pr merge 42"
+)
 # Same-segment leading assign is still OK (mirrored by _child_gh_env)
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
