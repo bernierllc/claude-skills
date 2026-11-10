@@ -25,17 +25,23 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\b")
 # `-R` requires a separator (space); bare `-Rowner/repo` is not a gh form we support.
 REPO_FLAG = re.compile(r"(?:(?:^|\s)-R|--repo)(?:=|\s+)(\S+)")
-CD_RE = re.compile(r"^cd\s+(?:--\s+)?(\S+)")
-PULL_URL = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", re.I)
-# Value-taking flags from https://cli.github.com/manual/gh_pr_merge — skip their args
-# so they are not mistaken for a branch/URL selector.
+PULL_URL = re.compile(
+    r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
+    re.I,
+)
+# Value-taking flags from `gh pr merge --help` — skip their args so they are not
+# mistaken for a branch/URL selector.
 MERGE_VALUE_FLAGS = frozenset(
     {
         "--match-head-commit",
         "--body",
+        "-b",
         "--body-file",
+        "-F",
         "--subject",
+        "-t",
         "--author-email",
+        "-A",
         "-R",
         "--repo",
     }
@@ -141,13 +147,39 @@ def payload_cwd(payload: dict, inp: dict) -> str:
     return os.getcwd()
 
 
-def _cd_target_unresolvable(target: str) -> bool:
+def _cd_target_unresolvable(target: str | None) -> bool:
     """True when the guard cannot know the post-cd directory statically."""
     if not target or target == "-":
         return True
     if "$" in target or "`" in target:
         return True
     return False
+
+
+def parse_cd_directory(part: str) -> str | None:
+    """Return the directory operand of a `cd` segment, skipping -L/-P/-- options.
+
+    None means bare `cd`, `cd -`, or no directory token.
+    """
+    try:
+        tokens = shlex.split(part, posix=True)
+    except ValueError:
+        tokens = part.split()
+    if not tokens or tokens[0] != "cd":
+        return None
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok.startswith("-") and tok != "-":
+            i += 1
+            continue
+        break
+    if i >= len(tokens):
+        return None
+    return tokens[i].strip("'\"")
 
 
 def iter_merge_segments(
@@ -165,16 +197,21 @@ def iter_merge_segments(
         part = part.strip()
         if not part:
             continue
-        m_cd = CD_RE.match(part)
-        if m_cd and not MERGE_RE.search(part):
-            target = m_cd.group(1).strip("'\"")
-            if _cd_target_unresolvable(target):
-                unresolved_cd = True
+        if part.startswith("cd") and not MERGE_RE.search(part):
+            try:
+                first = shlex.split(part, posix=True)[:1]
+            except ValueError:
+                first = part.split()[:1]
+            if first == ["cd"]:
+                target = parse_cd_directory(part)
+                if _cd_target_unresolvable(target):
+                    unresolved_cd = True
+                    continue
+                assert target is not None
+                expanded = os.path.expanduser(target)
+                cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+                unresolved_cd = False
                 continue
-            expanded = os.path.expanduser(target)
-            cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
-            unresolved_cd = False
-            continue
         if MERGE_RE.search(part):
             if unresolved_cd and not extract_repo(part):
                 return [], (
@@ -197,7 +234,8 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         reasons = gate.evaluate(pr)
     except Exception as e:  # noqa: BLE001
         msg = str(e).lower()
-        if "not found" in msg:
+        # Repo resolution failures are gate failures, not infra to skip.
+        if "not found" in msg or "could not resolve owner/repo" in msg:
             return f"review-gate: {e}"
         print(f"review-gate: skip (infra): {e}", file=sys.stderr)
         return None

@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.5
+version: 1.0.6
 author: Bernier LLC
 ---
 
@@ -68,7 +68,7 @@ Judgment/Jev triage is **out of scope** for v1 (still piloted in NevarMail per t
 
 ## Merge guard
 
-PreToolUse blocks `gh pr merge` (including `--auto`) when `check-review-gate.py` fails for that PR. Override with `# review-gate-ok: <reason>` in the command only for Matt-approved escapes.
+PreToolUse blocks `gh pr merge` (including `--auto`) when `check-review-gate.py` fails for that PR. Prefer `gh -R owner/repo pr merge <n>` (literal repo + number) so the guard does not have to re-parse shell `cd` chains. Override with `# review-gate-ok: <reason>` in the command only for Matt-approved escapes.
 
 ## Apply across nevar*
 

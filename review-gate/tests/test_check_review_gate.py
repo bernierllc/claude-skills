@@ -166,12 +166,17 @@ segs, err = mg.iter_merge_segments(
     "cd /workspace/other\ngh pr merge 42 --squash", "/tmp/start"
 )
 assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+segs, err = mg.iter_merge_segments(
+    "cd -P /workspace/other && gh pr merge 42 --squash", "/tmp/start"
+)
+assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
 segs, err = mg.iter_merge_segments('cd "$OTHER_REPO" && gh pr merge 42', "/tmp/start")
 assert segs == [] and err and "cannot resolve" in err
 assert mg.extract_merge_selector("gh pr merge --squash") is None
 assert (
     mg.extract_merge_selector("gh pr merge --match-head-commit deadbeef --auto") is None
 )
+assert mg.extract_merge_selector("gh pr merge -b 'message' --auto") is None
 assert mg.extract_merge_selector(
     "gh pr merge https://github.com/o/r/pull/7 --squash"
 ) == "https://github.com/o/r/pull/7"
@@ -179,6 +184,8 @@ assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feat
 # URL selector must carry owner/repo, not only the number
 n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/7 --squash")
 assert e is None and n == 7 and r == "owner/other"
+assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
+assert g.parse_repo("owner/repo") == ("owner", "repo")
 
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"

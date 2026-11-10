@@ -38,10 +38,18 @@ def run_gh(args: list[str], repo: str | None = None) -> Any:
 
 
 def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
-    """Resolve OWNER/NAME. Prefer an explicit --repo; else `gh repo view` in cwd."""
+    """Resolve OWNER/NAME. Prefer an explicit --repo; else `gh repo view` in cwd.
+
+    Accepts gh's `[HOST/]OWNER/REPO` form (e.g. `github.com/owner/repo`).
+    """
     if repo and "/" in repo:
-        owner, name = repo.split("/", 1)
-        return owner, name
+        parts = [p for p in repo.strip().strip("/").split("/") if p]
+        if len(parts) >= 2:
+            # Drop optional host; last two segments are owner/repo.
+            owner, name = parts[-2], parts[-1]
+            if name.endswith(".git"):
+                name = name[: -len(".git")]
+            return owner, name
     proc = subprocess.run(
         ["gh", "repo", "view", "--json", "owner,name", "-q", ".owner.login + \"/\" + .name"],
         capture_output=True,
