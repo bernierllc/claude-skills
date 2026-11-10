@@ -1124,6 +1124,94 @@ def array_assembled_merge(cmd: str) -> bool:
     return False
 
 
+_POSITIONAL_EXPAND_TOKEN_RE = re.compile(
+    r"^\$?\{?(@|\*|[0-9]+)\}?$"
+)
+
+
+def _part_set_positional_args(part: str) -> list[str] | None:
+    """Return argv after ``set --`` / ``set`` positionals, or None if not a set."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] != "set":
+        return None
+    j = i + 1
+    while j < len(rest):
+        tok = rest[j]
+        if tok == "--":
+            return rest[j + 1 :]
+        if tok in ("-o", "+o"):
+            j += 2
+            continue
+        if tok.startswith("-") or tok.startswith("+"):
+            j += 1
+            continue
+        # ``set arg1 arg2`` without ``--`` replaces positionals.
+        return rest[j:]
+    return []
+
+
+def _part_set_positionals_has_merge_bits(part: str) -> bool:
+    """True when ``set`` positionals mention ``gh`` / ``pr`` / ``merge`` fragments."""
+    args = _part_set_positional_args(part)
+    if not args:
+        return False
+    joined = " ".join(args)
+    for candidate in (joined, _dequote_shell_text(joined)):
+        if MERGE_RE.search(candidate) or _PR_MERGE_LOOSE_RE.search(candidate):
+            return True
+    interesting = {"gh", "pr", "merge", "$@", "$*", "${@}", "${*}"}
+    return any(a in interesting for a in args)
+
+
+def _part_is_positional_expand_command(part: str) -> bool:
+    """True when the executed command is ``\"$@\"`` / ``$*`` / ``$1`` / …."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    i = 0
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(tokens):
+        return False
+    tok = tokens[i]
+    if tok in ("$@", "$*", "${@}", "${*}"):
+        return True
+    return bool(_POSITIONAL_EXPAND_TOKEN_RE.match(tok)) and (
+        "@" in tok or "*" in tok or tok.lstrip("$").strip("{}").isdigit()
+    )
+
+
+def positional_assembled_merge(cmd: str) -> bool:
+    """True when positional parameters assemble a merge across segments.
+
+    Example: ``set -- gh -R owner/target pr; set -- \"$@\" merge 2; \"$@\"`` —
+    no single segment matches ``is_gh_pr_merge``, but Bash runs the merge.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    has_set_bits = any(_part_set_positionals_has_merge_bits(p) for p in parts)
+    has_expand = any(_part_is_positional_expand_command(p) for p in parts)
+    if has_set_bits and has_expand:
+        return True
+    # ``set -- gh … pr merge …`` alone (complete merge in positionals).
+    for part in parts:
+        args = _part_set_positional_args(part)
+        if not args:
+            continue
+        joined = " ".join(args)
+        for candidate in (joined, _dequote_shell_text(joined)):
+            if MERGE_RE.search(candidate) or _PR_MERGE_LOOSE_RE.search(candidate):
+                return True
+    if has_expand and (
+        MERGE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(_dequote_shell_text(cmd))
+    ):
+        return True
+    return False
+
+
 # First-level ``gh`` commands from ``gh help`` (incl. preview builtins).
 # Unknown words may be aliases that expand to ``pr merge``.
 GH_TOP_LEVEL_COMMANDS = frozenset(
@@ -2774,6 +2862,15 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: array-assembled `gh pr merge` "
             "(e.g. `a=(gh … pr merge); \"${a[@]}\"`); run literal "
             "`gh -R owner/repo pr merge <n>` without array argv"
+        )
+    # `set -- gh … pr; set -- "$@" merge; "$@"` — positional-parameter assembly.
+    if positional_assembled_merge(cmd) or any(
+        positional_assembled_merge(p) for p in parts
+    ):
+        return (
+            "review-gate: positional-parameter-assembled `gh pr merge` "
+            "(e.g. `set -- gh … pr; set -- \"$@\" merge; \"$@\"`); run literal "
+            "`gh -R owner/repo pr merge <n>` without `$@`/`$*` argv"
         )
     # Quote-smashed `g''h` inside `bash -c` / eval — Bash concatenates to `gh`.
     if quote_smashed_merge(cmd) or any(quote_smashed_merge(p) for p in parts):

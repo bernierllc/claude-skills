@@ -452,6 +452,16 @@ array_err = mg.check_command(array_merge, cwd="/tmp")
 assert array_err and "array" in array_err
 assert mg.array_assembled_merge("cmds=(gh -R owner/safe pr merge 1)")
 assert not mg.array_assembled_merge('echo "${PATH[@]}"')
+# Positional-parameter assembly across segments
+positional_merge = 'set -- gh -R owner/target pr; set -- "$@" merge 2; "$@"'
+assert mg.positional_assembled_merge(positional_merge)
+pos_err = mg.check_command(positional_merge, cwd="/tmp")
+assert pos_err and (
+    "positional" in pos_err or "$@" in pos_err or "array" in pos_err
+)
+assert mg.positional_assembled_merge('set -- gh -R owner/target pr merge 2; "$@"')
+assert not mg.positional_assembled_merge('echo "$@"')
+assert not mg.positional_assembled_merge("gh -R owner/safe pr merge 1")
 # gh alias set / opaque gh <alias> can expand to pr merge
 alias_cmd = (
     'p=pr; m=merge; gh alias set sneak "$p $m 2 -R owner/target"; gh sneak'
