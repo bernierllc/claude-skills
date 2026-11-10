@@ -630,6 +630,16 @@ assert mg.variable_assembled_merge(
 assert mg._param_expansion_transformed("${c:1}")
 assert not mg._param_expansion_transformed("$c")
 assert not mg._param_expansion_transformed("${c}")
+# printf -v formatting can assemble merge words (e.g. '%sh' g → gh)
+fmt_asm = (
+    "printf -v c '%sh' g; p=pr; m=merge; "
+    '"$c" "$p" "$m" 42 -R owner/repo'
+)
+assert mg.variable_assembled_merge(fmt_asm)
+assert mg._part_assigns_merge_assembly_words("printf -v c '%sh' g") == {"gh"}
+assert mg._part_assigns_merge_assembly_words("printf -v c %s%s g h") == {"gh"}
+fmt_asm_err = mg.check_command(fmt_asm, cwd="/tmp")
+assert fmt_asm_err and "variable-assembled" in fmt_asm_err
 # Dynamic argv after merge may expand into -Rowner/target
 dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
 assert mg.dynamic_merge_argv(dyn_repo_flag)

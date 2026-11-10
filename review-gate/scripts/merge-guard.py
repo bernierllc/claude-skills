@@ -854,16 +854,102 @@ def _assignment_value_merge_word(val: str) -> str | None:
     return None
 
 
+# Simple ``printf`` conversions we can evaluate without shelling out.
+_PRINTF_CONV_RE = re.compile(r"%([-+0 #]*)(\d+)?(?:\.(\d+))?([diouxXeEfFgGaAcsb%])")
+
+
+def _try_bash_printf_format(fmt: str, args: list[str]) -> str | None:
+    """Best-effort bash-like ``printf`` for literal formats; None if unsupported."""
+    out: list[str] = []
+    i = 0
+    arg_i = 0
+    while i < len(fmt):
+        if fmt[i] != "%":
+            out.append(fmt[i])
+            i += 1
+            continue
+        m = _PRINTF_CONV_RE.match(fmt, i)
+        if not m:
+            return None
+        conv = m.group(4)
+        i = m.end()
+        if conv == "%":
+            out.append("%")
+            continue
+        if arg_i >= len(args):
+            return None
+        arg = args[arg_i]
+        arg_i += 1
+        if conv == "s":
+            out.append(arg)
+        elif conv == "c":
+            if re.fullmatch(r"-?\d+", arg):
+                out.append(chr(int(arg) & 0xFF))
+            else:
+                out.append(arg[:1] if arg else "\0")
+        elif conv in "diouxX":
+            try:
+                n = int(arg, 0)
+            except ValueError:
+                return None
+            if conv in "diu":
+                out.append(str(n))
+            elif conv == "o":
+                out.append(format(n & 0xFFFFFFFF, "o"))
+            elif conv == "x":
+                out.append(format(n & 0xFFFFFFFF, "x"))
+            else:
+                out.append(format(n & 0xFFFFFFFF, "X"))
+        else:
+            return None
+    return "".join(out)
+
+
 def _merge_words_from_printf_values(tokens: list[str]) -> set[str]:
-    """Collect literal ``gh``/``pr``/``merge`` among ``printf`` format/args."""
+    """Collect ``gh``/``pr``/``merge`` from ``printf`` format/args (incl. formatting)."""
     found: set[str] = set()
+    plain_tokens: list[str] = []
     for tok in tokens:
         if tok.startswith("-") and tok != "-":
             continue
-        word = _assignment_value_merge_word(tok)
+        plain = _dequote_shell_text(tok.strip("'\""))
+        plain_tokens.append(plain)
+        word = _assignment_value_merge_word(plain)
         if word:
             found.add(word)
+    if plain_tokens and not any(_command_name_dynamic(t) for t in plain_tokens):
+        rendered = _try_bash_printf_format(plain_tokens[0], plain_tokens[1:])
+        if rendered is not None:
+            word = _assignment_value_merge_word(rendered)
+            if word:
+                found.add(word)
+            found |= _merge_words_from_text(rendered)
     return found
+
+
+def _part_has_printf_v(part: str) -> bool:
+    """True when ``part`` runs ``printf -v`` / sticky ``-vNAME`` (assigns output)."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return False
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        return _part_has_printf_v(nested)
+    if rest[i] != "printf":
+        return False
+    for tok in rest[i + 1 :]:
+        if tok == "-v":
+            return True
+        if tok.startswith("-") and tok != "-" and "=" not in tok:
+            if tok.startswith("-v") and len(tok) > 2:
+                return True
+            continue
+        break
+    return False
 
 
 def _merge_words_from_text(text: str) -> set[str]:
@@ -1096,14 +1182,19 @@ def variable_assembled_merge(cmd: str) -> bool:
     no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
     ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
     Also covers ``printf -v c gh; …``, ``read m <<< merge; …``, append
-    stitching such as ``c=g; c+=h; m=mer; m+=ge; …``, and transformed
-    expansions such as ``c=xgh; …; \"${c:1}\" \"${p:1}\" \"${m:1}\"``.
+    stitching such as ``c=g; c+=h; m=mer; m+=ge; …``, transformed expansions
+    such as ``\"${c:1}\"``, and formatted ``printf -v c '%sh' g``.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(is_gh_pr_merge(p) for p in parts):
         return False
     # Fail closed: transforms can yield gh/pr/merge without exact source words.
     if any(_part_transformed_dynamic_merge_prefix(p) for p in parts):
+        return True
+    # Fail closed: ``printf -v`` can format merge words (``printf -v c '%sh' g``).
+    if any(_part_fully_dynamic_merge_prefix(p) for p in parts) and any(
+        _part_has_printf_v(p) for p in parts
+    ):
         return True
     assigned: set[str] = set()
     concat: dict[str, str] = {}
