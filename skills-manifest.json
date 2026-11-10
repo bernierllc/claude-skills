@@ -3,7 +3,7 @@
   "generatedAt": "2026-11-10T02:10:05.758577+00:00",
   "skills": {
     "adversarial-review": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.",
       "author": "Bernier LLC"
     },
@@ -104,7 +104,7 @@
       "author": "Bernier LLC"
     },
     "review-gate": {
-      "version": "1.0.17",
+      "version": "1.0.18",
       "description": "Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.",
       "author": "Bernier LLC"
     },

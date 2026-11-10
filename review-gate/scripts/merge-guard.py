@@ -261,11 +261,33 @@ def repo_from_pull_url_match(m: re.Match[str]) -> str:
     return f"{host}/{owner}/{name}"
 
 
+def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
+    """Prefix a hostless OWNER/REPO with a leading GH_HOST= assignment.
+
+    Matches ``gh help environment``: GH_HOST selects the API host when the
+    repository slug does not already embed one. Dynamic hosts fail closed.
+    """
+    if not repo or repo == "$UNRESOLVED":
+        return repo
+    parts = [p for p in repo.strip().strip("/").split("/") if p]
+    if len(parts) >= 3:
+        return repo
+    gh_host = assignments.get("GH_HOST")
+    if gh_host is None or gh_host == "":
+        return repo
+    if _repo_operand_unresolvable(gh_host):
+        return "$UNRESOLVED"
+    if gh_host.lower() in DOTCOM_PULL_HOSTS:
+        return repo
+    return f"{gh_host}/{repo}"
+
+
 def extract_repo(cmd: str) -> str | None:
     """Return the last -R/--repo from argv, or a leading GH_REPO= assignment.
 
-    gh uses the last repeated inherited ``-R``/``--repo``. Returns the sentinel
-    ``$UNRESOLVED`` when the operand is dynamic so callers can fail closed.
+    gh uses the last repeated inherited ``-R``/``--repo``. Leading ``GH_HOST=``
+    is applied to hostless slugs. Returns the sentinel ``$UNRESOLVED`` when the
+    operand is dynamic so callers can fail closed.
     """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
@@ -300,11 +322,11 @@ def extract_repo(cmd: str) -> str | None:
             continue
         i += 1
     if found is not None:
-        return found
+        return _apply_gh_host(found, assignments)
     gh_repo = assignments.get("GH_REPO")
     if gh_repo is None or gh_repo == "":
         return None
-    return _normalize_repo_operand(gh_repo)
+    return _apply_gh_host(_normalize_repo_operand(gh_repo), assignments)
 
 
 def extract_merge_selector(cmd: str) -> str | None:
@@ -390,8 +412,10 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
     if selector:
         m_url = PULL_URL.search(selector)
         if m_url:
+            # gh resolves the repository from the URL selector even when -R
+            # disagrees (e.g. `gh pr merge https://…/target/pull/7 -R owner/safe`).
             url_repo = repo_from_pull_url_match(m_url)
-            return int(m_url.group(4)), repo or url_repo, None
+            return int(m_url.group(4)), url_repo, None
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         args.insert(2, selector)

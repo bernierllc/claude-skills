@@ -1,7 +1,7 @@
 ---
 name: adversarial-review
 description: Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.
-version: 1.0.0
+version: 1.0.1
 author: Bernier LLC
 ---
 
@@ -53,7 +53,7 @@ Every review brief opens with the redundancy question: *does this reimplement so
 
 ## PR body
 
-Maintain a `## Review` section naming which reviewer ran and the round count. Fallback reviewers (`agy`, `superpowers`) must be named when Codex did not run.
+Maintain a `## Review` section naming which reviewer ran and the round count. Fallback reviewers (`agy`, `superpowers`) must be named when Codex did not run, and must include the current head SHA (full OID or ≥7-char prefix). Refresh the SHA after every push — the installed review-gate rejects fallbacks that omit or stale the head.
 
 ## Plan / spec PRs
 
