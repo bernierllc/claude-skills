@@ -1,5 +1,6 @@
 """Run: python3 review-gate/tests/test_check_review_gate.py"""
 import importlib.util
+import os
 import re
 from pathlib import Path
 
@@ -196,6 +197,11 @@ assert not mg.segment_has_override(
 assert not mg.segment_has_override(
     "gh -R owner/target pr merge 42 --body `printf x # review-gate-ok: fake\n`"
 )
+# Escaped whitespace before # is not a shell comment (body text, not override)
+assert not mg.segment_has_override(
+    r"gh -R owner/target pr merge 42 --body=\ #review-gate-ok:\ fake"
+)
+assert not mg._is_unescaped_shell_comment_hash(r"\ #review-gate-ok: fake", 2)
 # GIT_DIR / GIT_CONFIG_* without -R fails closed; with -R is allowed
 assert mg.sets_git_location("GIT_DIR=/workspace/target/.git gh pr merge 42")
 assert mg.sets_git_location(
@@ -231,6 +237,41 @@ child = mg._child_gh_env(
     scrub_gh_repo=False,
 )
 assert child is not None and child.get("HOME") == "/tmp/enterprise-home"
+# Cleared config vars are popped so the gate does not keep the hook's Enterprise dir
+_prev_config = os.environ.get("GH_CONFIG_DIR")
+_prev_xdg = os.environ.get("XDG_CONFIG_HOME")
+_prev_host = os.environ.get("GH_HOST")
+os.environ["GH_CONFIG_DIR"] = "/tmp/hook-enterprise"
+os.environ["XDG_CONFIG_HOME"] = "/tmp/hook-xdg"
+os.environ["GH_HOST"] = "ghe.hook"
+try:
+    cleared = mg._child_gh_env(
+        "env -u GH_CONFIG_DIR gh -R owner/target pr merge 42",
+        scrub_gh_repo=False,
+    )
+    assert cleared is not None and "GH_CONFIG_DIR" not in cleared
+    cleared_i = mg._child_gh_env(
+        "env -i gh -R owner/target pr merge 42",
+        scrub_gh_repo=False,
+    )
+    assert cleared_i is not None
+    assert "GH_CONFIG_DIR" not in cleared_i
+    assert "XDG_CONFIG_HOME" not in cleared_i
+    assert "HOME" not in cleared_i
+    assert "GH_HOST" not in cleared_i
+finally:
+    if _prev_config is None:
+        os.environ.pop("GH_CONFIG_DIR", None)
+    else:
+        os.environ["GH_CONFIG_DIR"] = _prev_config
+    if _prev_xdg is None:
+        os.environ.pop("XDG_CONFIG_HOME", None)
+    else:
+        os.environ["XDG_CONFIG_HOME"] = _prev_xdg
+    if _prev_host is None:
+        os.environ.pop("GH_HOST", None)
+    else:
+        os.environ["GH_HOST"] = _prev_host
 # Override on one merge must not waive a second merge in the same command
 assert mg.segment_has_override("gh -R owner/safe pr merge 1  # review-gate-ok: approved")
 assert not mg.segment_has_override("gh -R owner/target pr merge 2")

@@ -122,7 +122,7 @@ def shell_comments(cmd: str) -> list[str]:
             depth -= 1
             i += 1
             continue
-        if depth == 0 and c == "#" and (i == 0 or cmd[i - 1].isspace()):
+        if depth == 0 and _is_unescaped_shell_comment_hash(cmd, i):
             end = cmd.find("\n", i)
             if end < 0:
                 end = n
@@ -131,6 +131,23 @@ def shell_comments(cmd: str) -> list[str]:
             continue
         i += 1
     return comments
+
+
+def _is_unescaped_shell_comment_hash(cmd: str, i: int) -> bool:
+    """True when ``cmd[i]`` is ``#`` starting a real shell comment (not ``\\ #``)."""
+    if i < 0 or i >= len(cmd) or cmd[i] != "#":
+        return False
+    if i == 0:
+        return True
+    if not cmd[i - 1].isspace():
+        return False
+    # Odd number of backslashes immediately before that whitespace → escaped space.
+    bs = 0
+    k = i - 2
+    while k >= 0 and cmd[k] == "\\":
+        bs += 1
+        k -= 1
+    return bs % 2 == 0
 
 
 def segment_has_override(part: str) -> bool:
@@ -279,43 +296,44 @@ ENV_VALUE_FLAGS = frozenset(
 )
 
 
+# gh config location: GH_CONFIG_DIR, else $XDG_CONFIG_HOME/gh, else $HOME/.config/gh.
+GH_CONFIG_LOCATION_VARS = frozenset({"GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"})
+# Vars whose cleared (-u / -i) state the gate must mirror for host/config fidelity.
+GH_TRACKED_ENV_VARS = frozenset({"GH_HOST", "GH_REPO"}) | GH_CONFIG_LOCATION_VARS
+
+
 def _env_wrapper_state(
     tokens: list[str],
-) -> tuple[dict[str, str], bool, bool]:
+) -> tuple[dict[str, str], set[str]]:
     """Collect env NAME=VALUE / -u / -i effects before `gh`.
 
-    Returns ``(assignments, cleared_gh_host, cleared_gh_repo)``. Cleared flags
-    are True when the child no longer inherits that variable (``-u/--unset``,
-    ``-i``, or bare ``-``) and no later assignment re-sets it.
+    Returns ``(assignments, cleared_names)``. Cleared names are unset for the
+    child (``-u/--unset``, ``-i``, or bare ``-``) unless a later assignment
+    re-sets them.
     """
     try:
         env_i = next(i for i, t in enumerate(tokens) if t == "env")
         gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
     except StopIteration:
-        return {}, False, False
+        return {}, set()
     if env_i >= gh_i:
-        return {}, False, False
+        return {}, set()
     out: dict[str, str] = {}
-    cleared_gh_host = False
-    cleared_gh_repo = False
+    cleared: set[str] = set()
     i = env_i + 1
     while i < gh_i:
         tok = tokens[i]
         if ASSIGNMENT_RE.match(tok):
             key, _, val = tok.partition("=")
             out[key] = val
-            if key == "GH_HOST":
-                cleared_gh_host = False
-            if key == "GH_REPO":
-                cleared_gh_repo = False
+            cleared.discard(key)
             i += 1
             continue
         if tok.startswith("-"):
             # Bare ``-`` implies ``-i`` (GNU env).
             if tok in ("-", "-i", "--ignore-environment"):
                 out.clear()
-                cleared_gh_host = True
-                cleared_gh_repo = True
+                cleared |= set(GH_TRACKED_ENV_VARS)
                 i += 1
                 continue
             if tok.startswith("--") and "=" in tok:
@@ -323,20 +341,14 @@ def _env_wrapper_state(
                 flag, _, val = tok.partition("=")
                 if flag in ("--unset", "-u"):
                     out.pop(val, None)
-                    if val == "GH_HOST":
-                        cleared_gh_host = True
-                    if val == "GH_REPO":
-                        cleared_gh_repo = True
+                    cleared.add(val)
                 i += 1
                 continue
             # Sticky ``-uGH_HOST`` / ``-C/path`` (no separate operand).
             if tok.startswith("-u") and tok != "-u":
                 name = tok[2:]
                 out.pop(name, None)
-                if name == "GH_HOST":
-                    cleared_gh_host = True
-                if name == "GH_REPO":
-                    cleared_gh_repo = True
+                cleared.add(name)
                 i += 1
                 continue
             if tok.startswith("-C") and tok != "-C":
@@ -349,16 +361,13 @@ def _env_wrapper_state(
                 operand = tokens[i + 1]
                 if base in ("-u", "--unset"):
                     out.pop(operand, None)
-                    if operand == "GH_HOST":
-                        cleared_gh_host = True
-                    if operand == "GH_REPO":
-                        cleared_gh_repo = True
+                    cleared.add(operand)
                 i += 2
                 continue
             i += 1
             continue
         break
-    return out, cleared_gh_host, cleared_gh_repo
+    return out, cleared
 
 
 def is_gh_pr_merge(part: str) -> bool:
@@ -466,7 +475,7 @@ def sets_git_location(part: str) -> bool:
     rest, leading = _skip_leading_assignments(tokens)
     if any(is_git_env_override_key(k) for k in leading):
         return True
-    env_assigns, _cleared_host, _cleared_repo = _env_wrapper_state(rest)
+    env_assigns, _cleared = _env_wrapper_state(rest)
     return any(is_git_env_override_key(k) for k in env_assigns)
 
 
@@ -526,12 +535,13 @@ def extract_repo_resolution(cmd: str) -> tuple[str | None, bool]:
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
     # ``env NAME=VALUE … gh`` overlays leading assignments (matches the child env).
-    env_assigns, cleared_gh_host, cleared_gh_repo = _env_wrapper_state(rest)
+    env_assigns, cleared = _env_wrapper_state(rest)
     assignments = {**assignments, **env_assigns}
-    if cleared_gh_host and "GH_HOST" not in env_assigns:
+    if "GH_HOST" in cleared and "GH_HOST" not in env_assigns:
         # Child has no GH_HOST → gh defaults to github.com; say so explicitly.
         assignments["GH_HOST"] = "github.com"
     # Empty ``GH_REPO=`` or ``-u GH_REPO`` clears the selector for the child.
+    cleared_gh_repo = "GH_REPO" in cleared
     if "GH_REPO" in assignments and assignments.get("GH_REPO") == "":
         cleared_gh_repo = True
     elif cleared_gh_repo and "GH_REPO" not in env_assigns:
@@ -655,10 +665,6 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     return None, repo
 
 
-# gh config location: GH_CONFIG_DIR, else $XDG_CONFIG_HOME/gh, else $HOME/.config/gh.
-GH_CONFIG_LOCATION_VARS = frozenset({"GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"})
-
-
 def _apply_overlay_env_var(
     env: dict[str, str], overlays: dict[str, str], key: str
 ) -> None:
@@ -680,26 +686,25 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
     """
     tokens = _shell_tokens(cmd)
     rest, leading = _skip_leading_assignments(tokens)
-    env_assigns, cleared_host, cleared_repo = _env_wrapper_state(rest)
+    env_assigns, cleared = _env_wrapper_state(rest)
     overlays = {**leading, **env_assigns}
     touches = (
         "GH_HOST" in overlays
         or "GH_REPO" in overlays
         or any(k in overlays for k in GH_CONFIG_LOCATION_VARS)
-        or cleared_host
-        or cleared_repo
+        or bool(cleared & GH_TRACKED_ENV_VARS)
         or scrub_gh_repo
     )
     if not touches:
         return None
     env = os.environ.copy()
-    if cleared_host and "GH_HOST" not in env_assigns:
+    if "GH_HOST" in cleared and "GH_HOST" not in env_assigns:
         env.pop("GH_HOST", None)
     elif "GH_HOST" in overlays:
         _apply_overlay_env_var(env, overlays, "GH_HOST")
     if (
         scrub_gh_repo
-        or (cleared_repo and "GH_REPO" not in env_assigns)
+        or ("GH_REPO" in cleared and "GH_REPO" not in env_assigns)
         or overlays.get("GH_REPO") == ""
     ):
         env.pop("GH_REPO", None)
@@ -708,7 +713,10 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
         if not _repo_operand_unresolvable(val):
             env["GH_REPO"] = val
     for key in GH_CONFIG_LOCATION_VARS:
-        _apply_overlay_env_var(env, overlays, key)
+        if key in cleared and key not in env_assigns:
+            env.pop(key, None)
+        else:
+            _apply_overlay_env_var(env, overlays, key)
     return env
 
 
