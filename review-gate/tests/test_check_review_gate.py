@@ -193,16 +193,31 @@ assert mg.has_override("gh pr merge 42  # review-gate-ok: attached")
 assert not mg.segment_has_override(
     "gh -R owner/target pr merge 42 --auto 3< <(printf x # review-gate-ok: fake\n)"
 )
-# GIT_DIR without -R fails closed; with -R is allowed through segment policy
+# GIT_DIR / GIT_CONFIG_* without -R fails closed; with -R is allowed
 assert mg.sets_git_location("GIT_DIR=/workspace/target/.git gh pr merge 42")
+assert mg.sets_git_location(
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://ghe.example/o/t.git.insteadOf "
+    "GIT_CONFIG_VALUE_0=https://github.com/o/s.git gh pr merge 42"
+)
 git_dir_err = mg.check_command(
     "GIT_DIR=/workspace/target/.git gh pr merge 42", cwd="/tmp"
 )
 assert git_dir_err and "GIT_DIR" in git_dir_err
+git_cfg_err = mg.check_command(
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=foo GIT_CONFIG_VALUE_0=bar gh pr merge 42",
+    cwd="/tmp",
+)
+assert git_cfg_err and "GIT_CONFIG" in git_cfg_err
 segs, err = mg.iter_merge_segments(
     "GIT_DIR=/workspace/target/.git gh -R owner/r pr merge 42", "/tmp"
 )
 assert err is None and len(segs) == 1
+# GH_CONFIG_DIR is propagated to gate gh subprocesses
+child = mg._child_gh_env(
+    "GH_CONFIG_DIR=/tmp/enterprise gh -R owner/target pr merge 42",
+    scrub_gh_repo=False,
+)
+assert child is not None and child.get("GH_CONFIG_DIR") == "/tmp/enterprise"
 # Override on one merge must not waive a second merge in the same command
 assert mg.segment_has_override("gh -R owner/safe pr merge 1  # review-gate-ok: approved")
 assert not mg.segment_has_override("gh -R owner/target pr merge 2")

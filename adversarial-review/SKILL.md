@@ -1,7 +1,7 @@
 ---
 name: adversarial-review
 description: Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.
-version: 1.0.1
+version: 1.0.2
 author: Bernier LLC
 ---
 
@@ -28,6 +28,7 @@ After opening a PR or pushing commits to one. Never declare "ready" in the same 
    - **GitHub:** on first open Codex may auto-review; after every later push post `gh pr comment <n> --body "@codex review"` without asking.
    - **T3 parallel local:** `delegate_task` with `modelSelection` `{ "instanceId": "codex", "model": "gpt-6.1-sol" }` against the PR diff.
    - Unavailable: quota exhausted, not started within ~15 min of first request, or absent from the repo.
+   - **After Codex completes:** if required check `Review Gate` is still red (parallel open/synchronize often failed before the review landed), re-fire the trusted `pull_request_target` workflow with a no-op label toggle (e.g. add then remove `review:refresh`) or a trivial PR body edit — do not wait on review-event Actions (those are intentionally disabled for security).
 2. **Antigravity (`agy`) headless** — outside Claude tokens. Inline the diff in the prompt; `--sandbox --dangerously-skip-permissions --model gemini-3.8-flash-high`. See `pr-review-loop.md` for the verified command shape.
 3. **Claude Sonnet / `superpowers:requesting-code-review`** — last resort only.
 

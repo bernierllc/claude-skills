@@ -428,18 +428,34 @@ def scoped_dir_requires_repo(part: str) -> bool:
     return env_wraps_merge(part) or bool(SUBSHELL_CD_RE.search(part))
 
 
-# Git location overrides change which repo `gh` sees without `-R`.
+# Git location / config overrides change which repo `gh` sees without `-R`.
 GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"})
+GIT_CONFIG_VARS = frozenset(
+    {
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+    }
+)
+
+
+def is_git_env_override_key(key: str) -> bool:
+    """True for GIT_DIR / GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / … overrides."""
+    if key in GIT_LOCATION_VARS or key in GIT_CONFIG_VARS:
+        return True
+    return key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_")
 
 
 def sets_git_location(part: str) -> bool:
-    """True when the command sets GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR."""
+    """True when the command sets GIT_DIR / GIT_WORK_TREE / GIT_CONFIG_* overrides."""
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
-    if any(k in GIT_LOCATION_VARS for k in leading):
+    if any(is_git_env_override_key(k) for k in leading):
         return True
     env_assigns, _cleared_host, _cleared_repo = _env_wrapper_state(rest)
-    return any(k in GIT_LOCATION_VARS for k in env_assigns)
+    return any(is_git_env_override_key(k) for k in env_assigns)
 
 
 def _repo_operand_unresolvable(repo: str | None) -> bool:
@@ -628,11 +644,10 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
 
 
 def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
-    """Build a subprocess env mirroring command-scoped GH_HOST / GH_REPO.
+    """Build a subprocess env mirroring command-scoped GH_* for gate ``gh``.
 
-    Needed when the merge sets ``GH_HOST=…`` but relies on an inherited
-    ``GH_REPO`` (or clears GH_REPO): gate ``gh`` calls must see the same
-    environment as the merge child. Returns None when the process env is fine.
+    Propagates ``GH_HOST`` / ``GH_REPO`` / ``GH_CONFIG_DIR`` so host selection and
+    Enterprise config dirs match the merge child. Returns None when unchanged.
     """
     tokens = _shell_tokens(cmd)
     rest, leading = _skip_leading_assignments(tokens)
@@ -641,6 +656,7 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
     touches = (
         "GH_HOST" in overlays
         or "GH_REPO" in overlays
+        or "GH_CONFIG_DIR" in overlays
         or cleared_host
         or cleared_repo
         or scrub_gh_repo
@@ -666,6 +682,12 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
         val = overlays["GH_REPO"]
         if not _repo_operand_unresolvable(val):
             env["GH_REPO"] = val
+    if "GH_CONFIG_DIR" in overlays:
+        val = overlays["GH_CONFIG_DIR"]
+        if val == "":
+            env.pop("GH_CONFIG_DIR", None)
+        elif not _repo_operand_unresolvable(val):
+            env["GH_CONFIG_DIR"] = val
     return env
 
 
@@ -859,8 +881,8 @@ def iter_merge_segments(
             )
         if sets_git_location(part) and not has_literal_repo(part):
             return [], (
-                "review-gate: GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR without literal "
-                "`-R owner/repo`; pass `-R` (git location env is not modeled)"
+                "review-gate: GIT_DIR/GIT_CONFIG_* without literal `-R owner/repo`; "
+                "pass `-R` (git location/config env is not modeled)"
             )
         if compound and not has_literal_repo(part):
             return [], COMPOUND_MERGE_MSG
@@ -918,8 +940,8 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             )
         if sets_git_location(cmd) and not has_literal_repo(cmd):
             return (
-                "review-gate: GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR without literal "
-                "`-R owner/repo`; pass `-R` (git location env is not modeled)"
+                "review-gate: GIT_DIR/GIT_CONFIG_* without literal `-R owner/repo`; "
+                "pass `-R` (git location/config env is not modeled)"
             )
         return check_one(cmd, start)
     for segment, seg_cwd in segments:
