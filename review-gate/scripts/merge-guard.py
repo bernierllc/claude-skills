@@ -862,6 +862,41 @@ def prior_tracked_gh_export(cmd: str) -> bool:
     return False
 
 
+def _part_unsets_tracked_gh(part: str) -> bool:
+    """True when the segment ``unset``s a tracked gh/config env var."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] != "unset":
+        return False
+    for tok in rest[i + 1 :]:
+        if tok.startswith("-"):
+            continue
+        if tok in GH_TRACKED_ENV_VARS:
+            return True
+    return False
+
+
+def prior_tracked_gh_unset(cmd: str) -> bool:
+    """True when an earlier segment unsets GH_HOST/config before a merge.
+
+    The merge child loses the var while the gate keeps the hook process env —
+    fail closed rather than validating the wrong host/config.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen_unset = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen_unset:
+                return True
+            continue
+        if _part_unsets_tracked_gh(part):
+            seen_unset = True
+    return False
+
+
 def _part_has_shell_mutation(part: str) -> bool:
     """True when the segment runs ``eval`` / ``source`` / ``.`` (can redefine ``gh``)."""
     tokens = _shell_tokens(part)
@@ -1240,16 +1275,31 @@ def _part_may_chdir(part: str) -> bool:
     return head in DIR_BUILTINS or head == "popd"
 
 
+def _inherited_relative_gh_config() -> bool:
+    """True when the process env already has a relative GH config location."""
+    for key in GH_CONFIG_LOCATION_VARS:
+        val = os.environ.get(key)
+        if not val or _env_overlay_unresolvable(val):
+            continue
+        if not os.path.isabs(val):
+            return True
+    return False
+
+
 def gh_config_relative_after_chdir(cmd: str) -> bool:
     """True when a relative gh config path may resolve against a different cwd.
 
-    Covers ``env -C``, subshell ``(cd|pushd|…)``, and earlier compound segments
-    that ``cd``/``pushd`` before the merge (chain splitting drops those segments
-    from the merge argv, but the child still inherits their cwd).
+    Covers command-scoped overlays, **inherited** ``GH_CONFIG_DIR``/XDG/HOME,
+    ``env -C``, subshell ``(cd|pushd|…)``, and earlier compound ``cd``/``pushd``
+    segments (chain splitting drops those from the merge argv, but the child
+    still inherits their cwd).
     """
     chains = split_shell_chains(cmd)
     parts = [p for p, _ in chains] if chains else [cmd]
-    if not any(_part_has_relative_gh_config(p) for p in parts):
+    has_relative = any(_part_has_relative_gh_config(p) for p in parts) or (
+        _inherited_relative_gh_config()
+    )
+    if not has_relative:
         return False
     if any(_part_may_chdir(p) for p in parts):
         return True
@@ -1651,6 +1701,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: exported GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME "
             "before `gh pr merge` (not modeled across segments); set them on the "
             "merge command itself (e.g. `GH_HOST=… gh -R owner/repo pr merge <n>`)"
+        )
+    # Prior `unset GH_HOST` (etc.) drops the var for the merge but not the gate.
+    if prior_tracked_gh_unset(cmd):
+        return (
+            "review-gate: `unset` of GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME "
+            "before `gh pr merge` (not mirrored into the gate); unset via "
+            "`env -u … gh -R owner/repo pr merge <n>` on the merge command itself"
         )
     # `eval` / `source` / `.` can install a shadowing `gh` the regexes never see.
     if shell_mutation_before_merge(cmd):

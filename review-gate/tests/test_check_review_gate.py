@@ -677,6 +677,26 @@ assert mg.prior_tracked_gh_export(
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
 )
+# Prior unset of tracked GH_* is not mirrored into the gate env
+unset_host = "unset GH_HOST; gh -R owner/target pr merge 42"
+assert mg.prior_tracked_gh_unset(unset_host)
+unset_err = mg.check_command(unset_host, cwd="/tmp")
+assert unset_err and "unset" in unset_err
+# Inherited relative GH_CONFIG_DIR + chdir → fail closed
+_prev_gh_cfg = os.environ.get("GH_CONFIG_DIR")
+os.environ["GH_CONFIG_DIR"] = ".gh"
+try:
+    inherited_cd = "cd /tmp/enterprise; gh -R owner/target pr merge 42"
+    assert mg._inherited_relative_gh_config()
+    assert mg.gh_config_relative_after_chdir(inherited_cd)
+    inherited_err = mg.check_command(inherited_cd, cwd="/tmp")
+    assert inherited_err and "relative" in inherited_err
+finally:
+    if _prev_gh_cfg is None:
+        os.environ.pop("GH_CONFIG_DIR", None)
+    else:
+        os.environ["GH_CONFIG_DIR"] = _prev_gh_cfg
+
 # Function/alias/hash named gh shadows the binary under inspection
 gh_func = (
     'm=merge; gh(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
