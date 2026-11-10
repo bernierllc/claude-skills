@@ -225,6 +225,53 @@ def has_override(cmd: str) -> bool:
     return any(segment_has_override(p) for p in parts)
 
 
+def _parse_heredoc_delimiter(cmd: str, j: int) -> tuple[str, int] | None:
+    """Parse a Bash heredoc word with quote removal.
+
+    Bash forms the closing delimiter by quote-removing the opener word, so
+    ``<<E\\OF``, ``<<"E"OF``, and ``<<'EOF'`` all close on a line ``EOF``.
+    Returns ``(delimiter, index_after_word)`` or ``None`` if no word.
+    """
+    n = len(cmd)
+    if j >= n or cmd[j] in " \t\n;&|<>()":
+        return None
+    delim_chars: list[str] = []
+    while j < n:
+        ch = cmd[j]
+        if ch in " \t\n;&|<>()":
+            break
+        if ch == "'":
+            j += 1
+            while j < n and cmd[j] != "'":
+                delim_chars.append(cmd[j])
+                j += 1
+            if j < n and cmd[j] == "'":
+                j += 1
+            continue
+        if ch == '"':
+            j += 1
+            while j < n and cmd[j] != '"':
+                if cmd[j] == "\\" and j + 1 < n:
+                    delim_chars.append(cmd[j + 1])
+                    j += 2
+                    continue
+                delim_chars.append(cmd[j])
+                j += 1
+            if j < n and cmd[j] == '"':
+                j += 1
+            continue
+        if ch == "\\" and j + 1 < n:
+            delim_chars.append(cmd[j + 1])
+            j += 2
+            continue
+        delim_chars.append(ch)
+        j += 1
+    delim = "".join(delim_chars)
+    if not delim:
+        return None
+    return delim, j
+
+
 def strip_heredoc_bodies(cmd: str) -> str:
     """Remove heredocs so script/doc examples are not treated as merges.
 
@@ -275,7 +322,7 @@ def strip_heredoc_bodies(cmd: str) -> str:
             out.append("<<<")
             i += 3
             continue
-        # Heredoc: <<[-]['"]?WORD['"]?
+        # Heredoc: <<[-] WORD  (WORD may use mixed/escaped quotes; quote-removed)
         if c == "<" and i + 1 < n and cmd[i + 1] == "<":
             j = i + 2
             strip_tabs = False
@@ -284,29 +331,12 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 strip_tabs = True
             while j < n and cmd[j] in " \t":
                 j += 1
-            quote = ""
-            if j < n and cmd[j] in "'\"":
-                quote = cmd[j]
-                j += 1
-            delim_chars: list[str] = []
-            while j < n:
-                ch = cmd[j]
-                if quote:
-                    if ch == quote:
-                        j += 1
-                        break
-                    delim_chars.append(ch)
-                    j += 1
-                    continue
-                if ch in " \t\n;&|<>()":
-                    break
-                delim_chars.append(ch)
-                j += 1
-            delim = "".join(delim_chars)
-            if not delim:
+            parsed = _parse_heredoc_delimiter(cmd, j)
+            if parsed is None:
                 out.append(c)
                 i += 1
                 continue
+            delim, j = parsed
             # Replace <<DELIM with a space, but keep the rest of the opener line
             # (e.g. `cat <<EOF; gh … pr merge` — the merge must remain visible).
             out.append(" ")
@@ -316,6 +346,7 @@ def strip_heredoc_bodies(cmd: str) -> str:
             if j < n and cmd[j] == "\n":
                 j += 1
             # Drop body lines until the closing delimiter.
+            found = False
             while j < n:
                 line_start = j
                 while j < n and cmd[j] != "\n":
@@ -325,9 +356,15 @@ def strip_heredoc_bodies(cmd: str) -> str:
                 if compare == delim:
                     if j < n and cmd[j] == "\n":
                         j += 1
+                    found = True
                     break
                 if j < n and cmd[j] == "\n":
                     j += 1
+            if not found:
+                # Unmatched opener — keep the original text so a later merge is
+                # not silently swallowed with the supposed body.
+                out.append(cmd[i:])
+                break
             i = j
             continue
         out.append(c)

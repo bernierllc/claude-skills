@@ -436,6 +436,12 @@ same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
 assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
 # Here-strings are not heredocs
 assert "<<<" in mg.strip_heredoc_bodies("cat <<<'gh pr merge 42'")
+# Escaped / mixed-quoted heredoc openers quote-remove to the real delimiter
+escaped = "cat <<E\\OF\nbody\nEOF\ngh -R owner/repo pr merge 42"
+assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(escaped))
+assert "gh -R owner/repo pr merge 42" in mg.strip_heredoc_bodies(escaped)
+mixed = 'cat <<"E"OF\nbody\nEOF\ngh -R owner/repo pr merge 42'
+assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(mixed))
 # Relative config after prior pushd (compound) — fail closed
 pushd_rel = "(pushd /tmp/enterprise; GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42)"
 assert mg.gh_config_relative_after_chdir(pushd_rel)
