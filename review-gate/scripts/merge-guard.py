@@ -1622,10 +1622,12 @@ def _is_path_name(name: str) -> bool:
 
 
 def _var_target_dynamic(name: str) -> bool:
-    """True when a variable-name operand may expand at runtime (``$v`` / ``${v}``)."""
-    if not name:
-        return False
-    return any(c in name for c in "$`") or "\\" in name
+    """True when a var/hash name operand may expand at runtime.
+
+    Covers ``$v`` / ``${v}`` and brace/glob forms such as ``g{h,h}`` that Bash
+    expands before builtins like ``hash -p`` / ``printf -v`` see the name.
+    """
+    return _command_name_dynamic(name)
 
 
 def sets_path_override(part: str) -> bool:

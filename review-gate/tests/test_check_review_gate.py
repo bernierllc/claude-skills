@@ -896,6 +896,15 @@ dyn_hash_err = mg.check_command(dyn_hash, cwd="/tmp")
 assert dyn_hash_err and (
     "hash" in dyn_hash_err or "alias" in dyn_hash_err or "function" in dyn_hash_err
 )
+# Brace-expanded hash name: g{h,h} → gh gh
+brace_hash = "hash -p /tmp/fake g{h,h}; gh -R owner/safe pr merge 1"
+assert mg._var_target_dynamic("g{h,h}")
+assert mg._part_hash_override_risk("hash -p /tmp/fake g{h,h}")
+assert mg.redefines_gh(brace_hash)
+brace_hash_err = mg.check_command(brace_hash, cwd="/tmp")
+assert brace_hash_err and (
+    "hash" in brace_hash_err or "alias" in brace_hash_err or "function" in brace_hash_err
+)
 # ``builtin alias`` / ``command alias`` define the same shell alias
 builtin_alias = (
     "shopt -s expand_aliases; "
