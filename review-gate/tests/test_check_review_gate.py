@@ -568,6 +568,20 @@ assert mg.extract_merge_selector("gh pr merge 42 -dR owner/target") == "42"
 assert mg.has_literal_repo("gh pr merge 42 -dR owner/target")
 assert mg.extract_repo("gh pr merge 42 -dRowner/target") == "owner/target"
 assert mg.extract_merge_selector("gh pr merge -dR owner/target 42") == "42"
+# Option terminator: branch selectors that start with `-`
+assert mg.extract_merge_selector("gh -R owner/target pr merge -- -release") == "-release"
+assert mg.extract_merge_selector("gh pr merge -R owner/target -- -fix") == "-fix"
+# Expanded config paths fail closed (bash expands $HOME; we only see the raw form)
+assert mg.gh_config_overlay_unresolved(
+    'GH_CONFIG_DIR="$HOME/enterprise" gh -R owner/target pr merge 42'
+)
+n, r, e, scrub = mg.resolve_pr_number(
+    'GH_CONFIG_DIR="$HOME/enterprise" gh -R owner/target pr merge 42'
+)
+assert n is None and e and "GH_CONFIG_DIR" in e and scrub is False
+assert not mg.gh_config_overlay_unresolved(
+    "GH_CONFIG_DIR=/tmp/enterprise gh -R owner/target pr merge 42"
+)
 # Dynamic -R / GH_REPO operands fail closed
 assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
 n, r, e, scrub = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')
@@ -661,6 +675,8 @@ assert 'for ref in "$BASE_SHA" "$DEFAULT_BRANCH"' in yml
 assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml
+assert 'status="in_progress"' in yml
+assert "check-runs/$check_id" in yml
 assert "cancel-ci-on-finding" not in yml
 assert "gate-refresh-on-comment" not in yml
 assert "actions: write" not in yml

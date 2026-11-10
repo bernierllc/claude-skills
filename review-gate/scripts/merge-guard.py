@@ -651,6 +651,14 @@ def extract_merge_selector(cmd: str) -> str | None:
     i = merge_i + 1
     while i < len(tokens):
         tok = tokens[i]
+        if tok == "--":
+            # Option terminator — next token is the selector even if it starts with -.
+            if i + 1 >= len(tokens):
+                return None
+            nxt = tokens[i + 1]
+            if nxt in {")", "fi", "done", "esac"}:
+                return None
+            return nxt
         if tok.startswith("-"):
             next_i, _repo_val, _missing = _consume_merge_argv_flag(tokens, i)
             i = next_i
@@ -698,7 +706,11 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
 def _apply_overlay_env_var(
     env: dict[str, str], overlays: dict[str, str], key: str
 ) -> None:
-    """Set or clear ``key`` on ``env`` from a command-scoped overlay."""
+    """Set or clear ``key`` on ``env`` from a command-scoped overlay.
+
+    Callers must reject unresolvable values via ``gh_config_overlay_unresolved``
+    before relying on the resulting env (we never silently keep the hook value).
+    """
     if key not in overlays:
         return
     val = overlays[key]
@@ -706,6 +718,26 @@ def _apply_overlay_env_var(
         env.pop(key, None)
     elif not _repo_operand_unresolvable(val):
         env[key] = val
+
+
+def gh_config_overlay_unresolved(cmd: str) -> bool:
+    """True when a command-scoped gh config/host path still contains ``$`` / `` ` ``.
+
+    Bash expands ``GH_CONFIG_DIR="$HOME/enterprise"`` for the merge child, but
+    our parser only sees the raw ``$HOME/…`` — fail closed rather than checking
+    against the hook's inherited config dir/host.
+    """
+    tokens = _shell_tokens(cmd)
+    rest, leading = _skip_leading_assignments(tokens)
+    env_assigns, _cleared = _env_wrapper_state(rest)
+    overlays = {**leading, **env_assigns}
+    for key in GH_TRACKED_ENV_VARS:
+        if key not in overlays:
+            continue
+        val = overlays[key]
+        if val and _repo_operand_unresolvable(val):
+            return True
+    return False
 
 
 def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
@@ -764,6 +796,11 @@ def resolve_pr_number(
             "review-gate: dynamic `-R`/`--repo`/GH_REPO operand (e.g. \"$VAR\"); "
             "pass a literal `owner/repo`"
         ), False
+    if gh_config_overlay_unresolved(cmd):
+        return None, None, (
+            "review-gate: dynamic GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME/GH_HOST "
+            "(e.g. \"$HOME/…\"); pass a literal path or unset the var"
+        ), scrub_gh_repo
     selector = extract_merge_selector(cmd)
     if selector and selector.isdigit():
         return int(selector), repo, None, scrub_gh_repo
@@ -777,7 +814,11 @@ def resolve_pr_number(
     child_env = _child_gh_env(cmd, scrub_gh_repo)
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
-        args.insert(2, selector)
+        # Branches that start with `-` need `--` (same as `gh pr merge -- -release`).
+        if selector.startswith("-"):
+            args.extend(["--", selector])
+        else:
+            args.insert(2, selector)
     if repo:
         args.extend(["-R", repo])
     try:
