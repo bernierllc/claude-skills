@@ -583,6 +583,17 @@ assert mg.variable_assembled_merge(
 )
 assert not mg.variable_assembled_merge('"$c" "$p" "$m" 42 -R owner/repo')
 assert not mg.variable_assembled_merge("gh -R owner/safe pr merge 1")
+# printf -v assigns merge words the same as NAME=value
+printf_asm = (
+    'printf -v c gh; printf -v p pr; printf -v m merge; '
+    '"$c" "$p" "$m" 42 -R owner/repo'
+)
+assert mg.variable_assembled_merge(printf_asm)
+assert mg._part_assigns_merge_assembly_words("printf -v c gh") == {"gh"}
+assert mg._part_assigns_merge_assembly_words("printf -vc pr") == {"pr"}
+assert mg._part_assigns_merge_assembly_words("printf -v m %s merge") == {"merge"}
+printf_asm_err = mg.check_command(printf_asm, cwd="/tmp")
+assert printf_asm_err and "variable-assembled" in printf_asm_err
 # Dynamic argv after merge may expand into -Rowner/target
 dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
 assert mg.dynamic_merge_argv(dyn_repo_flag)

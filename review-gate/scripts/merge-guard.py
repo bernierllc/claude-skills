@@ -838,8 +838,24 @@ def _assignment_value_merge_word(val: str) -> str | None:
     return None
 
 
+def _merge_words_from_printf_values(tokens: list[str]) -> set[str]:
+    """Collect literal ``gh``/``pr``/``merge`` among ``printf`` format/args."""
+    found: set[str] = set()
+    for tok in tokens:
+        if tok.startswith("-") and tok != "-":
+            continue
+        word = _assignment_value_merge_word(tok)
+        if word:
+            found.add(word)
+    return found
+
+
 def _part_assigns_merge_assembly_words(part: str) -> set[str]:
-    """Collect literal ``gh``/``pr``/``merge`` values assigned in ``part``."""
+    """Collect literal ``gh``/``pr``/``merge`` values assigned in ``part``.
+
+    Covers ``NAME=gh``, declaration-style assigns, and builtins that write
+    variables such as ``printf -v c gh`` / sticky ``printf -vc gh``.
+    """
     found: set[str] = set()
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -873,6 +889,24 @@ def _part_assigns_merge_assembly_words(part: str) -> set[str]:
             word = _assignment_value_merge_word(val)
             if word:
                 found.add(word)
+        return found
+    # ``printf -v NAME gh`` / ``printf -v NAME %s gh`` / sticky ``-vNAME``.
+    if head == "printf":
+        j = i + 1
+        while j < len(rest):
+            tok = rest[j]
+            if tok == "-v":
+                if j + 1 >= len(rest):
+                    break
+                found |= _merge_words_from_printf_values(rest[j + 2 :])
+                return found
+            if tok.startswith("-") and tok != "-" and "=" not in tok:
+                if tok.startswith("-v") and len(tok) > 2:
+                    found |= _merge_words_from_printf_values(rest[j + 1 :])
+                    return found
+                j += 1
+                continue
+            break
     return found
 
 
@@ -903,6 +937,7 @@ def variable_assembled_merge(cmd: str) -> bool:
     Example: ``c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" 42 -R owner/repo`` —
     no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
     ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
+    Also covers ``printf -v c gh; printf -v p pr; printf -v m merge; …``.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(is_gh_pr_merge(p) for p in parts):
