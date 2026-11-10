@@ -701,7 +701,7 @@ source_err = mg.check_command(source_shadow, cwd="/tmp")
 assert source_err and "source" in source_err
 dot_err = mg.check_command(". /tmp/evil; gh -R owner/safe pr merge 1", cwd="/tmp")
 assert dot_err and ("source" in dot_err or "." in dot_err)
-# Prefix builtins stripped as harmless can be shadowed functions
+# Prefix/wrappers stripped as harmless can be shadowed functions
 prefix_redef = (
     'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
     "command gh -R owner/safe pr merge 1"
@@ -709,6 +709,21 @@ prefix_redef = (
 assert mg.redefines_prefix_builtin(prefix_redef)
 prefix_err = mg.check_command(prefix_redef, cwd="/tmp")
 assert prefix_err and "command" in prefix_err
+env_redef = (
+    'm=merge; env(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
+    "env gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_prefix_builtin(env_redef)
+env_err = mg.check_command(env_redef, cwd="/tmp")
+assert env_err and "env" in env_err
+# set -a exports later assignments (e.g. GH_HOST) into the merge child
+allexport_cmd = "set -a; GH_HOST=ghe.example; set +a; gh -R owner/target pr merge 42"
+assert mg.allexport_before_merge(allexport_cmd)
+assert mg._part_enables_allexport("set -a")
+assert mg._part_enables_allexport("set -o allexport")
+assert not mg._part_enables_allexport("set +a")
+allexport_err = mg.check_command(allexport_cmd, cwd="/tmp")
+assert allexport_err and "allexport" in allexport_err
 # Escaped whitespace before # is not a comment — keep `;` as a chain separator
 esc_hash = (
     r"m=merge; gh -R owner/target pr merge 1 --body=\ #x; "

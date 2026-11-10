@@ -38,15 +38,15 @@ SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
 GH_ALIAS_RE = re.compile(r"(?:^|[\n;&|])\s*alias\s+gh=", re.I)
 GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
-# Prefixes stripped by ``gh_is_direct_command`` that Bash also allows as functions.
-SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time"})
+# Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
+SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time", "env"})
 PREFIX_FUNC_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:function\s+(?:command|builtin|exec|time)\b|"
-    r"(?:command|builtin|exec|time)\s*\(\s*\))",
+    r"(?:^|[\n;&|])\s*(?:function\s+(?:command|builtin|exec|time|env)\b|"
+    r"(?:command|builtin|exec|time|env)\s*\(\s*\))",
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*alias\s+(?:command|builtin|exec|time)=",
+    r"(?:^|[\n;&|])\s*alias\s+(?:command|builtin|exec|time|env)=",
     re.I,
 )
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
@@ -901,10 +901,58 @@ def redefines_gh(cmd: str) -> bool:
 
 
 def redefines_prefix_builtin(cmd: str) -> bool:
-    """True when ``command``/``builtin``/``exec``/``time`` is redefined before a merge."""
+    """True when a stripped wrapper (``command``/``env``/…) is redefined before a merge."""
     if not MERGE_RE.search(cmd):
         return False
     return bool(PREFIX_FUNC_RE.search(cmd) or PREFIX_ALIAS_RE.search(cmd))
+
+
+def _part_enables_allexport(part: str) -> bool:
+    """True when the segment turns on ``set -a`` / ``set -o allexport``."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest) or rest[i] != "set":
+        return False
+    j = i + 1
+    while j < len(rest):
+        tok = rest[j]
+        if tok in ("-o",):
+            if j + 1 < len(rest) and rest[j + 1] == "allexport":
+                return True
+            j += 2
+            continue
+        if tok.startswith("--"):
+            j += 1
+            continue
+        if tok.startswith("+"):
+            # ``set +a`` disables; ignore for enable detection.
+            j += 1
+            continue
+        if tok.startswith("-") and "a" in tok[1:]:
+            return True
+        j += 1
+    return False
+
+
+def allexport_before_merge(cmd: str) -> bool:
+    """True when ``set -a``/allexport precedes a merge (assignments become exports).
+
+    Modeling ``set +a`` toggles is brittle; once allexport was enabled in an
+    earlier segment, fail closed for any later merge in the compound command.
+    """
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen:
+                return True
+            continue
+        if _part_enables_allexport(part):
+            seen = True
+    return False
 
 
 def _repo_operand_unresolvable(repo: str | None) -> bool:
@@ -1617,12 +1665,18 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: `gh` function/alias/hash redefinition with `gh pr merge`; "
             "run the real `gh` binary without shadowing it"
         )
-    # Prefix builtins stripped as "harmless" can themselves be shadowed functions.
+    # Wrappers stripped as "harmless" (`env`/`command`/…) can be shadowed functions.
     if redefines_prefix_builtin(cmd):
         return (
-            "review-gate: `command`/`builtin`/`exec`/`time` redefinition with "
+            "review-gate: `env`/`command`/`builtin`/`exec`/`time` redefinition with "
             "`gh pr merge`; run literal `gh -R owner/repo pr merge <n>` without "
-            "shadowing those prefixes"
+            "shadowing those wrappers"
+        )
+    # `set -a` makes later assignments export into the merge child (e.g. GH_HOST).
+    if allexport_before_merge(cmd):
+        return (
+            "review-gate: `set -a`/`set -o allexport` before `gh pr merge` "
+            "(assignments become exports); set GH_* on the merge command itself"
         )
     # Wrapped / substituted merges in ANY segment — even when another segment is
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).
