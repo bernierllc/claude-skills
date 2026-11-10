@@ -1031,17 +1031,21 @@ def prior_tracked_gh_unset(cmd: str) -> bool:
 
 
 def _part_has_shell_mutation(part: str) -> bool:
-    """True when the segment runs ``eval`` / ``source`` / ``.`` (can redefine ``gh``)."""
+    """True when the segment can install hidden merge side effects.
+
+    Covers ``eval`` / ``source`` / ``.`` (redefine ``gh``) and ``trap`` (EXIT
+    handlers can run an unchecked merge after the inspected command).
+    """
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    return i < len(rest) and rest[i] in ("eval", "source", ".")
+    return i < len(rest) and rest[i] in ("eval", "source", ".", "trap")
 
 
 def shell_mutation_before_merge(cmd: str) -> bool:
-    """True when ``eval``/``source``/``.`` precedes a merge."""
+    """True when ``eval``/``source``/``.``/``trap`` precedes a merge."""
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     seen = False
     for part in parts:
@@ -1882,12 +1886,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "(not mirrored into the gate); clear via `env -u … gh -R owner/repo pr merge <n>` "
             "on the merge command itself"
         )
-    # `eval` / `source` / `.` can install a shadowing `gh` the regexes never see.
+    # `eval` / `source` / `.` / `trap` can hide merges the gate never inspects.
     if shell_mutation_before_merge(cmd):
         return (
-            "review-gate: `eval`/`source`/`.` before `gh pr merge` "
-            "(can redefine `gh` at runtime); run literal `gh -R owner/repo pr merge <n>` "
-            "without sourcing or eval"
+            "review-gate: `eval`/`source`/`.`/`trap` before `gh pr merge` "
+            "(can redefine `gh` or run a merge from a trap); run literal "
+            "`gh -R owner/repo pr merge <n>` without sourcing, eval, or trap"
         )
     # Function/alias/hash named `gh` shadows the binary the gate inspects.
     if redefines_gh(cmd):

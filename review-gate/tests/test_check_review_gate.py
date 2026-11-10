@@ -768,6 +768,14 @@ source_err = mg.check_command(source_shadow, cwd="/tmp")
 assert source_err and "source" in source_err
 dot_err = mg.check_command(". /tmp/evil; gh -R owner/safe pr merge 1", cwd="/tmp")
 assert dot_err and ("source" in dot_err or "." in dot_err)
+# trap EXIT can run an unchecked merge after the inspected command
+trap_cmd = (
+    'm=merge; trap \'/usr/bin/gh -R owner/target pr "$m" 2\' EXIT; '
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.shell_mutation_before_merge(trap_cmd)
+trap_err = mg.check_command(trap_cmd, cwd="/tmp")
+assert trap_err and "trap" in trap_err
 # Prefix/wrappers stripped as harmless can be shadowed functions
 prefix_redef = (
     'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
