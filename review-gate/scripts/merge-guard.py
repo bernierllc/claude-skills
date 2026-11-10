@@ -1183,6 +1183,24 @@ def redefines_prefix_builtin(cmd: str) -> bool:
     return False
 
 
+def inherited_shadowing_function(
+    cmd: str, env: dict[str, str] | None = None
+) -> bool:
+    """True when the process inherits an exported Bash function that shadows ``gh``.
+
+    Bash stores ``export -f gh`` as ``BASH_FUNC_gh%%`` in the environment; a plain
+    ``gh -R safe pr merge`` then runs that function while the gate only sees the
+    apparent safe argv. Same for shadowable wrappers (``command``/``env``/…).
+    """
+    if not MERGE_RE.search(cmd):
+        return False
+    e = os.environ if env is None else env
+    for name in ("gh", *sorted(SHADOWABLE_PREFIXES)):
+        if f"BASH_FUNC_{name}%%" in e:
+            return True
+    return False
+
+
 def _part_enables_set_option(part: str, letter: str, option: str) -> bool:
     """True when the segment turns on ``set -<letter>`` / ``set -o <option>``."""
     tokens = _shell_tokens(part)
@@ -2019,6 +2037,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: `env`/`command`/`builtin`/`exec`/`time` redefinition with "
             "`gh pr merge`; run literal `gh -R owner/repo pr merge <n>` without "
             "shadowing those wrappers"
+        )
+    # Inherited `export -f gh` (BASH_FUNC_gh%%) shadows merges the gate cannot see.
+    if inherited_shadowing_function(cmd):
+        return (
+            "review-gate: inherited Bash function shadows `gh`/`command`/`env`/… "
+            "(BASH_FUNC_*%%); unset -f those names before `gh -R owner/repo pr merge <n>`"
         )
     # `set -a` makes later assignments export into the merge child (e.g. GH_HOST).
     if allexport_before_merge(cmd):

@@ -1,5 +1,6 @@
 """Run: python3 review-gate/tests/test_check_review_gate.py"""
 import importlib.util
+import inspect
 import os
 import re
 from pathlib import Path
@@ -792,6 +793,29 @@ assert mg.opaque_shell_wrapper_pr_merge(
 )
 assert not mg.opaque_shell_wrapper_pr_merge("bash -c 'echo hello'")
 assert not mg.opaque_shell_wrapper_pr_merge("bash -c 'echo pr merge'")
+# Inherited export -f gh (BASH_FUNC_gh%%) shadows the inspected binary
+assert mg.inherited_shadowing_function(
+    "gh -R owner/safe pr merge 1",
+    env={"BASH_FUNC_gh%%": "() { /usr/bin/gh -R owner/target pr merge 2; }"},
+)
+assert mg.inherited_shadowing_function(
+    "command gh -R owner/safe pr merge 1",
+    env={"BASH_FUNC_command%%": "() { true; }"},
+)
+assert not mg.inherited_shadowing_function(
+    "gh -R owner/safe pr merge 1", env={}
+)
+_bash_func_key = "BASH_FUNC_gh%%"
+_prev_bash_func = os.environ.get(_bash_func_key)
+os.environ[_bash_func_key] = "() { /usr/bin/gh -R owner/target pr merge 2; }"
+try:
+    inh_err = mg.check_command("gh -R owner/safe pr merge 1", cwd="/tmp")
+    assert inh_err and "BASH_FUNC" in inh_err
+finally:
+    if _prev_bash_func is None:
+        os.environ.pop(_bash_func_key, None)
+    else:
+        os.environ[_bash_func_key] = _prev_bash_func
 # eval/source/. can install a shadowing gh the regex never sees
 eval_redef = (
     "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "
@@ -1066,5 +1090,14 @@ assert not _doctor.ruleset_requires_review_gate(
 assert not _doctor.ruleset_requires_review_gate(
     {"rules": [{"type": "pull_request", "parameters": {}}]}
 )
+assert _doctor.ruleset_is_enforcing({"enforcement": "active"})
+assert not _doctor.ruleset_is_enforcing({"enforcement": "disabled"})
+assert not _doctor.ruleset_is_enforcing({"enforcement": "evaluate"})
+assert not _doctor.ruleset_is_enforcing({})
+
+# Thread pagination embeds the first comments page (avoid N+1 gh api calls)
+_paginate_src = inspect.getsource(g._paginate_threads)
+assert "comments(first: 50)" in _paginate_src
+assert "_paginate_thread_comments" in _paginate_src
 
 print("ok")

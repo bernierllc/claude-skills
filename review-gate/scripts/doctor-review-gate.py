@@ -24,6 +24,11 @@ def gh_json(args: list[str]) -> object | None:
         return None
 
 
+def ruleset_is_enforcing(detail: dict) -> bool:
+    """True when the ruleset actively blocks merges (not disabled/evaluate)."""
+    return detail.get("enforcement") == "active"
+
+
 def ruleset_requires_review_gate(detail: dict) -> bool:
     """True when a ruleset detail requires the ``Review Gate`` status check."""
     for rule in detail.get("rules") or []:
@@ -80,12 +85,23 @@ def main() -> int:
     missing_flag = []
     gate_required_on: list[str] = []
     status_check_rulesets = 0
+    enforcing_seen = 0
+    skipped_non_enforcing = 0
     for rs in rulesets:
         rid = rs.get("id")
         name = rs.get("name")
         detail = gh_json(["api", f"repos/{full}/rulesets/{rid}"])
         if not isinstance(detail, dict):
             continue
+        if not ruleset_is_enforcing(detail):
+            skipped_non_enforcing += 1
+            enf = detail.get("enforcement") or "unknown"
+            print(
+                f"WARN ruleset {name!r} enforcement={enf!r} "
+                "(disabled/evaluate does not block merges); ignored"
+            )
+            continue
+        enforcing_seen += 1
         if any(
             rule.get("type") == "required_status_checks"
             for rule in (detail.get("rules") or [])
@@ -112,8 +128,15 @@ def main() -> int:
                     f"WARN ruleset {name!r} has pull_request rule but "
                     f"required_review_thread_resolution is not true"
                 )
+    if enforcing_seen == 0:
+        print(
+            "WARN no actively enforcing rulesets found "
+            f"(saw {skipped_non_enforcing} disabled/evaluate)"
+            if skipped_non_enforcing
+            else "WARN no actively enforcing rulesets found"
+        )
     if checked == 0:
-        print("WARN no pull_request rules found on any ruleset")
+        print("WARN no pull_request rules found on any enforcing ruleset")
     elif missing_flag:
         print(
             "HINT flip with gh api -X PUT repos/.../rulesets/<id> "
@@ -121,8 +144,8 @@ def main() -> int:
         )
     if status_check_rulesets == 0:
         print(
-            f"WARN no required_status_checks rules found — add {REVIEW_GATE_CONTEXT!r} "
-            "as a required check on staging/main rulesets"
+            f"WARN no required_status_checks rules found on enforcing rulesets — "
+            f"add {REVIEW_GATE_CONTEXT!r} as a required check on staging/main"
         )
     elif not gate_required_on:
         print(

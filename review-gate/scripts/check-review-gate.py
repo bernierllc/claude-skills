@@ -154,22 +154,25 @@ def _graphql(
     return (data or {}).get("data") or {}
 
 
-def _paginate_threads(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
-    """Fetch every review thread and every comment on each thread."""
-    threads: list[dict[str, Any]] = []
-    cursor: str | None = None
-    thread_q = """
-    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
-      repository(owner:$owner, name:$name) {
-        pullRequest(number:$number) {
-          reviewThreads(first: 50, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { id }
-          }
-        }
-      }
-    }
-    """
+def _paginate_thread_comments(
+    thread_id: str,
+    hostname: str | None,
+    first_page: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Return all comments for a thread, starting from an optional embedded page."""
+    comments: list[dict[str, Any]] = []
+    c_conn = first_page or {}
+    if first_page is not None:
+        comments.extend(first_page.get("nodes") or [])
+        page = first_page.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return comments
+        c_cursor = page.get("endCursor")
+        if not c_cursor:
+            return comments
+    else:
+        c_cursor = None
+
     comment_q = """
     query($id:ID!, $cursor:String) {
       node(id: $id) {
@@ -182,13 +185,68 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
       }
     }
     """
+    comment_first = """
+    query($id:ID!) {
+      node(id: $id) {
+        ... on PullRequestReviewThread {
+          comments(first: 50) {
+            pageInfo { hasNextPage endCursor }
+            nodes { body author { login } }
+          }
+        }
+      }
+    }
+    """
     while True:
-        variables: dict[str, Any] = {"owner": owner, "name": name, "number": number}
-        if cursor:
-            variables["cursor"] = cursor
+        if c_cursor is None:
+            c_conn = (
+                _graphql(comment_first, hostname=hostname, id=thread_id).get("node") or {}
+            ).get("comments") or {}
+            comments.extend(c_conn.get("nodes") or [])
         else:
-            # gh -F omits null awkwardly; pass empty and use a query without cursor on first page
-            pass
+            c_conn = (
+                _graphql(
+                    comment_q, hostname=hostname, id=thread_id, cursor=c_cursor
+                ).get("node")
+                or {}
+            ).get("comments") or {}
+            comments.extend(c_conn.get("nodes") or [])
+        page = c_conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        c_cursor = page.get("endCursor")
+        if not c_cursor:
+            break
+    return comments
+
+
+def _paginate_threads(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
+    """Fetch every review thread with comments embedded in the thread query.
+
+    Most threads fit in the first comments page (50), so one GraphQL call covers
+    up to 50 threads. Extra comment pages are fetched only when ``hasNextPage``.
+    """
+    threads: list[dict[str, Any]] = []
+    cursor: str | None = None
+    thread_q = """
+    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          reviewThreads(first: 50, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              comments(first: 50) {
+                pageInfo { hasNextPage endCursor }
+                nodes { body author { login } }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    while True:
         if cursor is None:
             first_q = """
             query($owner:String!, $name:String!, $number:Int!) {
@@ -196,7 +254,13 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
                 pullRequest(number:$number) {
                   reviewThreads(first: 50) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { id }
+                    nodes {
+                      id
+                      comments(first: 50) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes { body author { login } }
+                      }
+                    }
                   }
                 }
               }
@@ -211,7 +275,14 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
             )
         else:
             conn = (
-                _graphql(thread_q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
+                _graphql(
+                    thread_q,
+                    hostname=hostname,
+                    owner=owner,
+                    name=name,
+                    number=number,
+                    cursor=cursor,
+                )
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("reviewThreads")
@@ -221,33 +292,10 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
             thread_id = node.get("id")
             if not thread_id:
                 continue
-            comments: list[dict[str, Any]] = []
-            c_cursor: str | None = None
-            while True:
-                if c_cursor is None:
-                    c_first = """
-                    query($id:ID!) {
-                      node(id: $id) {
-                        ... on PullRequestReviewThread {
-                          comments(first: 50) {
-                            pageInfo { hasNextPage endCursor }
-                            nodes { body author { login } }
-                          }
-                        }
-                      }
-                    }
-                    """
-                    c_conn = (_graphql(c_first, hostname=hostname, id=thread_id).get("node") or {}).get("comments") or {}
-                else:
-                    c_conn = (
-                        _graphql(comment_q, hostname=hostname, id=thread_id, cursor=c_cursor).get("node") or {}
-                    ).get("comments") or {}
-                comments.extend(c_conn.get("nodes") or [])
-                if not (c_conn.get("pageInfo") or {}).get("hasNextPage"):
-                    break
-                c_cursor = (c_conn.get("pageInfo") or {}).get("endCursor")
-                if not c_cursor:
-                    break
+            embedded = node.get("comments") or {}
+            comments = _paginate_thread_comments(
+                thread_id, hostname, first_page=embedded
+            )
             threads.append({"comments": {"nodes": comments}})
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
