@@ -32,6 +32,14 @@ def main() -> int:
             "WARN missing .github/workflows/review-gate.yml — copy from "
             "skill review-gate/templates/review-gate.yml"
         )
+    checker = root / "scripts" / "check-review-gate.py"
+    if checker.is_file():
+        print(f"OK trusted checker {checker.relative_to(root)}")
+    else:
+        print(
+            "WARN missing scripts/check-review-gate.py — the workflow loads this "
+            "from the PR base SHA; re-run install-workflow.py"
+        )
 
     rulesets = gh_json(["api", "repos/{owner}/{repo}/rulesets", "--jq", "."])
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.

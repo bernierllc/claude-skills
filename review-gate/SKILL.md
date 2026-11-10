@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.2
+version: 1.0.3
 author: Bernier LLC
 ---
 
@@ -9,18 +9,20 @@ author: Bernier LLC
 
 Programmatic enforcement for the adversarial review loop. Ships:
 
-1. **Workflow template** — `.github/workflows/review-gate.yml`
-2. **Doctor** — warns when the workflow or ruleset conversation-resolution flag is missing
-3. **PreToolUse merge guard** — blocks `gh pr merge` when the local gate check fails
+1. **Workflow template** — `.github/workflows/review-gate.yml` (`pull_request_target`)
+2. **Trusted checker** — `scripts/check-review-gate.py` (loaded from the PR **base** SHA)
+3. **Doctor** — warns when the workflow, checker, or ruleset conversation-resolution flag is missing
+4. **PreToolUse merge guard** — blocks `gh pr merge` when the local gate check fails
 
 ## Install (per repo)
 
 ```bash
 aec install skill review-gate
-# copy once into the tracked workflow (AEC install alone does not commit it):
-mkdir -p .github/workflows
-cp "$(aec path skill review-gate)/templates/review-gate.yml" .github/workflows/review-gate.yml
-# or: python3 "$(aec path skill review-gate)/scripts/install-workflow.py"
+# copies workflow + trusted checker into the repo (commit both to the default branch):
+python3 "$(aec path skill review-gate)/scripts/install-workflow.py"
+# or manually:
+#   cp …/templates/review-gate.yml .github/workflows/review-gate.yml
+#   cp …/scripts/check-review-gate.py scripts/check-review-gate.py
 ```
 
 Then flip GitHub rulesets (no Actions minutes):
@@ -49,11 +51,11 @@ On `pull_request_review_comment` created: cancel in-progress non-gate CI **only*
 
 ### Job `gate` (display name `Review Gate`)
 
-On eligible events (`pull_request`, `pull_request_review`): fail unless all hold:
+On eligible events (`pull_request_target`, `pull_request_review`): loads `scripts/check-review-gate.py` from the PR **base** SHA (never the PR head) and fails unless all hold:
 
-1. A completed Codex review exists on the **current head**, or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`).
+1. A completed Codex/ChatGPT-bot review exists on the **current head** (matched by **author login**, not body text), or the PR body's `## Review` section names a fallback (`agy` / `superpowers` / `claude` / `antigravity`).
 2. PR body contains a `## Review` section.
-3. Every review thread whose **root** comment matches `\bp2\b` has a reply with a closing token: Notion link, `fixed in <sha>`, or `not-a-finding: …`.
+3. Every review thread whose **root** comment matches `\bp2\b` has a reply with a closing token: Notion link, `fixed in <sha>`, or `not-a-finding: …` (all thread/comment pages are fetched).
 4. When `base` is `main`: label `review:high` or `review:ultra` is present.
 
 ### Job `gate-refresh-on-comment`
@@ -70,7 +72,7 @@ PreToolUse blocks `gh pr merge` (including `--auto`) when `check-review-gate.py`
 
 ## Apply across nevar*
 
-1. `aec install skill review-gate` + copy workflow in each repo (or a small apply PR series).
+1. `aec install skill review-gate` + `install-workflow.py` in each repo (or a small apply PR series).
 2. Doctor in CI or a weekly scheduled task; warn (do not hard-fail) until the first month of data.
 3. Keep `adversarial-review` installed so agents post the inline comments the gate expects.
 

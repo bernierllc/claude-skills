@@ -52,6 +52,124 @@ def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
     return owner, name
 
 
+def is_codex_author(login: str | None) -> bool:
+    """True only for Codex/ChatGPT review bot identities — never body text."""
+    author = (login or "").lower()
+    return "codex" in author or "chatgpt" in author
+
+
+def _graphql(query: str, **variables: Any) -> dict[str, Any]:
+    args = ["graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        args.extend(["-F", f"{key}={value}"])
+    data = run_gh(args)
+    return (data or {}).get("data") or {}
+
+
+def _paginate_threads(owner: str, name: str, number: int) -> list[dict[str, Any]]:
+    """Fetch every review thread and every comment on each thread."""
+    threads: list[dict[str, Any]] = []
+    cursor: str | None = None
+    thread_q = """
+    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          reviewThreads(first: 50, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id }
+          }
+        }
+      }
+    }
+    """
+    comment_q = """
+    query($id:ID!, $cursor:String) {
+      node(id: $id) {
+        ... on PullRequestReviewThread {
+          comments(first: 50, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { body author { login } }
+          }
+        }
+      }
+    }
+    """
+    while True:
+        variables: dict[str, Any] = {"owner": owner, "name": name, "number": number}
+        if cursor:
+            variables["cursor"] = cursor
+        else:
+            # gh -F omits null awkwardly; pass empty and use a query without cursor on first page
+            pass
+        if cursor is None:
+            first_q = """
+            query($owner:String!, $name:String!, $number:Int!) {
+              repository(owner:$owner, name:$name) {
+                pullRequest(number:$number) {
+                  reviewThreads(first: 50) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { id }
+                  }
+                }
+              }
+            }
+            """
+            conn = (
+                _graphql(first_q, owner=owner, name=name, number=number)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviewThreads")
+                or {}
+            )
+        else:
+            conn = (
+                _graphql(thread_q, owner=owner, name=name, number=number, cursor=cursor)
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviewThreads")
+                or {}
+            )
+        for node in conn.get("nodes") or []:
+            thread_id = node.get("id")
+            if not thread_id:
+                continue
+            comments: list[dict[str, Any]] = []
+            c_cursor: str | None = None
+            while True:
+                if c_cursor is None:
+                    c_first = """
+                    query($id:ID!) {
+                      node(id: $id) {
+                        ... on PullRequestReviewThread {
+                          comments(first: 50) {
+                            pageInfo { hasNextPage endCursor }
+                            nodes { body author { login } }
+                          }
+                        }
+                      }
+                    }
+                    """
+                    c_conn = (_graphql(c_first, id=thread_id).get("node") or {}).get("comments") or {}
+                else:
+                    c_conn = (
+                        _graphql(comment_q, id=thread_id, cursor=c_cursor).get("node") or {}
+                    ).get("comments") or {}
+                comments.extend(c_conn.get("nodes") or [])
+                if not (c_conn.get("pageInfo") or {}).get("hasNextPage"):
+                    break
+                c_cursor = (c_conn.get("pageInfo") or {}).get("endCursor")
+                if not c_cursor:
+                    break
+            threads.append({"comments": {"nodes": comments}})
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        cursor = page.get("endCursor")
+        if not cursor:
+            break
+    return threads
+
+
 def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
     q = """
     query($owner:String!, $name:String!, $number:Int!) {
@@ -70,34 +188,15 @@ def pr_payload(owner: str, name: str, number: int) -> dict[str, Any]:
               author { login }
             }
           }
-          reviewThreads(first: 100) {
-            nodes {
-              isResolved
-              comments(first: 20) {
-                nodes { body author { login } }
-              }
-            }
-          }
         }
       }
     }
     """
-    data = run_gh(
-        [
-            "graphql",
-            "-f",
-            f"query={q}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={name}",
-            "-F",
-            f"number={number}",
-        ]
-    )
-    pr = (data or {}).get("data", {}).get("repository", {}).get("pullRequest")
+    data = _graphql(q, owner=owner, name=name, number=number)
+    pr = (data.get("repository") or {}).get("pullRequest")
     if not pr:
         raise RuntimeError(f"PR #{number} not found in {owner}/{name}")
+    pr["reviewThreads"] = {"nodes": _paginate_threads(owner, name, number)}
     return pr
 
 
@@ -107,15 +206,16 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
         commit = (rev.get("commit") or {}).get("oid") or ""
         if head and commit and commit != head:
             continue
-        body = rev.get("body") or ""
-        author = ((rev.get("author") or {}).get("login") or "").lower()
+        author = ((rev.get("author") or {}).get("login") or "")
+        if not is_codex_author(author):
+            continue
         state = (rev.get("state") or "").upper()
         if state in ("PENDING", "DISMISSED"):
             continue
+        body = rev.get("body") or ""
         if "running" in body.lower() and len(body) < 400:
             continue
-        if "codex" in author or "chatgpt" in author or "codex" in body.lower():
-            return True
+        return True
     return False
 
 
@@ -123,7 +223,6 @@ def review_section_names_fallback(body: str) -> bool:
     m = REVIEW_SECTION.search(body or "")
     if not m:
         return False
-    # Section text until next ## heading
     rest = (body or "")[m.end() :]
     next_h = re.search(r"(?m)^##\s+", rest)
     section = rest[: next_h.start()] if next_h else rest
@@ -142,7 +241,9 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         replies = comments[1:]
         if any(CLOSING.search(c.get("body") or "") for c in replies):
             continue
-        failures.append(f"P2 thread #{i} has no closing reply (Notion link / fixed in <sha> / not-a-finding:)")
+        failures.append(
+            f"P2 thread #{i} has no closing reply (Notion link / fixed in <sha> / not-a-finding:)"
+        )
     return failures
 
 
@@ -178,7 +279,7 @@ def main(argv: list[str]) -> int:
             number = int(argv[i])
             i += 1
         else:
-            print(f"usage: check_review_gate.py --pr N [--repo OWNER/NAME]", file=sys.stderr)
+            print("usage: check_review_gate.py --pr N [--repo OWNER/NAME]", file=sys.stderr)
             return 2
     if number is None:
         env_n = os.environ.get("PR_NUMBER") or os.environ.get("GITHUB_PR_NUMBER")

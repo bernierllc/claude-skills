@@ -85,6 +85,24 @@ dismissed = pr(
 )
 assert g.evaluate(dismissed)
 
+# Human review that merely mentions "Codex" in the body does not count
+human_mentions = pr(
+    body="## Review\n\nwaiting\n",
+    reviews={
+        "nodes": [
+            {
+                "state": "COMMENTED",
+                "body": "Codex did not run; please re-request.",
+                "commit": {"oid": "abc123"},
+                "author": {"login": "mbernier"},
+            }
+        ]
+    },
+)
+assert g.evaluate(human_mentions)
+assert g.is_codex_author("chatgpt-codex-connector")
+assert not g.is_codex_author("mbernier")
+
 # Unanswered P2
 p2 = pr(
     reviewThreads={
@@ -170,21 +188,20 @@ finally:
     mg.gate.pr_payload = _orig_payload
     mg.gate.evaluate = _orig_eval
 
-# Template must sparse-checkout scripts/ so a vendored checker is reachable
 yml = (Path(__file__).parent.parent / "templates" / "review-gate.yml").read_text()
-assert "scripts" in yml.split("sparse-checkout:")[1].split("sparse-checkout-cone-mode")[0]
-# Job display name must match the required-check name installers advertise
+# Trusted execution: pull_request_target + checker loaded from base SHA contents API
+assert "pull_request_target:" in yml
+assert "contents/scripts/check-review-gate.py?ref=$BASE_SHA" in yml
+# Do not execute a PR-head checkout of the checker
+assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
-# Comment path must publish via Checks API (Actions job alone is ineligible)
-assert 'name="Review Gate"' in yml or "name='Review Gate'" in yml
 assert "check-runs" in yml
-# CI cancel is gated to new P0/P1 findings, not every comment
 assert "cancel-ci-on-finding" in yml
 assert "Not a P0/P1 finding" in yml
 
-# Installer alternate path must resolve via aec path, not bare dirname
 skill = (Path(__file__).parent.parent / "SKILL.md").read_text()
 assert '$(aec path skill review-gate)/scripts/install-workflow.py' in skill
 assert "$(dirname)/scripts/install-workflow.py" not in skill
+assert "scripts/check-review-gate.py" in skill
 
 print("ok")
