@@ -1691,6 +1691,19 @@ def _var_target_dynamic(name: str) -> bool:
     return _command_name_dynamic(name)
 
 
+def _body_after_pattern_closer(tok: str, rest: list[str], closer_i: int) -> str | None:
+    """Return command text after a ``pat)`` / ``)`` token at ``closer_i``."""
+    after_sticky = ""
+    if tok.endswith(")") and tok != ")":
+        after_sticky = tok.split(")", 1)[1]
+    body_toks: list[str] = []
+    if after_sticky:
+        body_toks.append(after_sticky)
+    body_toks.extend(rest[closer_i + 1 :])
+    body = " ".join(body_toks).strip()
+    return body or None
+
+
 def _case_arm_body(rest: list[str], case_i: int) -> str | None:
     """Return the command text after the first ``case`` pattern closer ``)``.
 
@@ -1707,16 +1720,36 @@ def _case_arm_body(rest: list[str], case_i: int) -> str | None:
         j += 1
     if j >= len(rest):
         return None
-    tok = rest[j]
-    after_sticky = ""
-    if tok.endswith(")") and tok != ")":
-        after_sticky = tok.split(")", 1)[1]
-    body_toks: list[str] = []
-    if after_sticky:
-        body_toks.append(after_sticky)
-    body_toks.extend(rest[j + 1 :])
-    body = " ".join(body_toks).strip()
-    return body or None
+    return _body_after_pattern_closer(rest[j], rest, j)
+
+
+def _pattern_arm_body(rest: list[str], i: int) -> str | None:
+    """Return body after a standalone ``pat)`` segment (later arms after ``;;``).
+
+    ``split_shell_chains`` turns ``…;; x) PATH=/tmp/fake;;`` into the segment
+    ``x) PATH=/tmp/fake``, which has no leading ``case`` keyword.
+    """
+    if i >= len(rest):
+        return None
+    tok = rest[i]
+    if tok == ")":
+        return _body_after_pattern_closer(tok, rest, i)
+    if not tok.endswith(")") or tok in ("((",):
+        return None
+    # ``gh()`` / ``name()`` function heads put ``(`` mid-token; case patterns
+    # are ``x)`` / ``*)`` or the optional ``(x)`` form.
+    if "(" in tok and not tok.startswith("("):
+        return None
+    return _body_after_pattern_closer(tok, rest, i)
+
+
+def _nested_case_or_arm_body(rest: list[str], i: int) -> str | None:
+    """Nested body for ``case …)`` heads or standalone ``pat)`` arm segments."""
+    if i >= len(rest):
+        return None
+    if rest[i] == "case":
+        return _case_arm_body(rest, i)
+    return _pattern_arm_body(rest, i)
 
 
 def _arith_assignment_targets(part: str) -> list[str]:
@@ -1807,11 +1840,12 @@ def sets_path_override(part: str) -> bool:
         # Segment is only assignments (e.g. ``PATH[0]=/tmp/fake`` alone).
         return any(_is_path_name(k) for k in leading)
     head = rest[i]
-    # ``case … in pat) PATH=…`` — inspect the arm body after the pattern ``)``.
-    if head == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and sets_path_override(body)
+    # ``case …)`` / standalone ``pat) PATH=…`` (later arms after ``;;``).
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        return sets_path_override(nested)
     # Standalone indexed assignment mistaken as the command token.
+    # Also ``if PATH=/tmp/fake`` after control-flow prefix skip.
     m_head = ASSIGNMENT_RE.match(head)
     if m_head and _is_path_name(m_head.group(1)):
         return True
@@ -1920,10 +1954,14 @@ def _part_exports_tracked_gh(part: str) -> bool:
     if i >= len(rest):
         return False
     head = rest[i]
-    # ``case … in pat) GH_HOST=…`` — inspect the arm body after the pattern ``)``.
-    if head == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and _part_exports_tracked_gh(body)
+    # ``case …)`` / standalone ``pat) GH_HOST=…`` (later arms after ``;;``).
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        return _part_exports_tracked_gh(nested)
+    # ``if GH_HOST=…`` after control-flow prefix skip — keeps export attribute.
+    m_head = ASSIGNMENT_RE.match(head)
+    if m_head and _is_tracked_gh_name(m_head.group(1)):
+        return True
     if head == "export":
         for tok in rest[i + 1 :]:
             if tok.startswith("-") and "=" not in tok:
@@ -2021,10 +2059,10 @@ def _part_unsets_tracked_gh(part: str) -> bool:
     if i >= len(rest):
         return False
     head = rest[i]
-    # ``case … in pat) unset GH_HOST`` — inspect the arm body after ``)``.
-    if head == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and _part_unsets_tracked_gh(body)
+    # ``case …)`` / standalone ``pat) unset GH_HOST`` (later arms after ``;;``).
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        return _part_unsets_tracked_gh(nested)
     if head == "unset":
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):
@@ -2097,9 +2135,10 @@ def _part_loads_dynamic_builtin(part: str) -> bool:
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    if i < len(rest) and rest[i] == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and _part_loads_dynamic_builtin(body)
+    if i < len(rest):
+        nested = _nested_case_or_arm_body(rest, i)
+        if nested is not None:
+            return _part_loads_dynamic_builtin(nested)
     if i >= len(rest) or rest[i] != "enable":
         return False
     j = i + 1
@@ -2200,9 +2239,10 @@ def _part_hash_override_risk(part: str) -> bool:
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    if i < len(rest) and rest[i] == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and _part_hash_override_risk(body)
+    if i < len(rest):
+        nested = _nested_case_or_arm_body(rest, i)
+        if nested is not None:
+            return _part_hash_override_risk(nested)
     if i >= len(rest) or rest[i] != "hash":
         return False
     j = i + 1
@@ -2269,9 +2309,9 @@ def _part_bash_cmds_override(part: str) -> bool:
     if i >= len(rest):
         return False
     head = rest[i]
-    if head == "case":
-        body = _case_arm_body(rest, i)
-        return bool(body) and _part_bash_cmds_override(body)
+    nested = _nested_case_or_arm_body(rest, i)
+    if nested is not None:
+        return _part_bash_cmds_override(nested)
     m_head = ASSIGNMENT_RE.match(head)
     if m_head and _is_bash_cmds_override_target(m_head.group(1)):
         return True

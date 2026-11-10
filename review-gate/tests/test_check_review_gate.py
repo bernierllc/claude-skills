@@ -1486,6 +1486,23 @@ assert case_path_err and "PATH" in case_path_err
 assert mg.sets_path_override("case x in x) export PATH=/tmp/fake")
 assert mg.sets_path_override("case x in x) unset PATH")
 assert mg._part_exports_tracked_gh("case x in x) GH_HOST=ghe.example")
+# Later case arms become standalone ``pat) …`` segments after ``;;``
+assert mg.sets_path_override("x) PATH=/tmp/fake")
+later_arm = (
+    "case x in y) :;; x) PATH=/tmp/fake;; esac; gh -R owner/safe pr merge 1"
+)
+assert mg.path_override_for_merge(later_arm)
+later_arm_err = mg.check_command(later_arm, cwd="/tmp")
+assert later_arm_err and "PATH" in later_arm_err
+assert mg.sets_path_override("(x) PATH=/tmp/fake")
+# Assignments after if/while/until keep export attribute for merge children
+assert mg._part_exports_tracked_gh("if GH_HOST=ghe.example")
+if_assign = "if GH_HOST=ghe.example; then gh -R owner/safe pr merge 1; fi"
+assert mg.prior_tracked_gh_export(if_assign)
+if_assign_err = mg.check_command(if_assign, cwd="/tmp")
+assert if_assign_err and "exported" in if_assign_err
+assert mg._part_exports_tracked_gh("while GH_CONFIG_DIR=/tmp/a")
+assert mg.sets_path_override("if PATH=/tmp/fake")
 # Shell-level unset PATH clears lookup before a later merge / := reassignment
 assert mg.sets_path_override("unset PATH")
 unset_path = "unset PATH; : ${PATH:=/tmp/fake}; gh -R owner/safe pr merge 1"
