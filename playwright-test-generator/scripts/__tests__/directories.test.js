@@ -30,3 +30,20 @@ it('uses a saved custom directory for edit hooks and changed-file mapping', asyn
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+it('keeps unconfigured monorepo verification docs scoped to the project', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verification-monorepo-'));
+  try {
+    const project = join(repo, 'apps/web');
+    mkdirSync(join(repo, 'docs/verification/pages'), { recursive: true });
+    mkdirSync(join(project, 'docs/verification/pages'), { recursive: true });
+    writeFileSync(join(repo, 'docs/verification/pages/root.md'), '# Root');
+    writeFileSync(join(project, 'docs/verification/pages/web.md'), '# Web');
+    const result = checkVersions(project, repo);
+    expect(result.total).toBe(1);
+    expect(JSON.stringify(result)).toContain('web.md');
+    expect(JSON.stringify(result)).not.toContain('root.md');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

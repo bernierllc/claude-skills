@@ -1,6 +1,6 @@
 ---
 name: api-verification
-version: 1.1.2
+version: 1.2.0
 dependencies:
   skills:
     - name: api-verification-writer
@@ -43,3 +43,7 @@ Run via `aec run-script skill:api-verification matrix.py -- <subcommand> ...` (s
 - An unreachable route is a `no-response` mismatch, not a pass. A planned row missing from the results file (and not listed in `skipped_mutating`) is a `missing-result` mismatch, for any surface that has at least one result.
 - Status 404/400 caused by the placeholder path id counts as allowed: the auth gate passed the request.
 - Do not log or print tokens; reports name principals only.
+
+## Installed verification directory
+
+Read `.aec/directories.json` before using verification docs. Its `verification` value is the shared directory selected during AEC setup; absent configuration defaults to `docs/verification`. All documentation paths in this skill are relative to that chosen root. The scripts read this configuration automatically; explicit API matrix file arguments still take precedence.

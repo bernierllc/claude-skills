@@ -186,7 +186,7 @@ export function classifyDoc(docPath, projectDir, repoRoot = projectDir) {
 
 /** Classify every verification doc in the project. */
 export function checkVersions(projectDir, repoRoot = projectDir) {
-  const docs = discoverDocs(verificationDirectory(repoRoot));
+  const docs = discoverDocs(verificationDirectory(repoRoot, projectDir));
   const results = docs.map((d) => classifyDoc(d, projectDir, repoRoot));
   const counts = {};
   for (const r of results) counts[r.status] = (counts[r.status] || 0) + 1;

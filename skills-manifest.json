@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-10T18:36:06.387779+00:00",
+  "generatedAt": "2026-11-10T18:46:31.137162+00:00",
   "skills": {
     "adversarial-review": {
       "version": "1.0.2",
@@ -13,7 +13,7 @@
       "author": "Anthropic"
     },
     "api-verification": {
-      "version": "1.1.2",
+      "version": "1.2.0",
       "description": "Verifies who can call each REST endpoint and MCP tool by running a principal x operation access matrix against a local or test server and comparing responses to what the verification docs declare. Flags over-permissive and over-restrictive operations, and refuses non-local hosts by default. Use after API or MCP auth changes, before releases, or to check that docs and behavior agree on public vs gated surfaces. Companion to api-verification-writer; the API counterpart of browser-verification."
     },
     "api-verification-writer": {
@@ -31,7 +31,7 @@
       "author": "Anthropic"
     },
     "browser-verification": {
-      "version": "2.3.0",
+      "version": "2.4.0",
       "description": "Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes",
       "author": "Bernier LLC"
     },
@@ -90,7 +90,7 @@
       "description": "Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when manifest items are flagged pending_generation."
     },
     "playwright-test-runner": {
-      "version": "1.3.1",
+      "version": "1.4.0",
       "description": "Autonomous Playwright test execution, environment management, profiling, and bug-fixing loop. Spins up isolated test environments (database, server), executes test suites, profiles performance, diagnoses failures, implements fixes, cleans up all test artifacts, and tears down the environment. Companion to playwright-test-generator. Use when running Playwright test suites, when tests are failing and need diagnosis/fixing, when validating a feature branch before merge, or when the test suite needs a full pass with autonomous repair. Triggered by test failures, CI red builds, pre-merge validation, or explicit user request to run and fix tests."
     },
     "pr-merge-flow": {
