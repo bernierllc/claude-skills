@@ -116,4 +116,41 @@ assert mg.MERGE_RE.search("gh pr merge 1 --squash")
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
 
+# AEC exposes cwd at the top level of the hook payload
+assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"
+assert mg.payload_cwd({}, {"working_directory": "/tmp/nested"}) == "/tmp/nested"
+assert g.parse_repo("owner/name", cwd="/tmp/ignored") == ("owner", "name")
+
+# check_command must resolve the repo from the Bash tool cwd, not the hook process cwd
+_seen = {}
+_orig_parse = mg.gate.parse_repo
+_orig_payload = mg.gate.pr_payload
+_orig_eval = mg.gate.evaluate
+
+
+def _capture_parse(repo, cwd=None):
+    _seen["cwd"] = cwd
+    return ("owner", "repo")
+
+
+mg.gate.parse_repo = _capture_parse
+mg.gate.pr_payload = lambda *a, **k: pr()
+mg.gate.evaluate = lambda *_: []
+try:
+    assert mg.check_command("gh pr merge 7 --squash", cwd="/tmp/target-repo") is None
+    assert _seen["cwd"] == "/tmp/target-repo"
+finally:
+    mg.gate.parse_repo = _orig_parse
+    mg.gate.pr_payload = _orig_payload
+    mg.gate.evaluate = _orig_eval
+
+# Template must sparse-checkout scripts/ so a vendored checker is reachable
+yml = (Path(__file__).parent.parent / "templates" / "review-gate.yml").read_text()
+assert "scripts" in yml.split("sparse-checkout:")[1].split("sparse-checkout-cone-mode")[0]
+
+# Installer alternate path must resolve via aec path, not bare dirname
+skill = (Path(__file__).parent.parent / "SKILL.md").read_text()
+assert '$(aec path skill review-gate)/scripts/install-workflow.py' in skill
+assert "$(dirname)/scripts/install-workflow.py" not in skill
+
 print("ok")

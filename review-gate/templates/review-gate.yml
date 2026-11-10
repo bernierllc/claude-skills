@@ -53,10 +53,11 @@ jobs:
       - name: Checkout review-gate checker
         uses: actions/checkout@v4
         with:
+          # Include scripts/ so a vendored scripts/check-review-gate.py is used when present.
           sparse-checkout: |
             .github
+            scripts
           sparse-checkout-cone-mode: false
-          # Prefer in-repo copy of the checker if present; otherwise embed inline below.
 
       - name: Run review-gate checks
         env:

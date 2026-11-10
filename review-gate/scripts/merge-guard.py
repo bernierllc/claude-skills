@@ -6,13 +6,13 @@ Override: include `# review-gate-ok: <reason>` in the Bash command.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
-import importlib.util
 _spec = importlib.util.spec_from_file_location(
     "check_review_gate", Path(__file__).resolve().with_name("check-review-gate.py")
 )
@@ -28,12 +28,23 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     m_repo = re.search(r"(?:-R|--repo(?:=|\s+))(\S+)", cmd)
     if m_repo:
         repo = m_repo.group(1).strip("'\"")
-    # gh pr merge <n>
     m = re.search(r"\bpr\s+merge\s+(\d+)\b", cmd)
     if m:
         return int(m.group(1)), repo
-    # gh pr merge -- <url> rare; skip
     return None, repo
+
+
+def payload_cwd(payload: dict, inp: dict) -> str:
+    """AEC puts cwd at the top level; some harnesses nest it under tool_input."""
+    for candidate in (
+        payload.get("cwd"),
+        payload.get("working_directory"),
+        inp.get("working_directory"),
+        inp.get("cwd"),
+    ):
+        if candidate:
+            return str(candidate)
+    return os.getcwd()
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
@@ -45,13 +56,10 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
-        owner, name = gate.parse_repo(repo)
+        owner, name = gate.parse_repo(repo, cwd=cwd)
         pr = gate.pr_payload(owner, name, number)
         reasons = gate.evaluate(pr)
     except Exception as e:  # noqa: BLE001
-        # Fail open on infra so a gh outage does not brick merges forever;
-        # still warn via stderr by returning None after print? Prefer fail closed
-        # for missing PR, fail open for transport.
         msg = str(e).lower()
         if "not found" in msg:
             return f"review-gate: {e}"
@@ -78,7 +86,7 @@ def main() -> int:
     cmd = inp.get("command") or inp.get("cmd") or ""
     if not cmd:
         return 0
-    cwd = inp.get("working_directory") or inp.get("cwd")
+    cwd = payload_cwd(payload, inp)
     err = check_command(cmd, cwd)
     if err:
         print(err, file=sys.stderr)

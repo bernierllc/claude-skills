@@ -20,7 +20,7 @@ aec install skill review-gate
 # copy once into the tracked workflow (AEC install alone does not commit it):
 mkdir -p .github/workflows
 cp "$(aec path skill review-gate)/templates/review-gate.yml" .github/workflows/review-gate.yml
-# or: python3 "$(dirname)/scripts/install-workflow.py"
+# or: python3 "$(aec path skill review-gate)/scripts/install-workflow.py"
 ```
 
 Then flip GitHub rulesets (no Actions minutes):

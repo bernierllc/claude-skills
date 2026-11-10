@@ -35,7 +35,8 @@ def run_gh(args: list[str], repo: str | None = None) -> Any:
     return json.loads(proc.stdout)
 
 
-def parse_repo(repo: str | None) -> tuple[str, str]:
+def parse_repo(repo: str | None, cwd: str | None = None) -> tuple[str, str]:
+    """Resolve OWNER/NAME. Prefer an explicit --repo; else `gh repo view` in cwd."""
     if repo and "/" in repo:
         owner, name = repo.split("/", 1)
         return owner, name
@@ -43,6 +44,7 @@ def parse_repo(repo: str | None) -> tuple[str, str]:
         ["gh", "repo", "view", "--json", "owner,name", "-q", ".owner.login + \"/\" + .name"],
         capture_output=True,
         text=True,
+        cwd=cwd or None,
     )
     if proc.returncode != 0 or "/" not in proc.stdout:
         raise RuntimeError("could not resolve owner/repo; pass --repo OWNER/NAME")
