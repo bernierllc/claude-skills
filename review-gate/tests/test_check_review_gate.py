@@ -270,7 +270,7 @@ assert (
 assert mg.extract_repo('env GH_HOST="$HOST" gh -R owner/target pr merge 42') == (
     "$UNRESOLVED"
 )
-# ``env -u GH_HOST`` / ``-i`` force explicit github.com (override process GH_HOST)
+# ``env -u GH_HOST`` / ``-i`` / sticky / bare ``-`` force explicit github.com
 assert (
     mg.extract_repo("env -u GH_HOST gh -R owner/target pr merge 42")
     == "github.com/owner/target"
@@ -280,12 +280,29 @@ assert (
     == "github.com/owner/target"
 )
 assert (
+    mg.extract_repo("env -uGH_HOST gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
     mg.extract_repo("env -i gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
+    mg.extract_repo("env - gh -R owner/target pr merge 42")
     == "github.com/owner/target"
 )
 assert (
     mg.extract_repo("env -u GH_HOST GH_HOST=ghe.other gh -R owner/target pr merge 42")
     == "ghe.other/owner/target"
+)
+# Empty ``GH_HOST=`` is an explicit reset to github.com (not "absent")
+assert (
+    mg.extract_repo("GH_HOST= gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
+    mg.extract_repo("env GH_HOST= gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
 )
 assert g.parse_repo_with_host(r) == ("ghe.example", "owner", "repo")
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")

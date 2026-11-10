@@ -259,7 +259,8 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
             i += 1
             continue
         if tok.startswith("-"):
-            if tok in ("-i", "--ignore-environment"):
+            # Bare ``-`` implies ``-i`` (GNU env).
+            if tok in ("-", "-i", "--ignore-environment"):
                 out.clear()
                 cleared_gh_host = True
                 i += 1
@@ -272,7 +273,14 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
                     cleared_gh_host = True
                 i += 1
                 continue
-            # Sticky ``-C/path`` (no separate operand).
+            # Sticky ``-uGH_HOST`` / ``-C/path`` (no separate operand).
+            if tok.startswith("-u") and tok != "-u":
+                name = tok[2:]
+                out.pop(name, None)
+                if name == "GH_HOST":
+                    cleared_gh_host = True
+                i += 1
+                continue
             if tok.startswith("-C") and tok != "-C":
                 i += 1
                 continue
@@ -352,9 +360,12 @@ def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
     parts = [p for p in repo.strip().strip("/").split("/") if p]
     if len(parts) >= 3:
         return repo
-    gh_host = assignments.get("GH_HOST")
-    if gh_host is None or gh_host == "":
+    if "GH_HOST" not in assignments:
         return repo
+    gh_host = assignments.get("GH_HOST")
+    # Empty ``GH_HOST=`` clears the host → gh defaults to github.com.
+    if gh_host is None or gh_host == "":
+        return f"github.com/{repo}"
     if _repo_operand_unresolvable(gh_host):
         return "$UNRESOLVED"
     if gh_host.lower() in DOTCOM_PULL_HOSTS:
