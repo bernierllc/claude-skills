@@ -451,6 +451,9 @@ assert blocked and "relative" in blocked
 assert mg.dynamic_gh_subcommand_merge('gh "$x" "$y" 42 -R owner/target')
 assert mg.dynamic_gh_subcommand_merge('gh pr "$y" 42 -R owner/target')
 assert mg.dynamic_gh_subcommand_merge('gh "$x" merge 42 -R owner/target')
+# Unquoted $x may word-split into `pr merge`
+assert mg.dynamic_gh_subcommand_merge("gh $x 42 -R owner/target")
+assert mg.check_command("gh $x 42 -R owner/target", cwd="/tmp")
 assert not mg.dynamic_gh_subcommand_merge("gh pr merge 42 -R owner/target")
 assert not mg.dynamic_gh_subcommand_merge('gh issue "$x"')
 blocked = mg.check_command(
@@ -677,6 +680,13 @@ assert mg.prior_tracked_gh_export(
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
 )
+# Standalone assignment keeps export attribute for the merge child only
+assert mg._part_exports_tracked_gh("GH_HOST=ghe.example")
+standalone_assign = "GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+assert mg.prior_tracked_gh_export(standalone_assign)
+assert mg.check_command(standalone_assign, cwd="/tmp") and "exported" in mg.check_command(
+    standalone_assign, cwd="/tmp"
+)
 # Prior unset of tracked GH_* is not mirrored into the gate env
 unset_host = "unset GH_HOST; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_unset(unset_host)
@@ -750,7 +760,11 @@ assert mg._part_enables_allexport("set -a")
 assert mg._part_enables_allexport("set -o allexport")
 assert not mg._part_enables_allexport("set +a")
 allexport_err = mg.check_command(allexport_cmd, cwd="/tmp")
-assert allexport_err and "allexport" in allexport_err
+# Standalone GH_HOST=… may trip the export check first; either fail-closed path is OK.
+assert allexport_err and (
+    "allexport" in allexport_err or "exported" in allexport_err
+)
+assert mg.allexport_before_merge(allexport_cmd)
 # set -k makes trailing NAME=VALUE part of the merge child's environment
 keyword_cmd = "set -k; gh -R owner/target pr merge 42 GH_HOST=ghe.example"
 assert mg._part_enables_keyword("set -k")

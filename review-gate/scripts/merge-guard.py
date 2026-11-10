@@ -668,16 +668,20 @@ def dynamic_gh_subcommand_merge(part: str) -> bool:
             continue
         verbs.append(tok)
         i += 1
+    if len(verbs) < 1:
+        return False
+    a = verbs[0]
+    a_dyn = _command_name_dynamic(a)
+    # Unquoted ``$x`` may word-split into ``pr merge`` (one token → two verbs).
+    # Fail closed on any dynamic first verb after ``gh``.
+    if a_dyn:
+        return True
     if len(verbs) < 2:
         return False
-    a, b = verbs[0], verbs[1]
-    a_dyn, b_dyn = _command_name_dynamic(a), _command_name_dynamic(b)
-    if not (a_dyn or b_dyn):
-        return False
-    # Shape must be able to become `pr merge` after expansion.
-    a_ok = a_dyn or a == "pr"
-    b_ok = b_dyn or b == "merge"
-    return a_ok and b_ok
+    b = verbs[1]
+    b_dyn = _command_name_dynamic(b)
+    # ``gh pr $y`` with y=merge
+    return a == "pr" and b_dyn
 
 
 def env_wraps_merge(part: str) -> bool:
@@ -809,12 +813,17 @@ def path_override_for_merge(cmd: str) -> bool:
 
 
 def _part_exports_tracked_gh(part: str) -> bool:
-    """True when the segment export-marks a tracked gh/config env var.
+    """True when the segment mutates a tracked gh/config env var for later children.
 
-    Covers ``export``, ``declare -x``, ``typeset -x``, and ``local -x``.
+    Covers ``export``, ``declare -x``, ``typeset -x``, ``local -x``, and standalone
+    ``GH_HOST=…`` assignments (Bash keeps the export attribute on reassignment, so
+    an inherited exported value is updated for the merge child only).
     """
     tokens = _shell_tokens(part)
-    rest, _leading = _skip_leading_assignments(tokens)
+    rest, leading = _skip_leading_assignments(tokens)
+    # Bare ``NAME=value`` segment with no command — persists in the shell.
+    if any(k in GH_TRACKED_ENV_VARS for k in leading) and not rest:
+        return True
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
@@ -845,10 +854,11 @@ def _part_exports_tracked_gh(part: str) -> bool:
 
 
 def prior_tracked_gh_export(cmd: str) -> bool:
-    """True when an earlier segment exports GH_HOST/config before a merge.
+    """True when an earlier segment mutates GH_HOST/config before a merge.
 
-    ``export`` / ``declare -x`` persist across ``;``/``&&`` while ``check_one``
-    only sees the merge segment — fail closed rather than validating the wrong host.
+    ``export`` / ``declare -x`` / standalone ``GH_HOST=…`` persist across
+    ``;``/``&&`` while ``check_one`` only sees the merge segment — fail closed
+    rather than validating the wrong host.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     seen_export = False
