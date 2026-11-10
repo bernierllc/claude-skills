@@ -456,6 +456,12 @@ assert mg.dynamic_gh_subcommand_merge("gh $x 42 -R owner/target")
 assert mg.check_command("gh $x 42 -R owner/target", cwd="/tmp")
 assert not mg.dynamic_gh_subcommand_merge("gh pr merge 42 -R owner/target")
 assert not mg.dynamic_gh_subcommand_merge('gh issue "$x"')
+# Dynamic argv after merge may expand into -Rowner/target
+dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
+assert mg.dynamic_merge_argv(dyn_repo_flag)
+dyn_repo_err = mg.check_command(dyn_repo_flag, cwd="/tmp")
+assert dyn_repo_err and "dynamic argv" in dyn_repo_err
+assert not mg.dynamic_merge_argv("gh -R owner/target pr merge 42 --auto")
 blocked = mg.check_command(
     'x=pr; y=merge; gh "$x" "$y" 42 -R owner/target', cwd="/tmp"
 )

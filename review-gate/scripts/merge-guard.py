@@ -684,6 +684,30 @@ def dynamic_gh_subcommand_merge(part: str) -> bool:
     return a == "pr" and b_dyn
 
 
+def dynamic_merge_argv(part: str) -> bool:
+    """True when argv after ``merge`` has a dynamic token (may expand to ``-R…``).
+
+    Example: ``gh pr merge 42 "$(printf -- -Rowner/target)"`` — after expansion
+    gh treats the token as a repo flag, but the tokenizer never sees a leading
+    ``-`` so the gate validates the wrong repository. Fail closed.
+    """
+    if not is_gh_pr_merge(part):
+        return False
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        gh_i = tokens.index("gh")
+        pr_i = next(i for i in range(gh_i + 1, len(tokens)) if tokens[i] == "pr")
+        merge_i = next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
+    except (ValueError, StopIteration):
+        return False
+    for tok in tokens[merge_i + 1 :]:
+        if tok in {")", "fi", "done", "esac"}:
+            continue
+        if _command_name_dynamic(tok):
+            return True
+    return False
+
+
 def env_wraps_merge(part: str) -> bool:
     """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
@@ -1776,6 +1800,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: dynamic `gh` subcommand "
             "(e.g. `gh \"$x\" \"$y\"` / `gh pr \"$m\"`); "
             "run literal `gh -R owner/repo pr merge <n>`"
+        )
+    # `gh pr merge 42 "$(printf -- -Rowner/target)"` — dynamic argv may become -R.
+    if any(dynamic_merge_argv(p) for p in parts):
+        return (
+            "review-gate: dynamic argv after `gh pr merge` "
+            "(e.g. `\"$(printf -- -Rowner/repo)\"`); pass literal flags and selectors"
         )
     # `env -S` can assemble `gh` inside the split-string operand.
     if any(env_split_string_merge_risk(p) for p in parts):
