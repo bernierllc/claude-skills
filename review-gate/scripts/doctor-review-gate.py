@@ -31,37 +31,40 @@ def ruleset_is_enforcing(detail: dict) -> bool:
     return detail.get("enforcement") == "active"
 
 
-def ruleset_targets_merge_branches(detail: dict) -> bool:
-    """True when ruleset ``conditions.ref_name`` covers ``main`` and/or ``staging``."""
+def _branch_covered_by_ref_name(
+    branch: str, include: list[str], exclude: list[str]
+) -> bool:
+    ref = f"refs/heads/{branch}"
+    if ref in exclude or branch in exclude:
+        return False
+    for pat in include:
+        if pat in ("~ALL", ref, branch):
+            return True
+        if pat == "~DEFAULT_BRANCH" and branch == "main":
+            return True
+        if pat in ("refs/heads/*", "refs/heads/**"):
+            return True
+        if pat.endswith("/*") or pat.endswith("/**"):
+            prefix = pat.rstrip("*").rstrip("/")
+            if ref.startswith(prefix + "/") or ref == prefix:
+                return True
+    return False
+
+
+def ruleset_covered_branches(detail: dict) -> list[str]:
+    """Return ``main``/``staging`` branches this ruleset's ref conditions cover."""
     conditions = detail.get("conditions") or {}
     ref_name = conditions.get("ref_name") or {}
     include = [str(x) for x in (ref_name.get("include") or [])]
     exclude = [str(x) for x in (ref_name.get("exclude") or [])]
     if not include:
-        return False
+        return []
+    return [b for b in MERGE_BRANCHES if _branch_covered_by_ref_name(b, include, exclude)]
 
-    def _excluded(branch: str) -> bool:
-        ref = f"refs/heads/{branch}"
-        return ref in exclude or branch in exclude
 
-    def _covered(branch: str) -> bool:
-        if _excluded(branch):
-            return False
-        ref = f"refs/heads/{branch}"
-        for pat in include:
-            if pat in ("~ALL", ref, branch):
-                return True
-            if pat == "~DEFAULT_BRANCH" and branch == "main":
-                return True
-            if pat in ("refs/heads/*", "refs/heads/**"):
-                return True
-            if pat.endswith("/*") or pat.endswith("/**"):
-                prefix = pat.rstrip("*").rstrip("/")
-                if ref.startswith(prefix + "/") or ref == prefix:
-                    return True
-        return False
-
-    return any(_covered(b) for b in MERGE_BRANCHES)
+def ruleset_targets_merge_branches(detail: dict) -> bool:
+    """True when ruleset ``conditions.ref_name`` covers ``main`` and/or ``staging``."""
+    return bool(ruleset_covered_branches(detail))
 
 
 def ruleset_requires_review_gate(detail: dict) -> bool:
@@ -75,6 +78,17 @@ def ruleset_requires_review_gate(detail: dict) -> bool:
                 continue
             if check.get("context") == REVIEW_GATE_CONTEXT:
                 return True
+    return False
+
+
+def ruleset_requires_conversation_resolution(detail: dict) -> bool:
+    """True when a ruleset requires review-thread resolution on pull requests."""
+    for rule in detail.get("rules") or []:
+        if rule.get("type") != "pull_request":
+            continue
+        params = rule.get("parameters") or {}
+        if params.get("required_review_thread_resolution") is True:
+            return True
     return False
 
 
@@ -116,11 +130,9 @@ def main() -> int:
         print("WARN unexpected rulesets payload")
         return 0
 
-    checked = 0
-    missing_flag = []
-    gate_required_on: list[str] = []
-    status_check_rulesets = 0
-    enforcing_seen = 0
+    branch_state = {
+        b: {"resolution": False, "gate": False, "seen": False} for b in MERGE_BRANCHES
+    }
     skipped_non_enforcing = 0
     skipped_wrong_branch = 0
     for rs in rulesets:
@@ -137,41 +149,51 @@ def main() -> int:
                 "(disabled/evaluate does not block merges); ignored"
             )
             continue
-        if not ruleset_targets_merge_branches(detail):
+        covered = ruleset_covered_branches(detail)
+        if not covered:
             skipped_wrong_branch += 1
             print(
                 f"WARN ruleset {name!r} does not target main/staging "
                 "(conditions.ref_name); ignored for Review Gate coverage"
             )
             continue
-        enforcing_seen += 1
-        if any(
+        has_resolution = ruleset_requires_conversation_resolution(detail)
+        has_gate = ruleset_requires_review_gate(detail)
+        has_status_rule = any(
             rule.get("type") == "required_status_checks"
             for rule in (detail.get("rules") or [])
-        ):
-            status_check_rulesets += 1
-            if ruleset_requires_review_gate(detail):
-                gate_required_on.append(str(name))
-                print(f"OK ruleset {name!r} requires status check {REVIEW_GATE_CONTEXT!r}")
-            else:
+        )
+        for branch in covered:
+            branch_state[branch]["seen"] = True
+            if has_resolution:
+                branch_state[branch]["resolution"] = True
                 print(
-                    f"WARN ruleset {name!r} has required_status_checks but "
-                    f"missing context {REVIEW_GATE_CONTEXT!r}"
+                    f"OK ruleset {name!r} requires conversation resolution "
+                    f"on {branch}"
                 )
-        for rule in detail.get("rules") or []:
-            if rule.get("type") != "pull_request":
-                continue
-            checked += 1
-            params = rule.get("parameters") or {}
-            if params.get("required_review_thread_resolution") is True:
-                print(f"OK ruleset {name!r} requires conversation resolution")
-            else:
-                missing_flag.append(name)
+            if has_gate:
+                branch_state[branch]["gate"] = True
                 print(
-                    f"WARN ruleset {name!r} has pull_request rule but "
-                    f"required_review_thread_resolution is not true"
+                    f"OK ruleset {name!r} requires status check "
+                    f"{REVIEW_GATE_CONTEXT!r} on {branch}"
                 )
-    if enforcing_seen == 0:
+            elif has_status_rule:
+                print(
+                    f"WARN ruleset {name!r} has required_status_checks on {branch} "
+                    f"but missing context {REVIEW_GATE_CONTEXT!r}"
+                )
+            if not has_resolution:
+                # pull_request rule present without the flag
+                if any(
+                    rule.get("type") == "pull_request"
+                    for rule in (detail.get("rules") or [])
+                ):
+                    print(
+                        f"WARN ruleset {name!r} has pull_request rule on {branch} but "
+                        f"required_review_thread_resolution is not true"
+                    )
+
+    if not any(st["seen"] for st in branch_state.values()):
         bits: list[str] = []
         if skipped_non_enforcing:
             bits.append(f"{skipped_non_enforcing} disabled/evaluate")
@@ -179,23 +201,25 @@ def main() -> int:
             bits.append(f"{skipped_wrong_branch} not targeting main/staging")
         suffix = f" (saw {', '.join(bits)})" if bits else ""
         print(f"WARN no actively enforcing main/staging rulesets found{suffix}")
-    if checked == 0:
-        print("WARN no pull_request rules found on any enforcing ruleset")
-    elif missing_flag:
-        print(
-            "HINT flip with gh api -X PUT repos/.../rulesets/<id> "
-            "(see email_demo plan 2026-10-16 §6a)"
-        )
-    if status_check_rulesets == 0:
-        print(
-            f"WARN no required_status_checks rules found on enforcing rulesets — "
-            f"add {REVIEW_GATE_CONTEXT!r} as a required check on staging/main"
-        )
-    elif not gate_required_on:
-        print(
-            f"HINT add required check context {REVIEW_GATE_CONTEXT!r} on staging/main "
-            "rulesets (Checks API name from the review-gate workflow job)"
-        )
+
+    for branch in MERGE_BRANCHES:
+        st = branch_state[branch]
+        if not st["seen"]:
+            print(
+                f"WARN branch {branch!r} has no enforcing ruleset with Review Gate "
+                "wiring"
+            )
+            continue
+        if not st["resolution"]:
+            print(
+                f"WARN branch {branch!r} missing required_review_thread_resolution "
+                "on an enforcing ruleset"
+            )
+        if not st["gate"]:
+            print(
+                f"WARN branch {branch!r} missing required status check "
+                f"{REVIEW_GATE_CONTEXT!r}"
+            )
     return 0
 
 

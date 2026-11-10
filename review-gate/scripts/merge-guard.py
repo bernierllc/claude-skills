@@ -26,7 +26,10 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
 # Quote-smashed executable: Bash concatenates `g''h` / `g"h"` into `gh`.
 QUOTE_SMASHED_GH_RE = re.compile(r"g['\"]+h", re.I)
-ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
+# ``NAME=value``, ``NAME+=value``, and indexed ``NAME[0]=value`` / ``PATH[0]=…``.
+ASSIGNMENT_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)(?:\+)?=(.*)$"
+)
 # Pull *URL* selectors must include a scheme (gh treats scheme-less paths as branch names).
 # Groups: host, owner, repo, number. Optional query/fragment/trailing path (gh accepts them).
 PULL_URL = re.compile(
@@ -494,6 +497,13 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
     return parts
 
 
+def _env_key_base(key: str) -> str:
+    """Strip a Bash array subscript: ``PATH[0]`` → ``PATH``."""
+    if "[" in key:
+        return key.split("[", 1)[0]
+    return key
+
+
 def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, str]]:
     """Strip leading VAR=value tokens; return (rest, assignments)."""
     env: dict[str, str] = {}
@@ -502,7 +512,8 @@ def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, s
         m = ASSIGNMENT_RE.match(tokens[i])
         if not m:
             break
-        key, _, val = tokens[i].partition("=")
+        key = m.group(1)
+        val = m.group(2)
         env[key] = val
         i += 1
     return tokens[i:], env
@@ -551,10 +562,12 @@ def _env_wrapper_state(
     i = env_i + 1
     while i < gh_i:
         tok = tokens[i]
-        if ASSIGNMENT_RE.match(tok):
-            key, _, val = tok.partition("=")
+        m_assign = ASSIGNMENT_RE.match(tok)
+        if m_assign:
+            key, val = m_assign.group(1), m_assign.group(2)
             out[key] = val
             cleared.discard(key)
+            cleared.discard(_env_key_base(key))
             i += 1
             continue
         if tok.startswith("-"):
@@ -1059,54 +1072,76 @@ def sets_git_location(part: str) -> bool:
     return any(is_git_env_override_key(k) for k in env_assigns)
 
 
+def _is_path_name(name: str) -> bool:
+    """True when ``name`` is PATH or an indexed PATH assignment target."""
+    return _env_key_base(name) == "PATH"
+
+
 def sets_path_override(part: str) -> bool:
-    """True when the segment assigns/clears PATH (can swap which ``gh`` runs)."""
+    """True when the segment assigns/clears PATH (can swap which ``gh`` runs).
+
+    Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
+    exported scalar into an array used for command lookup).
+    """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
-    if "PATH" in leading:
+    if any(_is_path_name(k) for k in leading):
+        return True
+    # Bare ``PATH[0]=…`` segment when ASSIGNMENT_RE matched into leading above;
+    # also catch when the whole segment is a single indexed assignment token.
+    if not rest and any(_is_path_name(k) for k in leading):
         return True
     env_assigns, cleared = _env_wrapper_state(rest)
-    if "PATH" in env_assigns or "PATH" in cleared:
+    if any(_is_path_name(k) for k in env_assigns) or any(
+        _is_path_name(k) for k in cleared
+    ):
         return True
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
     if i >= len(rest):
-        return False
+        # Segment is only assignments (e.g. ``PATH[0]=/tmp/fake`` alone).
+        return any(_is_path_name(k) for k in leading)
     head = rest[i]
+    # Standalone indexed assignment mistaken as the command token.
+    m_head = ASSIGNMENT_RE.match(head)
+    if m_head and _is_path_name(m_head.group(1)):
+        return True
     # ``export PATH=…`` / ``declare PATH=…`` / ``typeset`` / ``local`` / ``readonly``
     if head in ("export", "declare", "typeset", "local", "readonly"):
         for tok in rest[i + 1 :]:
             if tok.startswith("-") or tok.startswith("+"):
                 continue
             key, _, _val = tok.partition("=")
-            if key == "PATH":
+            if _is_path_name(key):
                 return True
         return False
-    # ``printf -v PATH …`` assigns into PATH (keeps export attribute).
+    # ``printf -v PATH …`` / ``printf -v PATH[0] …``
     if head == "printf":
         j = i + 1
         while j < len(rest):
             tok = rest[j]
             if tok in ("-v",):
-                if j + 1 < len(rest) and rest[j + 1] == "PATH":
+                if j + 1 < len(rest) and _is_path_name(rest[j + 1]):
                     return True
                 j += 2
                 continue
             if tok.startswith("-") and tok != "-" and "=" not in tok:
-                # sticky ``-vPATH`` / ``-vvPATH`` etc.
+                # sticky ``-vPATH`` / ``-vPATH[0]`` etc.
+                if "v" in tok[1:] and _is_path_name(tok.lstrip("-").lstrip("v")):
+                    return True
                 if "v" in tok[1:] and tok.endswith("PATH") and len(tok) > 2:
                     return True
                 j += 1
                 continue
             break
         return False
-    # ``read PATH`` / ``read -r PATH`` / ``mapfile PATH`` / ``readarray PATH``
+    # ``read PATH`` / ``read PATH[0]`` / ``mapfile`` / ``readarray``
     if head in ("read", "mapfile", "readarray"):
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):
                 continue
-            if tok == "PATH":
+            if _is_path_name(tok):
                 return True
         return False
     return False

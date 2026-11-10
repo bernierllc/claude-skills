@@ -1074,6 +1074,14 @@ printf_err = mg.check_command(
 assert printf_err and "PATH" in printf_err
 assert mg.sets_path_override("read PATH")
 assert not mg.sets_path_override("gh -R owner/safe pr merge 1")
+# Indexed PATH assignment converts scalar PATH into an array for lookup
+assert mg.sets_path_override("PATH[0]=/tmp/fake")
+assert mg.path_override_for_merge("PATH[0]=/tmp/fake; gh -R owner/safe pr merge 1")
+idx_path_err = mg.check_command(
+    "PATH[0]=/tmp/fake; gh -R owner/safe pr merge 1", cwd="/tmp"
+)
+assert idx_path_err and "PATH" in idx_path_err
+assert mg.sets_path_override("printf -v 'PATH[0]' /tmp/fake")
 
 # Doctor must detect required Review Gate status-check context
 _doctor_path = Path(__file__).parent.parent / "scripts" / "doctor-review-gate.py"
@@ -1138,6 +1146,31 @@ assert not _doctor.ruleset_targets_merge_branches(
             }
         }
     }
+)
+assert _doctor.ruleset_covered_branches(
+    {
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/main"], "exclude": []}
+        }
+    }
+) == ["main"]
+assert set(
+    _doctor.ruleset_covered_branches(
+        {"conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
+    )
+) == {"main", "staging"}
+assert _doctor.ruleset_requires_conversation_resolution(
+    {
+        "rules": [
+            {
+                "type": "pull_request",
+                "parameters": {"required_review_thread_resolution": True},
+            }
+        ]
+    }
+)
+assert not _doctor.ruleset_requires_conversation_resolution(
+    {"rules": [{"type": "pull_request", "parameters": {}}]}
 )
 
 # Thread pagination embeds the first comments page (avoid N+1 gh api calls)
