@@ -1091,6 +1091,20 @@ finally:
         os.environ.pop(_bash_func_key, None)
     else:
         os.environ[_bash_func_key] = _prev_bash_func
+# Local command_not_found_handle + unresolved gx … pr merge bypasses MERGE_RE
+local_cnf = (
+    "command_not_found_handle(){ /tmp/evil; }; gx -R owner/safe pr merge 1"
+)
+assert mg.defines_command_not_found_handle(local_cnf)
+local_cnf_err = mg.check_command(local_cnf, cwd="/tmp")
+assert local_cnf_err and "command_not_found" in local_cnf_err
+assert mg.defines_command_not_found_handle(
+    "function command_not_found_handle { /tmp/evil; }; "
+    "gx -R owner/safe pr merge 1"
+)
+assert not mg.defines_command_not_found_handle(
+    "command_not_found_handle(){ true; }; echo hi"
+)
 # Inherited command_not_found_handle can run a merge for unresolved gx … pr merge
 assert mg.inherited_shadowing_function(
     "gx -R owner/safe pr merge 1",

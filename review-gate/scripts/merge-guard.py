@@ -41,6 +41,12 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
+# Local ``command_not_found_handle(){…}`` / ``function command_not_found_handle``.
+CNF_FUNC_RE = re.compile(
+    r"(?:^|[\n;&|])\s*(?:function\s+command_not_found_handle\b|"
+    r"command_not_found_handle\s*\(\s*\))",
+    re.I,
+)
 # ``alias gh=…`` / ``builtin alias`` / ``builtin builtin alias`` / ``command alias``
 GH_ALIAS_RE = re.compile(
     r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
@@ -2235,6 +2241,26 @@ def nameref_with_merge(cmd: str) -> bool:
     return any(_part_declares_nameref(p) for p in parts)
 
 
+def defines_command_not_found_handle(cmd: str) -> bool:
+    """True when the command locally defines ``command_not_found_handle``.
+
+    ``command_not_found_handle(){ /tmp/evil; }; gx … pr merge`` never matches
+    ``is_gh_pr_merge`` / ``MERGE_RE``, but Bash still runs the handler for the
+    unresolved ``gx``. Fail closed whenever that definition shares a loose
+    ``pr merge`` shape (same trigger as inherited CNF).
+    """
+    if not (
+        MERGE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(_dequote_shell_text(cmd))
+    ):
+        return False
+    for candidate in (cmd, _dequote_shell_text(cmd)):
+        if CNF_FUNC_RE.search(candidate):
+            return True
+    return False
+
+
 def inherited_shadowing_function(
     cmd: str, env: dict[str, str] | None = None
 ) -> bool:
@@ -3239,6 +3265,14 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: `env`/`command`/`builtin`/`exec`/`time` redefinition with "
             "`gh pr merge`; run literal `gh -R owner/repo pr merge <n>` without "
             "shadowing those wrappers"
+        )
+    # Local `command_not_found_handle(){…}` with a loose `pr merge` shape.
+    if defines_command_not_found_handle(cmd):
+        return (
+            "review-gate: local `command_not_found_handle` with `pr merge` "
+            "(unresolved names like `gx` run the handler); unset -f "
+            "`command_not_found_handle` and run literal "
+            "`gh -R owner/repo pr merge <n>`"
         )
     # Inherited `export -f gh` / `command_not_found_handle` (BASH_FUNC_*%%).
     if inherited_shadowing_function(cmd):
