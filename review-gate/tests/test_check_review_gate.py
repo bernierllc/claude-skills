@@ -1181,6 +1181,14 @@ assert mg.shell_mutation_before_merge(
 assert mg._part_loads_dynamic_builtin("builtin enable -f /tmp/evil.so gh")
 assert not mg._part_loads_dynamic_builtin("enable -a")
 assert not mg._part_loads_dynamic_builtin("enable -f /tmp/x true")
+# Dynamic enable -f name may expand to gh at runtime
+assert mg._part_loads_dynamic_builtin('enable -f /tmp/evil.so "$x"')
+dyn_enable = 'x=gh; enable -f /tmp/evil.so "$x"; gh -R owner/safe pr merge 1'
+assert mg.shell_mutation_before_merge(dyn_enable)
+dyn_enable_err = mg.check_command(dyn_enable, cwd="/tmp")
+assert dyn_enable_err and (
+    "enable" in dyn_enable_err or "eval" in dyn_enable_err or "source" in dyn_enable_err
+)
 # Prefix/wrappers stripped as harmless can be shadowed functions
 prefix_redef = (
     'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
@@ -1417,6 +1425,19 @@ assert mg.path_override_for_merge(
     "select PATH in /tmp/a; do gh -R owner/safe pr merge 1; break; done"
 )
 assert mg.sets_path_override('for "$v" in /tmp/fake')
+# Arithmetic / let assignment to PATH keeps export and swaps lookup
+assert mg.sets_path_override("((PATH=0))")
+arith_path = "((PATH=0)); gh -R owner/safe pr merge 1"
+assert mg.path_override_for_merge(arith_path)
+arith_path_err = mg.check_command(arith_path, cwd="/tmp")
+assert arith_path_err and "PATH" in arith_path_err
+assert mg.sets_path_override("let PATH=0")
+assert mg.path_override_for_merge("let PATH=0; gh -R owner/safe pr merge 1")
+assert mg.sets_path_override("(( PATH = 0 ))")
+assert mg._part_exports_tracked_gh("((GH_HOST=1))")
+assert mg.prior_tracked_gh_export(
+    "((GH_HOST=1)); gh -R owner/safe pr merge 1"
+)
 # getopts writes the next option into NAME while keeping export
 assert mg.sets_path_override("getopts x PATH")
 getopts_path = "getopts x PATH -x; gh -R owner/safe pr merge 1"

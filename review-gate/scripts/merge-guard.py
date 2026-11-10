@@ -1673,15 +1673,72 @@ def _var_target_dynamic(name: str) -> bool:
     return _command_name_dynamic(name)
 
 
+def _arith_assignment_targets(part: str) -> list[str]:
+    """Return name operands assigned by ``((…))`` / ``let`` in ``part``.
+
+    Covers sticky ``((PATH=0))``, spaced ``(( PATH = 0 ))``, and ``let PATH=0``.
+    """
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(rest):
+        return []
+    head = rest[i]
+    names: list[str] = []
+    if head == "let":
+        args = rest[i + 1 :]
+        j = 0
+        while j < len(args):
+            tok = args[j]
+            key, has_eq, _val = tok.partition("=")
+            if has_eq and key:
+                names.append(key)
+                j += 1
+                continue
+            if j + 1 < len(args) and args[j + 1] == "=":
+                names.append(tok)
+                j += 2
+                continue
+            if j + 1 < len(args) and args[j + 1].startswith("="):
+                names.append(tok)
+                j += 2
+                continue
+            j += 1
+        return names
+    if head.startswith("(("):
+        blob = " ".join(rest[i:])
+        # Strip outer ``((`` / ``))`` when present; keep inner text for scans.
+        inner = blob
+        if inner.startswith("(("):
+            inner = inner[2:]
+        if inner.endswith("))"):
+            inner = inner[:-2]
+        for m in re.finditer(r"(?<![\w.])([A-Za-z_][\w.]*)\s*=", inner):
+            names.append(m.group(1))
+        # Dynamic tokens inside the arithmetic expression.
+        for tok in rest[i:]:
+            if _var_target_dynamic(tok):
+                names.append(tok)
+        return names
+    return []
+
+
 def sets_path_override(part: str) -> bool:
     """True when the segment assigns/clears PATH (can swap which ``gh`` runs).
 
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
     exported scalar into an array used for command lookup), loop targets
-    (``for PATH in …`` / ``select PATH in …``), ``getopts`` name targets, and
-    dynamic writers such as ``printf -v \"$v\" …`` where ``$v`` may expand to
-    ``PATH``.
+    (``for PATH in …`` / ``select PATH in …``), ``getopts`` name targets,
+    arithmetic / ``let`` assignments (``((PATH=0))``), and dynamic writers such
+    as ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
     """
+    if any(
+        _is_path_name(n) or _var_target_dynamic(n)
+        for n in _arith_assignment_targets(part)
+    ):
+        return True
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
     if any(_is_path_name(k) for k in leading):
@@ -1781,10 +1838,16 @@ def _part_exports_tracked_gh(part: str) -> bool:
 
     Covers ``export``, ``declare``/``readonly``, standalone ``GH_HOST=…``,
     indirect writers (``printf -v``, ``read``, ``mapfile``/``readarray``,
-    ``getopts``), and shell-loop targets (``for GH_HOST in …`` /
-    ``select GH_HOST in …``). Bash keeps the export attribute on reassignment,
-    so an inherited exported value is updated for the merge child only.
+    ``getopts``), arithmetic / ``let`` assignments, and shell-loop targets
+    (``for GH_HOST in …`` / ``select GH_HOST in …``). Bash keeps the export
+    attribute on reassignment, so an inherited exported value is updated for
+    the merge child only.
     """
+    if any(
+        _is_tracked_gh_name(n) or _var_target_dynamic(n)
+        for n in _arith_assignment_targets(part)
+    ):
+        return True
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
     # Bare ``NAME=value`` segment with no command — persists in the shell.
@@ -1957,7 +2020,8 @@ def _part_loads_dynamic_builtin(part: str) -> bool:
     """True when ``enable -f`` loads ``gh`` or a shadowable prefix from a .so.
 
     ``enable -f /tmp/evil.so gh`` makes the next ``gh`` run the loaded builtin
-    instead of the real binary the gate inspects.
+    instead of the real binary the gate inspects. Dynamic name operands
+    (``enable -f /tmp/evil.so \"$x\"``) fail closed the same way as ``hash -p``.
     """
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
@@ -2001,7 +2065,12 @@ def _part_loads_dynamic_builtin(part: str) -> bool:
     if not names:
         # ``enable -f file`` with no name is opaque — fail closed.
         return True
-    return any(n in targets or _dequote_shell_text(n) in targets for n in names)
+    return any(
+        n in targets
+        or _dequote_shell_text(n) in targets
+        or _var_target_dynamic(n)
+        for n in names
+    )
 
 
 def _part_has_shell_mutation(part: str) -> bool:
