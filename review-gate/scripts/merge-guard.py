@@ -1679,6 +1679,34 @@ def _var_target_dynamic(name: str) -> bool:
     return _command_name_dynamic(name)
 
 
+def _case_arm_body(rest: list[str], case_i: int) -> str | None:
+    """Return the command text after the first ``case`` pattern closer ``)``.
+
+    ``case x in x) PATH=/tmp/fake`` tokenizes with a leading ``case`` head, so
+    ordinary leading-assignment scans miss the arm body.
+    """
+    j = case_i + 1
+    while j < len(rest) and not (
+        rest[j].endswith(")") and rest[j] not in (")", "((")
+    ):
+        # Bare ``)`` also closes a pattern; sticky ``x)PATH=…`` is handled below.
+        if rest[j] == ")":
+            break
+        j += 1
+    if j >= len(rest):
+        return None
+    tok = rest[j]
+    after_sticky = ""
+    if tok.endswith(")") and tok != ")":
+        after_sticky = tok.split(")", 1)[1]
+    body_toks: list[str] = []
+    if after_sticky:
+        body_toks.append(after_sticky)
+    body_toks.extend(rest[j + 1 :])
+    body = " ".join(body_toks).strip()
+    return body or None
+
+
 def _arith_assignment_targets(part: str) -> list[str]:
     """Return name operands assigned by ``((…))`` / ``let`` in ``part``.
 
@@ -1736,10 +1764,11 @@ def sets_path_override(part: str) -> bool:
 
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
     exported scalar into an array used for command lookup), loop targets
-    (``for PATH in …`` / ``select PATH in …``), ``getopts`` name targets,
-    arithmetic / ``let`` assignments (``((PATH=0))``), shell-level
-    ``unset PATH`` (literal or dynamic), and dynamic writers such as
-    ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
+    (``for PATH in …`` / ``select PATH in …``), ``case`` arm bodies
+    (``case x in x) PATH=…``), ``getopts`` name targets, arithmetic / ``let``
+    assignments (``((PATH=0))``), shell-level ``unset PATH`` (literal or
+    dynamic), and dynamic writers such as ``printf -v \"$v\" …`` where ``$v``
+    may expand to ``PATH``.
     """
     if any(
         _is_path_name(n) or _var_target_dynamic(n)
@@ -1766,6 +1795,10 @@ def sets_path_override(part: str) -> bool:
         # Segment is only assignments (e.g. ``PATH[0]=/tmp/fake`` alone).
         return any(_is_path_name(k) for k in leading)
     head = rest[i]
+    # ``case … in pat) PATH=…`` — inspect the arm body after the pattern ``)``.
+    if head == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and sets_path_override(body)
     # Standalone indexed assignment mistaken as the command token.
     m_head = ASSIGNMENT_RE.match(head)
     if m_head and _is_path_name(m_head.group(1)):
@@ -1875,6 +1908,10 @@ def _part_exports_tracked_gh(part: str) -> bool:
     if i >= len(rest):
         return False
     head = rest[i]
+    # ``case … in pat) GH_HOST=…`` — inspect the arm body after the pattern ``)``.
+    if head == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and _part_exports_tracked_gh(body)
     if head == "export":
         for tok in rest[i + 1 :]:
             if tok.startswith("-") and "=" not in tok:
@@ -1972,6 +2009,10 @@ def _part_unsets_tracked_gh(part: str) -> bool:
     if i >= len(rest):
         return False
     head = rest[i]
+    # ``case … in pat) unset GH_HOST`` — inspect the arm body after ``)``.
+    if head == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and _part_unsets_tracked_gh(body)
     if head == "unset":
         for tok in rest[i + 1 :]:
             if tok.startswith("-"):

@@ -1439,6 +1439,15 @@ assert mg.path_override_for_merge(
     "select PATH in /tmp/a; do gh -R owner/safe pr merge 1; break; done"
 )
 assert mg.sets_path_override('for "$v" in /tmp/fake')
+# PATH assignment inside a case arm still swaps which gh runs
+assert mg.sets_path_override("case x in x) PATH=/tmp/fake")
+case_path = "case x in x) PATH=/tmp/fake;; esac; gh -R owner/safe pr merge 1"
+assert mg.path_override_for_merge(case_path)
+case_path_err = mg.check_command(case_path, cwd="/tmp")
+assert case_path_err and "PATH" in case_path_err
+assert mg.sets_path_override("case x in x) export PATH=/tmp/fake")
+assert mg.sets_path_override("case x in x) unset PATH")
+assert mg._part_exports_tracked_gh("case x in x) GH_HOST=ghe.example")
 # Shell-level unset PATH clears lookup before a later merge / := reassignment
 assert mg.sets_path_override("unset PATH")
 unset_path = "unset PATH; : ${PATH:=/tmp/fake}; gh -R owner/safe pr merge 1"
