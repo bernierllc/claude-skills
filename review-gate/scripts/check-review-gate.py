@@ -61,13 +61,18 @@ def _normalize_api_hostname(host: str | None) -> str | None:
 
 
 def parse_repo_with_host(
-    repo: str | None, cwd: str | None = None
+    repo: str | None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[str | None, str, str]:
     """Resolve (hostname|None, owner, name).
 
     Accepts gh's `[HOST/]OWNER/REPO` form. Explicit ``github.com`` is retained
     (as ``github.com``) so ``--hostname`` overrides an inherited Enterprise
     ``GH_HOST``. Other Enterprise hosts are preserved as-is.
+
+    ``env`` is passed to ``gh repo view`` when resolving from cwd (used to scrub
+    a process-level ``GH_REPO`` the merge command cleared).
     """
     if repo and "/" in repo:
         parts = [p for p in repo.strip().strip("/").split("/") if p]
@@ -93,6 +98,7 @@ def parse_repo_with_host(
         capture_output=True,
         text=True,
         cwd=cwd or None,
+        env=env,
     )
     if proc.returncode != 0 or "/" not in proc.stdout:
         raise RuntimeError("could not resolve owner/repo; pass --repo OWNER/NAME")

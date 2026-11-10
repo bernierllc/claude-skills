@@ -220,18 +220,20 @@ assert mg.extract_merge_selector(
 ) == "https://github.com/o/r/pull/7"
 assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feature-branch"
 # URL selector must carry host/owner/repo (dotcom kept explicit for --hostname)
-n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/7 --squash")
-assert e is None and n == 7 and r == "github.com/owner/other"
+n, r, e, scrub = mg.resolve_pr_number(
+    "gh pr merge https://github.com/owner/other/pull/7 --squash"
+)
+assert e is None and n == 7 and r == "github.com/owner/other" and scrub is False
 # URL selector wins over a conflicting -R (matches gh)
-n, r, e = mg.resolve_pr_number(
+n, r, e, scrub = mg.resolve_pr_number(
     "gh pr merge https://github.com/owner/target/pull/7 -R owner/safe --squash"
 )
-assert e is None and n == 7 and r == "github.com/owner/target"
+assert e is None and n == 7 and r == "github.com/owner/target" and scrub is False
 # Enterprise pull URLs retain the hostname for gate queries
-n, r, e = mg.resolve_pr_number(
+n, r, e, scrub = mg.resolve_pr_number(
     "gh pr merge https://ghe.example/owner/repo/pull/7 --squash"
 )
-assert e is None and n == 7 and r == "ghe.example/owner/repo"
+assert e is None and n == 7 and r == "ghe.example/owner/repo" and scrub is False
 # Leading GH_HOST= prefixes a hostless -R / GH_REPO slug
 assert (
     mg.extract_repo("GH_HOST=ghe.example gh -R owner/target pr merge 42")
@@ -304,6 +306,15 @@ assert (
     mg.extract_repo("env GH_HOST= gh -R owner/target pr merge 42")
     == "github.com/owner/target"
 )
+# Empty / cleared GH_REPO resets to the tool cwd (scrub process GH_REPO)
+repo, scrub = mg.extract_repo_resolution("GH_REPO= gh pr merge 42")
+assert repo is None and scrub is True
+repo, scrub = mg.extract_repo_resolution("env -u GH_REPO gh pr merge 42")
+assert repo is None and scrub is True
+repo, scrub = mg.extract_repo_resolution("env -uGH_REPO gh pr merge 42")
+assert repo is None and scrub is True
+repo, scrub = mg.extract_repo_resolution("gh -R owner/target pr merge 42")
+assert repo == "owner/target" and scrub is False
 assert g.parse_repo_with_host(r) == ("ghe.example", "owner", "repo")
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
@@ -382,8 +393,16 @@ wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 # Dynamic -R / GH_REPO operands fail closed
 assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
-n, r, e = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')
-assert n is None and e and "dynamic" in e
+n, r, e, scrub = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')
+assert n is None and e and "dynamic" in e and scrub is False
+# Gate API / infra errors fail closed (do not skip and allow the merge)
+_orig_payload = mg.gate.pr_payload
+mg.gate.pr_payload = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("graphql boom"))
+try:
+    blocked = mg.check_one("gh -R owner/target pr merge 42", cwd="/tmp")
+    assert blocked and "gate check failed" in blocked and "graphql boom" in blocked
+finally:
+    mg.gate.pr_payload = _orig_payload
 assert mg.extract_repo('GH_REPO=$TARGET_REPO gh pr merge 42') == "$UNRESOLVED"
 # -R on a later merge must not waive scoped-dir on an earlier merge segment
 segs, err = mg.iter_merge_segments(
@@ -438,8 +457,9 @@ _orig_payload = mg.gate.pr_payload
 _orig_eval = mg.gate.evaluate
 
 
-def _capture_parse(repo, cwd=None):
+def _capture_parse(repo, cwd=None, env=None):
     _seen["cwd"] = cwd
+    _seen["env"] = env
     return (None, "owner", "repo")
 
 

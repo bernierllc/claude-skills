@@ -231,23 +231,25 @@ ENV_VALUE_FLAGS = frozenset(
 )
 
 
-def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
+def _env_wrapper_state(
+    tokens: list[str],
+) -> tuple[dict[str, str], bool, bool]:
     """Collect env NAME=VALUE / -u / -i effects before `gh`.
 
-    Returns ``(assignments, cleared_gh_host)``. ``cleared_gh_host`` is True when
-    the child no longer inherits GH_HOST (``-u/--unset GH_HOST`` or ``-i``) and
-    no later assignment re-sets it — callers force an explicit github.com host
-    so the gate query does not use the hook process Enterprise GH_HOST.
+    Returns ``(assignments, cleared_gh_host, cleared_gh_repo)``. Cleared flags
+    are True when the child no longer inherits that variable (``-u/--unset``,
+    ``-i``, or bare ``-``) and no later assignment re-sets it.
     """
     try:
         env_i = next(i for i, t in enumerate(tokens) if t == "env")
         gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
     except StopIteration:
-        return {}, False
+        return {}, False, False
     if env_i >= gh_i:
-        return {}, False
+        return {}, False, False
     out: dict[str, str] = {}
     cleared_gh_host = False
+    cleared_gh_repo = False
     i = env_i + 1
     while i < gh_i:
         tok = tokens[i]
@@ -256,6 +258,8 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
             out[key] = val
             if key == "GH_HOST":
                 cleared_gh_host = False
+            if key == "GH_REPO":
+                cleared_gh_repo = False
             i += 1
             continue
         if tok.startswith("-"):
@@ -263,14 +267,18 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
             if tok in ("-", "-i", "--ignore-environment"):
                 out.clear()
                 cleared_gh_host = True
+                cleared_gh_repo = True
                 i += 1
                 continue
             if tok.startswith("--") and "=" in tok:
                 # ``--unset=GH_HOST``
                 flag, _, val = tok.partition("=")
-                if flag in ("--unset", "-u") and val == "GH_HOST":
-                    out.pop("GH_HOST", None)
-                    cleared_gh_host = True
+                if flag in ("--unset", "-u"):
+                    out.pop(val, None)
+                    if val == "GH_HOST":
+                        cleared_gh_host = True
+                    if val == "GH_REPO":
+                        cleared_gh_repo = True
                 i += 1
                 continue
             # Sticky ``-uGH_HOST`` / ``-C/path`` (no separate operand).
@@ -279,6 +287,8 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
                 out.pop(name, None)
                 if name == "GH_HOST":
                     cleared_gh_host = True
+                if name == "GH_REPO":
+                    cleared_gh_repo = True
                 i += 1
                 continue
             if tok.startswith("-C") and tok != "-C":
@@ -289,15 +299,18 @@ def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
                 if i + 1 >= gh_i:
                     break
                 operand = tokens[i + 1]
-                if base in ("-u", "--unset") and operand == "GH_HOST":
-                    out.pop("GH_HOST", None)
-                    cleared_gh_host = True
+                if base in ("-u", "--unset"):
+                    out.pop(operand, None)
+                    if operand == "GH_HOST":
+                        cleared_gh_host = True
+                    if operand == "GH_REPO":
+                        cleared_gh_repo = True
                 i += 2
                 continue
             i += 1
             continue
         break
-    return out, cleared_gh_host
+    return out, cleared_gh_host, cleared_gh_repo
 
 
 def is_gh_pr_merge(part: str) -> bool:
@@ -373,22 +386,26 @@ def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
     return f"{gh_host}/{repo}"
 
 
-def extract_repo(cmd: str) -> str | None:
-    """Return the last -R/--repo from argv, or a leading/env GH_REPO= assignment.
+def extract_repo_resolution(cmd: str) -> tuple[str | None, bool]:
+    """Return ``(repo_slug|None|$UNRESOLVED, scrub_process_gh_repo)``.
 
-    gh uses the last repeated inherited ``-R``/``--repo``. Leading ``GH_HOST=``
-    and ``env GH_HOST=…`` are applied to hostless slugs. ``env -u GH_HOST`` /
-    ``env -i`` force an explicit github.com host so the gate does not inherit a
-    process Enterprise GH_HOST. Returns ``$UNRESOLVED`` when dynamic.
+    ``scrub_process_gh_repo`` is True when the command clears GH_REPO for the
+    child (empty ``GH_REPO=``, ``env -u GH_REPO``, ``env -i``) so gate ``gh``
+    calls must drop the hook process GH_REPO and resolve the tool cwd instead.
     """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
     # ``env NAME=VALUE … gh`` overlays leading assignments (matches the child env).
-    env_assigns, cleared_gh_host = _env_wrapper_state(rest)
+    env_assigns, cleared_gh_host, cleared_gh_repo = _env_wrapper_state(rest)
     assignments = {**assignments, **env_assigns}
     if cleared_gh_host and "GH_HOST" not in env_assigns:
         # Child has no GH_HOST → gh defaults to github.com; say so explicitly.
         assignments["GH_HOST"] = "github.com"
+    # Empty ``GH_REPO=`` or ``-u GH_REPO`` clears the selector for the child.
+    if "GH_REPO" in assignments and assignments.get("GH_REPO") == "":
+        cleared_gh_repo = True
+    elif cleared_gh_repo and "GH_REPO" not in env_assigns:
+        assignments.pop("GH_REPO", None)
     found: str | None = None
     i = 0
     while i < len(rest):
@@ -398,7 +415,7 @@ def extract_repo(cmd: str) -> str | None:
                 found = _normalize_repo_operand(rest[i + 1])
                 i += 2
                 continue
-            return None
+            return None, cleared_gh_repo
         if tok.startswith("--repo="):
             found = _normalize_repo_operand(tok.split("=", 1)[1])
             i += 1
@@ -420,11 +437,22 @@ def extract_repo(cmd: str) -> str | None:
             continue
         i += 1
     if found is not None:
-        return _apply_gh_host(found, assignments)
-    gh_repo = assignments.get("GH_REPO")
-    if gh_repo is None or gh_repo == "":
-        return None
-    return _apply_gh_host(_normalize_repo_operand(gh_repo), assignments)
+        # Explicit -R wins; process GH_REPO is irrelevant for repo identity.
+        return _apply_gh_host(found, assignments), False
+    if "GH_REPO" in assignments:
+        gh_repo = assignments.get("GH_REPO")
+        if gh_repo == "":
+            return None, True
+        return _apply_gh_host(_normalize_repo_operand(gh_repo), assignments), False
+    if cleared_gh_repo:
+        return None, True
+    return None, False
+
+
+def extract_repo(cmd: str) -> str | None:
+    """Return the last -R/--repo from argv, or a leading/env GH_REPO= assignment."""
+    repo, _scrub = extract_repo_resolution(cmd)
+    return repo
 
 
 def extract_merge_selector(cmd: str) -> str | None:
@@ -492,28 +520,39 @@ def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     return None, repo
 
 
-def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str | None, str | None]:
-    """Resolve gh pr merge selector → (number, repo, error).
+def _scrubbed_gh_env(scrub_gh_repo: bool) -> dict[str, str] | None:
+    """Env for child ``gh`` when the merge cleared GH_REPO; else inherit."""
+    if not scrub_gh_repo:
+        return None
+    env = os.environ.copy()
+    env.pop("GH_REPO", None)
+    return env
+
+
+def resolve_pr_number(
+    cmd: str, cwd: str | None = None
+) -> tuple[int | None, str | None, str | None, bool]:
+    """Resolve gh pr merge selector → (number, repo, error, scrub_gh_repo).
 
     Supports number, pull URL (including owner/repo from the URL), branch name,
     and omitted selector (current branch) via `gh pr view`.
     """
-    repo = extract_repo(cmd)
+    repo, scrub_gh_repo = extract_repo_resolution(cmd)
     if repo == "$UNRESOLVED":
         return None, None, (
             "review-gate: dynamic `-R`/`--repo`/GH_REPO operand (e.g. \"$VAR\"); "
             "pass a literal `owner/repo`"
-        )
+        ), False
     selector = extract_merge_selector(cmd)
     if selector and selector.isdigit():
-        return int(selector), repo, None
+        return int(selector), repo, None, scrub_gh_repo
     if selector:
         m_url = PULL_URL.search(selector)
         if m_url:
             # gh resolves the repository from the URL selector even when -R
             # disagrees (e.g. `gh pr merge https://…/target/pull/7 -R owner/safe`).
             url_repo = repo_from_pull_url_match(m_url)
-            return int(m_url.group(4)), url_repo, None
+            return int(m_url.group(4)), url_repo, None, False
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         args.insert(2, selector)
@@ -525,23 +564,34 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
             capture_output=True,
             text=True,
             cwd=cwd or None,
+            env=_scrubbed_gh_env(scrub_gh_repo),
             timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        return None, repo, f"review-gate: could not resolve PR via gh: {e}"
+        return None, repo, f"review-gate: could not resolve PR via gh: {e}", scrub_gh_repo
     if proc.returncode != 0 or not proc.stdout.strip():
         detail = (proc.stderr or proc.stdout or "gh pr view failed").strip()
-        return None, repo, f"review-gate: could not resolve PR from merge selector: {detail}"
+        return (
+            None,
+            repo,
+            f"review-gate: could not resolve PR from merge selector: {detail}",
+            scrub_gh_repo,
+        )
     try:
         data = json.loads(proc.stdout)
         number = int(data["number"])
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
-        return None, repo, f"review-gate: could not parse gh pr view output: {e}"
+        return (
+            None,
+            repo,
+            f"review-gate: could not parse gh pr view output: {e}",
+            scrub_gh_repo,
+        )
     if not repo:
         m_url = PULL_URL.search(data.get("url") or "")
         if m_url:
             repo = repo_from_pull_url_match(m_url)
-    return number, repo, None
+    return number, repo, None, scrub_gh_repo
 
 
 def payload_cwd(payload: dict, inp: dict) -> str:
@@ -669,22 +719,20 @@ def iter_merge_segments(
 
 
 def check_one(segment: str, cwd: str | None) -> str | None:
-    number, repo, err = resolve_pr_number(segment, cwd=cwd)
+    number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd)
     if err:
         return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     try:
-        hostname, owner, name = gate.parse_repo_with_host(repo, cwd=cwd)
+        hostname, owner, name = gate.parse_repo_with_host(
+            repo, cwd=cwd, env=_scrubbed_gh_env(scrub_gh_repo)
+        )
         pr = gate.pr_payload(owner, name, number, hostname=hostname)
         reasons = gate.evaluate(pr)
     except Exception as e:  # noqa: BLE001
-        msg = str(e).lower()
-        # Repo resolution failures are gate failures, not infra to skip.
-        if "not found" in msg or "could not resolve owner/repo" in msg:
-            return f"review-gate: {e}"
-        print(f"review-gate: skip (infra): {e}", file=sys.stderr)
-        return None
+        # Fail closed: infra / GraphQL errors must not silently allow merges.
+        return f"review-gate: gate check failed: {e}"
     if reasons:
         return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
     return None
