@@ -980,6 +980,20 @@ assert mg.redefines_gh(
 assert mg.redefines_gh(
     "until alias gh=/tmp/fake; do break; done; gh -R owner/safe pr merge 1"
 )
+# gh()/alias/hash defined inside a case arm still shadows later merges
+case_redef = "case x in x) gh(){ /tmp/evil; };; esac; gh -R owner/safe pr merge 1"
+assert mg.redefines_gh(case_redef)
+assert mg.GH_FUNC_RE.search("case x in x) gh(){ /tmp/evil; }")
+case_redef_err = mg.check_command(case_redef, cwd="/tmp")
+assert case_redef_err and (
+    "function" in case_redef_err or "alias" in case_redef_err
+)
+assert mg.redefines_gh(
+    "case x in x) alias gh=/tmp/fake;; esac; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(
+    "case x in x) hash -p /tmp/fake gh;; esac; gh -R owner/safe pr merge 1"
+)
 # ``builtin hash`` / ``command hash`` remember a pathname for gh
 builtin_hash = "builtin hash -p /tmp/fake gh; gh -R owner/safe pr merge 1"
 assert mg.redefines_gh(builtin_hash)

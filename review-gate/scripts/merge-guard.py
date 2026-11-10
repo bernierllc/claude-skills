@@ -41,40 +41,42 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Optional ``if``/``while``/``until`` before a definition (condition position).
 _CTRL_FLOW_DEF_PREFIX = r"(?:(?:if|while|until)\s+)?"
+# Lead: line/chain start, or a ``case`` arm closer ``)`` before the definition.
+_DEF_LEAD = rf"(?:^|[\n;&|]|(?<=\)))\s*{_CTRL_FLOW_DEF_PREFIX}"
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}(?:function\s+gh\b|gh\s*\(\s*\))",
+    rf"{_DEF_LEAD}(?:function\s+gh\b|gh\s*\(\s*\))",
     re.I,
 )
 # Local ``command_not_found_handle(){…}`` / ``function command_not_found_handle``.
 CNF_FUNC_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    rf"{_DEF_LEAD}"
     r"(?:function\s+command_not_found_handle\b|"
     r"command_not_found_handle\s*\(\s*\))",
     re.I,
 )
 # ``alias gh=…`` / ``builtin alias`` / ``builtin builtin alias`` / ``command alias``
 GH_ALIAS_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    rf"{_DEF_LEAD}"
     r"(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
     re.I,
 )
 # ``hash -p … gh`` / ``builtin hash`` / ``builtin builtin hash`` / ``command hash``
 GH_HASH_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    rf"{_DEF_LEAD}"
     r"(?:(?:builtin|command)\s+)*hash\s+[^\n;&|]*\bgh\b",
     re.I,
 )
 # Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
 SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time", "env"})
 PREFIX_FUNC_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    rf"{_DEF_LEAD}"
     r"(?:function\s+(?:command|builtin|exec|time|env)\b|"
     r"(?:command|builtin|exec|time|env)\s*\(\s*\))",
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    rf"(?:^|[\n;&|])\s*{_CTRL_FLOW_DEF_PREFIX}"
+    rf"{_DEF_LEAD}"
     r"(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+"
     r"(?:command|builtin|exec|time|env)=",
     re.I,
@@ -2095,6 +2097,9 @@ def _part_loads_dynamic_builtin(part: str) -> bool:
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
+    if i < len(rest) and rest[i] == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and _part_loads_dynamic_builtin(body)
     if i >= len(rest) or rest[i] != "enable":
         return False
     j = i + 1
@@ -2195,6 +2200,9 @@ def _part_hash_override_risk(part: str) -> bool:
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
+    if i < len(rest) and rest[i] == "case":
+        body = _case_arm_body(rest, i)
+        return bool(body) and _part_hash_override_risk(body)
     if i >= len(rest) or rest[i] != "hash":
         return False
     j = i + 1
