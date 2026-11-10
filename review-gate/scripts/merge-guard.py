@@ -1153,11 +1153,23 @@ def env_split_string_merge_risk(part: str) -> bool:
     return False
 
 
-def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
+def _absolutize_config_path(val: str, cwd: str | None) -> str:
+    """Resolve a relative gh config path against the tool/merge cwd."""
+    if not val or os.path.isabs(val) or _env_overlay_unresolvable(val):
+        return val
+    base = cwd if cwd is not None else os.getcwd()
+    return os.path.normpath(os.path.join(base, val))
+
+
+def _child_gh_env(
+    cmd: str, scrub_gh_repo: bool, cwd: str | None = None
+) -> dict[str, str] | None:
     """Build a subprocess env mirroring command-scoped gh config for gate ``gh``.
 
     Propagates ``GH_HOST`` / ``GH_REPO`` / ``GH_CONFIG_DIR`` / ``XDG_CONFIG_HOME`` /
-    ``HOME`` so host selection and config dirs match the merge child.
+    ``HOME`` so host selection and config dirs match the merge child. Relative
+    config paths are resolved against ``cwd`` (the tool working directory) so the
+    gate sees the same directory Bash would for the merge child.
     """
     tokens = _shell_tokens(cmd)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1192,6 +1204,8 @@ def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
             env.pop(key, None)
         else:
             _apply_overlay_env_var(env, overlays, key)
+            if key in env and env[key]:
+                env[key] = _absolutize_config_path(env[key], cwd)
     return env
 
 
@@ -1229,7 +1243,7 @@ def resolve_pr_number(
             # disagrees (e.g. `gh pr merge https://…/target/pull/7 -R owner/safe`).
             url_repo = repo_from_pull_url_match(m_url)
             return int(m_url.group(4)), url_repo, None, False
-    child_env = _child_gh_env(cmd, scrub_gh_repo)
+    child_env = _child_gh_env(cmd, scrub_gh_repo, cwd=cwd)
     args = ["gh", "pr", "view", "--json", "number,url"]
     if selector:
         # Branches that start with `-` need `--` (same as `gh pr merge -- -release`).
@@ -1415,7 +1429,7 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
-    child_env = _child_gh_env(segment, scrub_gh_repo)
+    child_env = _child_gh_env(segment, scrub_gh_repo, cwd=cwd)
     try:
         with gate.gh_subprocess_env(child_env):
             hostname, owner, name = gate.parse_repo_with_host(
@@ -1467,13 +1481,16 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: command-scoped PATH override with `gh pr merge` "
             "(can swap the `gh` binary); unset PATH for the merge command"
         )
+    # Wrapped / substituted merges in ANY segment — even when another segment is
+    # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).
+    # `is_gh_pr_merge` false means the merge is inside `$()` / quotes / eval text;
+    # non-direct wrappers (`xargs`/`ssh`) still flow through `iter_merge_segments`.
+    if any(MERGE_RE.search(p) and not is_gh_pr_merge(p) for p in parts):
+        return (
+            "review-gate: shell-wrapped `gh pr merge` detected "
+            "(e.g. `bash -c` / `eval` / `$(…)`); run `gh -R owner/repo pr merge <n>` directly"
+        )
     if not any(is_gh_pr_merge(p) for p in parts):
-        # `bash -c 'gh pr merge …'` / `eval '…'` leave the merge inside one token.
-        if MERGE_RE.search(cmd):
-            return (
-                "review-gate: shell-wrapped `gh pr merge` detected "
-                "(e.g. `bash -c` / `eval`); run `gh -R owner/repo pr merge <n>` directly"
-            )
         return None
     start = cwd or os.getcwd()
     segments, seg_err = iter_merge_segments(cmd, start)

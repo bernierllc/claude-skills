@@ -473,6 +473,14 @@ assert _n is None and _err and "relative" in _err
 assert not mg.gh_config_relative_after_chdir(
     "GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42"
 )
+# Relative config without chdir is allowed but resolved against the tool cwd
+rel_child = mg._child_gh_env(
+    "GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42",
+    scrub_gh_repo=False,
+    cwd="/tmp/enterprise",
+)
+assert rel_child is not None
+assert rel_child.get("GH_CONFIG_DIR") == "/tmp/enterprise/.gh"
 assert not mg.gh_config_relative_after_chdir(
     "env -C /tmp/enterprise GH_CONFIG_DIR=/tmp/enterprise/.gh gh -R owner/target pr merge 42"
 )
@@ -640,6 +648,13 @@ assert mg.has_literal_repo("GH_REPO=owner/target gh pr merge 99")
 wrapped = mg.check_command("bash -c 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
+assert wrapped and "shell-wrapped" in wrapped
+# Wrapped merge in one segment must not be masked by a literal merge in another
+subshell_merge = (
+    "echo $(gh -R owner/target pr merge 2 --auto); "
+    "gh -R owner/safe pr merge 1 --auto"
+)
+wrapped = mg.check_command(subshell_merge, cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 # Bundled short flags: -dR owner/target (gh/cobra accepts this)
 assert mg.extract_repo("gh pr merge 42 -dR owner/target") == "owner/target"
