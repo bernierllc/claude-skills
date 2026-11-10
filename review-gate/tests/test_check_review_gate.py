@@ -633,7 +633,6 @@ for compound_cmd in (
 for ok_cmd in (
     "cd /definitely-missing || gh -R owner/r pr merge 42",
     "(cd /workspace/other && gh -R owner/r pr merge 42)",
-    "source /tmp/move-to-other-repo.sh && gh -R owner/r pr merge 42",
     "export GH_REPO=owner/target && gh -R owner/r pr merge 42",
     "false && cd /workspace/safe; gh -R owner/r pr merge 42",
     "(echo setup; cd /workspace/safe); gh -R owner/r pr merge 42",
@@ -641,6 +640,11 @@ for ok_cmd in (
 ):
     segs, err = mg.iter_merge_segments(ok_cmd, "/tmp/start")
     assert err is None and len(segs) == 1 and mg.has_literal_repo(segs[0][0]), ok_cmd
+# source/. before merge is rejected by check_command even with literal -R
+source_ok_segs, source_ok_err = mg.iter_merge_segments(
+    "source /tmp/move-to-other-repo.sh && gh -R owner/r pr merge 42", "/tmp/start"
+)
+assert source_ok_err is None and len(source_ok_segs) == 1
 # Same-segment GH_REPO= still counts as literal repo
 assert mg.extract_repo("GH_REPO=owner/target gh pr merge 99") == "owner/target"
 assert mg.has_literal_repo("GH_REPO=owner/target gh pr merge 99")
@@ -683,14 +687,28 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
-# eval can install a shadowing gh the regex never sees
+# eval/source/. can install a shadowing gh the regex never sees
 eval_redef = (
     "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "
     "gh -R owner/safe pr merge 1"
 )
-assert mg.eval_before_merge(eval_redef)
+assert mg.shell_mutation_before_merge(eval_redef)
 eval_err = mg.check_command(eval_redef, cwd="/tmp")
 assert eval_err and "eval" in eval_err
+source_shadow = "source /tmp/evil; gh -R owner/safe pr merge 1"
+assert mg.shell_mutation_before_merge(source_shadow)
+source_err = mg.check_command(source_shadow, cwd="/tmp")
+assert source_err and "source" in source_err
+dot_err = mg.check_command(". /tmp/evil; gh -R owner/safe pr merge 1", cwd="/tmp")
+assert dot_err and ("source" in dot_err or "." in dot_err)
+# Prefix builtins stripped as harmless can be shadowed functions
+prefix_redef = (
+    'm=merge; command(){ /usr/bin/gh -R owner/target pr "$m" 2; }; '
+    "command gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_prefix_builtin(prefix_redef)
+prefix_err = mg.check_command(prefix_redef, cwd="/tmp")
+assert prefix_err and "command" in prefix_err
 # Escaped whitespace before # is not a comment — keep `;` as a chain separator
 esc_hash = (
     r"m=merge; gh -R owner/target pr merge 1 --body=\ #x; "

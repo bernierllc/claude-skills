@@ -34,10 +34,21 @@ PULL_URL = re.compile(
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 # Subshell `(cd` / `(pushd` / `(popd` — cwd change we refuse to model without -R.
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
-# Shell redefinitions that shadow the external ``gh`` binary.
+# Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
 GH_ALIAS_RE = re.compile(r"(?:^|[\n;&|])\s*alias\s+gh=", re.I)
 GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
+# Prefixes stripped by ``gh_is_direct_command`` that Bash also allows as functions.
+SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time"})
+PREFIX_FUNC_RE = re.compile(
+    r"(?:^|[\n;&|])\s*(?:function\s+(?:command|builtin|exec|time)\b|"
+    r"(?:command|builtin|exec|time)\s*\(\s*\))",
+    re.I,
+)
+PREFIX_ALIAS_RE = re.compile(
+    r"(?:^|[\n;&|])\s*alias\s+(?:command|builtin|exec|time)=",
+    re.I,
+)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
 # Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
@@ -851,28 +862,33 @@ def prior_tracked_gh_export(cmd: str) -> bool:
     return False
 
 
-def _part_has_eval(part: str) -> bool:
-    """True when the segment runs ``eval`` (can define ``gh`` at runtime)."""
+def _part_has_shell_mutation(part: str) -> bool:
+    """True when the segment runs ``eval`` / ``source`` / ``.`` (can redefine ``gh``)."""
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    return i < len(rest) and rest[i] == "eval"
+    return i < len(rest) and rest[i] in ("eval", "source", ".")
+
+
+def shell_mutation_before_merge(cmd: str) -> bool:
+    """True when ``eval``/``source``/``.`` precedes a merge."""
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen:
+                return True
+            continue
+        if _part_has_shell_mutation(part):
+            seen = True
+    return False
 
 
 def eval_before_merge(cmd: str) -> bool:
-    """True when ``eval`` precedes a merge (can install a shadowing ``gh``)."""
-    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
-    seen_eval = False
-    for part in parts:
-        if is_gh_pr_merge(part):
-            if seen_eval:
-                return True
-            continue
-        if _part_has_eval(part):
-            seen_eval = True
-    return False
+    """Backward-compatible alias for ``shell_mutation_before_merge`` (eval case)."""
+    return shell_mutation_before_merge(cmd)
 
 
 def redefines_gh(cmd: str) -> bool:
@@ -882,6 +898,13 @@ def redefines_gh(cmd: str) -> bool:
     return bool(
         GH_FUNC_RE.search(cmd) or GH_ALIAS_RE.search(cmd) or GH_HASH_RE.search(cmd)
     )
+
+
+def redefines_prefix_builtin(cmd: str) -> bool:
+    """True when ``command``/``builtin``/``exec``/``time`` is redefined before a merge."""
+    if not MERGE_RE.search(cmd):
+        return False
+    return bool(PREFIX_FUNC_RE.search(cmd) or PREFIX_ALIAS_RE.search(cmd))
 
 
 def _repo_operand_unresolvable(repo: str | None) -> bool:
@@ -1581,17 +1604,25 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "before `gh pr merge` (not modeled across segments); set them on the "
             "merge command itself (e.g. `GH_HOST=… gh -R owner/repo pr merge <n>`)"
         )
-    # `eval` can install a shadowing `gh` function the regexes never see.
-    if eval_before_merge(cmd):
+    # `eval` / `source` / `.` can install a shadowing `gh` the regexes never see.
+    if shell_mutation_before_merge(cmd):
         return (
-            "review-gate: `eval` before `gh pr merge` (can redefine `gh` at runtime); "
-            "run literal `gh -R owner/repo pr merge <n>` without eval"
+            "review-gate: `eval`/`source`/`.` before `gh pr merge` "
+            "(can redefine `gh` at runtime); run literal `gh -R owner/repo pr merge <n>` "
+            "without sourcing or eval"
         )
     # Function/alias/hash named `gh` shadows the binary the gate inspects.
     if redefines_gh(cmd):
         return (
             "review-gate: `gh` function/alias/hash redefinition with `gh pr merge`; "
             "run the real `gh` binary without shadowing it"
+        )
+    # Prefix builtins stripped as "harmless" can themselves be shadowed functions.
+    if redefines_prefix_builtin(cmd):
+        return (
+            "review-gate: `command`/`builtin`/`exec`/`time` redefinition with "
+            "`gh pr merge`; run literal `gh -R owner/repo pr merge <n>` without "
+            "shadowing those prefixes"
         )
     # Wrapped / substituted merges in ANY segment — even when another segment is
     # a literal direct merge (`echo $(gh … pr merge 2); gh -R safe pr merge 1`).
