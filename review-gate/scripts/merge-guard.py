@@ -2803,13 +2803,15 @@ def resolve_pr_number(
             url_repo = repo_from_pull_url_match(m_url)
             return int(m_url.group(4)), url_repo, None, False
     child_env = _child_gh_env(cmd, scrub_gh_repo, cwd=cwd)
-    args = ["gh", "pr", "view", "--json", "number,url"]
+    # ``gh pr view [<number>|<url>|<branch>] [flags]`` — selector follows ``view``.
+    args = ["gh", "pr", "view"]
     if selector:
         # Branches that start with `-` need `--` (same as `gh pr merge -- -release`).
         if selector.startswith("-"):
             args.extend(["--", selector])
         else:
-            args.insert(2, selector)
+            args.append(selector)
+    args.extend(["--json", "number,url"])
     if repo:
         args.extend(["-R", repo])
     try:

@@ -371,6 +371,48 @@ assert mg.extract_merge_selector(
     "gh pr merge https://github.com/o/r/pull/7 --squash"
 ) == "https://github.com/o/r/pull/7"
 assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feature-branch"
+# Branch selectors must be placed after ``pr view`` (not ``gh pr <branch> view``)
+_captured_view: list[list[str]] = []
+_real_run = mg.subprocess.run
+
+
+def _capture_view_run(args, **kwargs):  # type: ignore[no-untyped-def]
+    _captured_view.append(list(args))
+    class _Proc:
+        returncode = 0
+        stdout = '{"number":9,"url":"https://github.com/owner/target/pull/9"}'
+        stderr = ""
+
+    return _Proc()
+
+
+mg.subprocess.run = _capture_view_run
+try:
+    n, r, e, scrub = mg.resolve_pr_number(
+        "gh -R owner/target pr merge feature-branch --squash"
+    )
+    assert e is None and n == 9 and r == "owner/target"
+    assert _captured_view and _captured_view[0][:4] == [
+        "gh",
+        "pr",
+        "view",
+        "feature-branch",
+    ]
+    assert "--json" in _captured_view[0]
+    _captured_view.clear()
+    n, r, e, scrub = mg.resolve_pr_number(
+        "gh -R owner/target pr merge -- -release"
+    )
+    assert e is None and n == 9
+    assert _captured_view and _captured_view[0][:5] == [
+        "gh",
+        "pr",
+        "view",
+        "--",
+        "-release",
+    ]
+finally:
+    mg.subprocess.run = _real_run
 # URL selector must carry host/owner/repo (dotcom kept explicit for --hostname)
 n, r, e, scrub = mg.resolve_pr_number(
     "gh pr merge https://github.com/owner/other/pull/7 --squash"
