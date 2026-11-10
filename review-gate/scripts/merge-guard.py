@@ -46,7 +46,11 @@ GH_ALIAS_RE = re.compile(
     r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?alias(?:\s+(?:--|-[\w]+))*\s+gh=",
     re.I,
 )
-GH_HASH_RE = re.compile(r"(?:^|[\n;&|])\s*hash\s+[^\n;&|]*\bgh\b", re.I)
+# ``hash -p … gh`` / ``builtin hash -p … gh`` / ``command hash … gh``
+GH_HASH_RE = re.compile(
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?hash\s+[^\n;&|]*\bgh\b",
+    re.I,
+)
 # Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
 SHADOWABLE_PREFIXES = frozenset({"command", "builtin", "exec", "time", "env"})
 PREFIX_FUNC_RE = re.compile(

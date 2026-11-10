@@ -6,8 +6,8 @@ Prints WARN / OK lines on stdout.
 """
 from __future__ import annotations
 
-import fnmatch
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +32,53 @@ def ruleset_is_enforcing(detail: dict) -> bool:
     return detail.get("enforcement") == "active"
 
 
+def _github_path_fnmatch(name: str, pat: str) -> bool:
+    """Match ``name`` against ``pat`` with GitHub ruleset pathname semantics.
+
+    ``*`` and ``?`` do not cross ``/``; ``**`` matches across path segments.
+    See GitHub ruleset fnmatch docs (not Python ``fnmatch``, which treats ``/``
+    as an ordinary character).
+    """
+    i = 0
+    out: list[str] = []
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+            continue
+        if pat.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        ch = pat[i]
+        if ch == "*":
+            out.append("[^/]*")
+            i += 1
+            continue
+        if ch == "?":
+            out.append("[^/]")
+            i += 1
+            continue
+        if ch == "[":
+            j = i + 1
+            if j < len(pat) and pat[j] in ("!", "^"):
+                j += 1
+            if j < len(pat) and pat[j] == "]":
+                j += 1
+            while j < len(pat) and pat[j] != "]":
+                j += 1
+            if j >= len(pat):
+                out.append(re.escape(ch))
+                i += 1
+            else:
+                out.append(pat[i : j + 1])
+                i = j + 1
+            continue
+        out.append(re.escape(ch))
+        i += 1
+    return re.fullmatch("".join(out), name) is not None
+
+
 def _fnmatch_ref(
     pat: str, ref: str, branch: str, *, default_branch: str = "main"
 ) -> bool:
@@ -40,7 +87,7 @@ def _fnmatch_ref(
         return True
     if pat == "~DEFAULT_BRANCH":
         return branch == default_branch
-    if fnmatch.fnmatchcase(ref, pat) or fnmatch.fnmatchcase(branch, pat):
+    if _github_path_fnmatch(ref, pat) or _github_path_fnmatch(branch, pat):
         return True
     return False
 

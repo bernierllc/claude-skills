@@ -828,6 +828,15 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# ``builtin hash`` / ``command hash`` remember a pathname for gh
+builtin_hash = "builtin hash -p /tmp/fake gh; gh -R owner/safe pr merge 1"
+assert mg.redefines_gh(builtin_hash)
+builtin_hash_err = mg.check_command(builtin_hash, cwd="/tmp")
+assert builtin_hash_err and (
+    "hash" in builtin_hash_err or "function" in builtin_hash_err or "alias" in builtin_hash_err
+)
+assert mg.redefines_gh("command hash -p /tmp/fake gh; gh -R owner/safe pr merge 1")
+assert mg.redefines_gh("hash -p /tmp/fake gh; gh -R owner/safe pr merge 1")
 # ``builtin alias`` / ``command alias`` define the same shell alias
 builtin_alias = (
     "shopt -s expand_aliases; "
@@ -1276,6 +1285,23 @@ assert "main" not in _doctor.ruleset_covered_branches(
         }
     }
 )
+# GitHub slash-aware: refs/* does not match refs/heads/main
+assert not _doctor.ruleset_covered_branches(
+    {"conditions": {"ref_name": {"include": ["refs/*"], "exclude": []}}}
+)
+assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/*")
+assert _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/*")
+assert _doctor._github_path_fnmatch("refs/heads/main", "refs/**")
+assert set(
+    _doctor.ruleset_covered_branches(
+        {"conditions": {"ref_name": {"include": ["refs/heads/*"], "exclude": []}}}
+    )
+) == {"main", "staging"}
+assert set(
+    _doctor.ruleset_covered_branches(
+        {"conditions": {"ref_name": {"include": ["refs/**"], "exclude": []}}}
+    )
+) == {"main", "staging"}
 assert _doctor.ruleset_covered_branches(
     {
         "conditions": {
