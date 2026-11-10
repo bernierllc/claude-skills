@@ -956,6 +956,31 @@ finally:
         os.environ.pop(_bash_func_key, None)
     else:
         os.environ[_bash_func_key] = _prev_bash_func
+# Inherited command_not_found_handle can run a merge for unresolved gx … pr merge
+assert mg.inherited_shadowing_function(
+    "gx -R owner/safe pr merge 1",
+    env={
+        "BASH_FUNC_command_not_found_handle%%": (
+            "() { /usr/bin/gh -R owner/target pr merge 2; }"
+        )
+    },
+)
+assert not mg.inherited_shadowing_function(
+    "gx -R owner/safe pr merge 1", env={}
+)
+_cnf_key = "BASH_FUNC_command_not_found_handle%%"
+_prev_cnf = os.environ.get(_cnf_key)
+os.environ[_cnf_key] = "() { /usr/bin/gh -R owner/target pr merge 2; }"
+try:
+    cnf_err = mg.check_command("gx -R owner/safe pr merge 1", cwd="/tmp")
+    assert cnf_err and (
+        "command_not_found" in cnf_err or "BASH_FUNC" in cnf_err
+    )
+finally:
+    if _prev_cnf is None:
+        os.environ.pop(_cnf_key, None)
+    else:
+        os.environ[_cnf_key] = _prev_cnf
 # Non-exported gh() via BASH_ENV never appears as BASH_FUNC_gh%%
 assert mg.inherited_bash_env(
     "gh -R owner/safe pr merge 1",

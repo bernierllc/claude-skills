@@ -2020,18 +2020,31 @@ def nameref_with_merge(cmd: str) -> bool:
 def inherited_shadowing_function(
     cmd: str, env: dict[str, str] | None = None
 ) -> bool:
-    """True when the process inherits an exported Bash function that shadows ``gh``.
+    """True when the process inherits an exported Bash function that shadows merges.
 
     Bash stores ``export -f gh`` as ``BASH_FUNC_gh%%`` in the environment; a plain
     ``gh -R safe pr merge`` then runs that function while the gate only sees the
     apparent safe argv. Same for shadowable wrappers (``command``/``env``/…).
+
+    Also covers ``command_not_found_handle``: an unresolved name like ``gx … pr
+    merge`` invokes that handler with the apparent argv, which can run a real
+    merge without a literal ``gh`` token (so ``MERGE_RE`` alone is insufficient).
     """
-    if not MERGE_RE.search(cmd):
-        return False
     e = os.environ if env is None else env
-    for name in ("gh", *sorted(SHADOWABLE_PREFIXES)):
-        if f"BASH_FUNC_{name}%%" in e:
-            return True
+    has_cnf = "BASH_FUNC_command_not_found_handle%%" in e
+    has_shadow = any(
+        f"BASH_FUNC_{name}%%" in e for name in ("gh", *sorted(SHADOWABLE_PREFIXES))
+    )
+    if not has_cnf and not has_shadow:
+        return False
+    if has_shadow and MERGE_RE.search(cmd):
+        return True
+    if has_cnf and (
+        MERGE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(cmd)
+        or _PR_MERGE_LOOSE_RE.search(_dequote_shell_text(cmd))
+    ):
+        return True
     return False
 
 
@@ -2964,11 +2977,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "`gh pr merge`; run literal `gh -R owner/repo pr merge <n>` without "
             "shadowing those wrappers"
         )
-    # Inherited `export -f gh` (BASH_FUNC_gh%%) shadows merges the gate cannot see.
+    # Inherited `export -f gh` / `command_not_found_handle` (BASH_FUNC_*%%).
     if inherited_shadowing_function(cmd):
         return (
             "review-gate: inherited Bash function shadows `gh`/`command`/`env`/… "
-            "(BASH_FUNC_*%%); unset -f those names before `gh -R owner/repo pr merge <n>`"
+            "or `command_not_found_handle` (BASH_FUNC_*%%); unset -f those names "
+            "before `gh -R owner/repo pr merge <n>`"
         )
     # Non-exported defs via BASH_ENV are invisible as BASH_FUNC_*%%.
     if inherited_bash_env(cmd):
