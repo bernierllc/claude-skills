@@ -35,7 +35,8 @@ def ruleset_is_enforcing(detail: dict) -> bool:
 def _github_path_fnmatch(name: str, pat: str) -> bool:
     """Match ``name`` against ``pat`` with GitHub ruleset pathname semantics.
 
-    ``*`` and ``?`` do not cross ``/``; ``**`` matches across path segments.
+    ``*`` and ``?`` do not cross ``/``. Recursive traversal requires ``**/``
+    (GitHub/Ruby ``FNM_PATHNAME``); a bare ``**`` is pathname-local like ``*``.
     See GitHub ruleset fnmatch docs (not Python ``fnmatch``, which treats ``/``
     as an ordinary character).
     """
@@ -47,7 +48,9 @@ def _github_path_fnmatch(name: str, pat: str) -> bool:
             i += 3
             continue
         if pat.startswith("**", i):
-            out.append(".*")
+            # Bare ``**`` does not cross ``/`` (``File.fnmatch("refs/**",
+            # "refs/heads/main", FNM_PATHNAME)`` is false).
+            out.append("[^/]*")
             i += 2
             continue
         ch = pat[i]

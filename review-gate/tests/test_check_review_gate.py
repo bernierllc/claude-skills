@@ -1509,7 +1509,10 @@ assert not _doctor.ruleset_covered_branches(
 )
 assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/*")
 assert _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/*")
-assert _doctor._github_path_fnmatch("refs/heads/main", "refs/**")
+# Bare ``**`` does not cross ``/``; recursive form needs ``**/``
+assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/**")
+assert _doctor._github_path_fnmatch("refs/heads/main", "refs/**/*")
+assert _doctor._github_path_fnmatch("refs/heads/main", "**/heads/main")
 # fnmatch [!m] is negation, not a literal '!' class member
 assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/[!m]*")
 assert _doctor._github_path_fnmatch("refs/heads/staging", "refs/heads/[!m]*")
@@ -1532,9 +1535,12 @@ assert set(
         {"conditions": {"ref_name": {"include": ["refs/heads/*"], "exclude": []}}}
     )
 ) == {"main", "staging"}
+assert not _doctor.ruleset_covered_branches(
+    {"conditions": {"ref_name": {"include": ["refs/**"], "exclude": []}}}
+)
 assert set(
     _doctor.ruleset_covered_branches(
-        {"conditions": {"ref_name": {"include": ["refs/**"], "exclude": []}}}
+        {"conditions": {"ref_name": {"include": ["refs/**/*"], "exclude": []}}}
     )
 ) == {"main", "staging"}
 assert _doctor.ruleset_covered_branches(
