@@ -979,8 +979,29 @@ def _part_assigns_merge_assembly_words(part: str) -> set[str]:
     return found
 
 
-def _part_fully_dynamic_merge_prefix(part: str) -> bool:
-    """True when the first three command words are all dynamic (``\"$c\" \"$p\" \"$m\"``)."""
+# Plain ``$name`` / ``${name}`` — not a value-transforming expansion.
+_SIMPLE_PARAM_EXPANSION = re.compile(
+    r"^(?:"
+    r"\$[A-Za-z_][A-Za-z0-9_]*"
+    r"|\$\{[A-Za-z_][A-Za-z0-9_]*\}"
+    r"|\$[0-9]+"
+    r"|\$[*@#?\-!]"
+    r")$"
+)
+
+
+def _param_expansion_transformed(tok: str) -> bool:
+    """True when ``tok`` expands with a transform (``${c:1}``, ``${c#x}``, ``$(…)``)."""
+    plain = _dequote_shell_text(tok.strip("'\""))
+    if not plain or not _command_name_dynamic(plain):
+        return False
+    if _SIMPLE_PARAM_EXPANSION.fullmatch(plain):
+        return False
+    return True
+
+
+def _part_dynamic_prefix_words(part: str) -> list[str] | None:
+    """Return the first three command words when all are dynamic, else None."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
     i = _index_after_env_wrapper(tokens)
     while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
@@ -993,11 +1014,30 @@ def _part_fully_dynamic_merge_prefix(part: str) -> bool:
         if tok.startswith("-"):
             # Flags only make sense after the executable; reject mid-prefix.
             if not words:
-                return False
+                return None
             break
         words.append(tok)
         i += 1
-    return len(words) == 3 and all(_command_name_dynamic(w) for w in words)
+    if len(words) != 3 or not all(_command_name_dynamic(w) for w in words):
+        return None
+    return words
+
+
+def _part_fully_dynamic_merge_prefix(part: str) -> bool:
+    """True when the first three command words are all dynamic (``\"$c\" \"$p\" \"$m\"``)."""
+    return _part_dynamic_prefix_words(part) is not None
+
+
+def _part_transformed_dynamic_merge_prefix(part: str) -> bool:
+    """True when a fully dynamic three-word invoke uses parameter transforms.
+
+    ``\"${c:1}\" \"${p:1}\" \"${m:1}\"`` can yield ``gh pr merge`` even when the
+    stored values were never exactly those words.
+    """
+    words = _part_dynamic_prefix_words(part)
+    if words is None:
+        return False
+    return any(_param_expansion_transformed(w) for w in words)
 
 
 def _apply_concat_assignment(
@@ -1055,12 +1095,16 @@ def variable_assembled_merge(cmd: str) -> bool:
     Example: ``c=gh; p=pr; m=merge; \"$c\" \"$p\" \"$m\" 42 -R owner/repo`` —
     no literal ``gh``/``pr``/``merge`` remain on the invoke line, so
     ``dynamic_gh_pr_merge`` / ``dynamic_gh_subcommand_merge`` miss it.
-    Also covers ``printf -v c gh; …``, ``read m <<< merge; …``, and append
-    stitching such as ``c=g; c+=h; m=mer; m+=ge; …``.
+    Also covers ``printf -v c gh; …``, ``read m <<< merge; …``, append
+    stitching such as ``c=g; c+=h; m=mer; m+=ge; …``, and transformed
+    expansions such as ``c=xgh; …; \"${c:1}\" \"${p:1}\" \"${m:1}\"``.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if any(is_gh_pr_merge(p) for p in parts):
         return False
+    # Fail closed: transforms can yield gh/pr/merge without exact source words.
+    if any(_part_transformed_dynamic_merge_prefix(p) for p in parts):
+        return True
     assigned: set[str] = set()
     concat: dict[str, str] = {}
     for part in parts:

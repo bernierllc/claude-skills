@@ -617,6 +617,19 @@ assert append_asm_err and "variable-assembled" in append_asm_err
 assert mg.variable_assembled_merge(
     'c=g c+=h p=pr m=mer m+=ge "$c" "$p" "$m" 42 -R owner/repo'
 )
+# Substring / other transforms can yield gh/pr/merge without exact source words
+xform_asm = (
+    'c=xgh; p=xpr; m=xmerge; "${c:1}" "${p:1}" "${m:1}" 42 -R owner/repo'
+)
+assert mg.variable_assembled_merge(xform_asm)
+xform_asm_err = mg.check_command(xform_asm, cwd="/tmp")
+assert xform_asm_err and "variable-assembled" in xform_asm_err
+assert mg.variable_assembled_merge(
+    'c=xgh; p=pr; m=merge; "${c#x}" "$p" "$m" 42 -R owner/repo'
+)
+assert mg._param_expansion_transformed("${c:1}")
+assert not mg._param_expansion_transformed("$c")
+assert not mg._param_expansion_transformed("${c}")
 # Dynamic argv after merge may expand into -Rowner/target
 dyn_repo_flag = 'gh pr merge 42 "$(printf -- -Rowner/target)"'
 assert mg.dynamic_merge_argv(dyn_repo_flag)
