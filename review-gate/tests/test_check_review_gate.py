@@ -448,6 +448,17 @@ array_err = mg.check_command(array_merge, cwd="/tmp")
 assert array_err and "array" in array_err
 assert mg.array_assembled_merge("cmds=(gh -R owner/safe pr merge 1)")
 assert not mg.array_assembled_merge('echo "${PATH[@]}"')
+# gh alias set / opaque gh <alias> can expand to pr merge
+alias_cmd = (
+    'p=pr; m=merge; gh alias set sneak "$p $m 2 -R owner/target"; gh sneak'
+)
+assert mg.gh_alias_merge_risk(alias_cmd)
+alias_err = mg.check_command(alias_cmd, cwd="/tmp")
+assert alias_err and "alias" in alias_err
+assert mg.gh_alias_merge_risk("gh sneak")
+assert mg.gh_alias_merge_risk("gh alias set sneak 'pr merge 2'")
+assert not mg.gh_alias_merge_risk("gh alias list")
+assert not mg.gh_alias_merge_risk("gh -R owner/safe pr merge 1")
 # Same-line command after heredoc opener must still be gated
 same_line = "cat <<EOF; gh -R owner/repo pr merge 42\nbody\nEOF"
 assert any(mg.is_gh_pr_merge(p) for p, _ in mg.split_shell_chains(same_line))
