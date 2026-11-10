@@ -923,6 +923,24 @@ assert mg.redefines_gh(
 assert mg.redefines_prefix_builtin(
     "builtin alias command=true; command gh -R owner/safe pr merge 1"
 )
+# Repeated builtin/command prefixes still define the alias
+nested_builtin_alias = (
+    "shopt -s expand_aliases; "
+    "builtin builtin alias gh='/tmp/fake'; "
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(nested_builtin_alias)
+assert mg.GH_ALIAS_RE.search("builtin builtin alias gh=/tmp/fake")
+nested_err = mg.check_command(nested_builtin_alias, cwd="/tmp")
+assert nested_err and (
+    "alias" in nested_err or "function" in nested_err
+)
+assert mg.redefines_gh(
+    "command builtin alias gh=/tmp/fake; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(
+    "builtin builtin hash -p /tmp/fake gh; gh -R owner/safe pr merge 1"
+)
 # Quote-concatenated alias name: g'h' → gh after Bash quote-removal
 quote_alias = (
     "shopt -s expand_aliases\n"

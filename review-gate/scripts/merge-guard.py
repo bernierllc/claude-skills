@@ -41,14 +41,14 @@ DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
 SUBSHELL_CD_RE = re.compile(r"\(\s*(cd|pushd|popd)\b", re.I)
 # Shell redefinitions that shadow the external ``gh`` binary / prefix builtins.
 GH_FUNC_RE = re.compile(r"(?:^|[\n;&|])\s*(?:function\s+gh\b|gh\s*\(\s*\))", re.I)
-# ``alias gh=…`` / ``builtin alias gh=…`` / ``command alias -- gh=…``
+# ``alias gh=…`` / ``builtin alias`` / ``builtin builtin alias`` / ``command alias``
 GH_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?alias(?:\s+(?:--|-[\w]+))*\s+gh=",
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+gh=",
     re.I,
 )
-# ``hash -p … gh`` / ``builtin hash -p … gh`` / ``command hash … gh``
+# ``hash -p … gh`` / ``builtin hash`` / ``builtin builtin hash`` / ``command hash``
 GH_HASH_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?hash\s+[^\n;&|]*\bgh\b",
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*hash\s+[^\n;&|]*\bgh\b",
     re.I,
 )
 # Wrappers/prefixes stripped before ``gh`` that Bash also allows as functions.
@@ -59,7 +59,7 @@ PREFIX_FUNC_RE = re.compile(
     re.I,
 )
 PREFIX_ALIAS_RE = re.compile(
-    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)?alias(?:\s+(?:--|-[\w]+))*\s+"
+    r"(?:^|[\n;&|])\s*(?:(?:builtin|command)\s+)*alias(?:\s+(?:--|-[\w]+))*\s+"
     r"(?:command|builtin|exec|time|env)=",
     re.I,
 )
