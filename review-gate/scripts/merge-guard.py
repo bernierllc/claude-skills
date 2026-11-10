@@ -793,6 +793,120 @@ def gh_config_overlay_unresolved(cmd: str) -> bool:
     return False
 
 
+def _env_has_chdir(part: str) -> bool:
+    """True when ``env -C`` / ``--chdir`` appears before ``gh``."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        env_i = next(i for i, t in enumerate(tokens) if t == "env")
+        gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
+    except StopIteration:
+        return False
+    if env_i >= gh_i:
+        return False
+    i = env_i + 1
+    while i < gh_i:
+        tok = tokens[i]
+        if tok in ("-C", "--chdir") or tok.startswith("--chdir="):
+            return True
+        if tok.startswith("-C") and tok != "-C":
+            return True
+        if ASSIGNMENT_RE.match(tok):
+            i += 1
+            continue
+        if tok.startswith("-"):
+            base = tok.split("=", 1)[0]
+            if base in ENV_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
+            continue
+        break
+    return False
+
+
+def gh_config_relative_after_chdir(cmd: str) -> bool:
+    """True when a relative gh config path is set under ``env -C`` / subshell cd.
+
+    The merge child resolves ``GH_CONFIG_DIR=.gh`` against the chdir'd cwd; the
+    gate subprocess would resolve it against the hook cwd — fail closed.
+    """
+    if not (_env_has_chdir(cmd) or bool(SUBSHELL_CD_RE.search(cmd))):
+        return False
+    tokens = _shell_tokens(cmd)
+    rest, leading = _skip_leading_assignments(tokens)
+    env_assigns, _cleared = _env_wrapper_state(rest)
+    overlays = {**leading, **env_assigns}
+    for key in GH_CONFIG_LOCATION_VARS:
+        if key not in overlays:
+            continue
+        val = overlays[key]
+        if not val or _env_overlay_unresolvable(val):
+            continue
+        if not os.path.isabs(val):
+            return True
+    return False
+
+
+def _tokens_have_pr_merge(tokens: list[str]) -> bool:
+    try:
+        pr_i = next(i for i, t in enumerate(tokens) if t == "pr")
+        next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
+        return True
+    except StopIteration:
+        return False
+
+
+def env_split_string_merge_risk(part: str) -> bool:
+    """True when ``env -S``/``--split-string`` can construct a ``gh pr merge``.
+
+    GNU env splits the ``-S`` operand into argv, so ``env -S 'g''h -R …' pr merge``
+    runs a real merge while literal ``gh`` never appears as its own token.
+    """
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        env_i = next(i for i, t in enumerate(tokens) if t == "env")
+    except StopIteration:
+        return False
+    operands: list[str] = []
+    i = env_i + 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if ASSIGNMENT_RE.match(tok):
+            i += 1
+            continue
+        if tok in ("-S", "--split-string"):
+            if i + 1 < len(tokens):
+                operands.append(tokens[i + 1])
+            i += 2
+            continue
+        if tok.startswith("--split-string="):
+            operands.append(tok.split("=", 1)[1])
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if tok in ("-", "-i", "--ignore-environment"):
+                i += 1
+                continue
+            if tok.startswith("--") and "=" in tok:
+                i += 1
+                continue
+            base = tok.split("=", 1)[0]
+            if base in ENV_VALUE_FLAGS:
+                i += 2
+                continue
+            i += 1
+            continue
+        break
+    if not operands:
+        return False
+    if _tokens_have_pr_merge(tokens):
+        return True
+    for op in operands:
+        if MERGE_RE.search(op) or _tokens_have_pr_merge(_shell_tokens(op)):
+            return True
+    return False
+
+
 def _child_gh_env(cmd: str, scrub_gh_repo: bool) -> dict[str, str] | None:
     """Build a subprocess env mirroring command-scoped gh config for gate ``gh``.
 
@@ -853,6 +967,11 @@ def resolve_pr_number(
         return None, None, (
             "review-gate: dynamic GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME/GH_HOST "
             "(e.g. \"$HOME/…\" or \"~/…\"); pass a literal path or unset the var"
+        ), scrub_gh_repo
+    if gh_config_relative_after_chdir(cmd):
+        return None, None, (
+            "review-gate: relative GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME under "
+            "env -C/--chdir (or subshell cd); pass an absolute config path"
         ), scrub_gh_repo
     selector = extract_merge_selector(cmd)
     if selector and selector.isdigit():
@@ -1075,6 +1194,12 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: dynamic `gh` executable name "
             "(e.g. $'\\x67\\x68' / $(…) / `…` / ./[g]h); "
             "run literal `gh -R owner/repo pr merge <n>`"
+        )
+    # `env -S` can assemble `gh` inside the split-string operand.
+    if any(env_split_string_merge_risk(p) for p in parts):
+        return (
+            "review-gate: `env -S`/`--split-string` with `pr merge` "
+            "(can construct `gh` argv); run literal `gh -R owner/repo pr merge <n>`"
         )
     if not any(is_gh_pr_merge(p) for p in parts):
         # `bash -c 'gh pr merge …'` / `eval '…'` leave the merge inside one token.

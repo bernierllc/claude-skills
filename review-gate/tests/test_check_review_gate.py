@@ -416,6 +416,25 @@ blocked = mg.check_command(compound_dyn, cwd="/tmp")
 assert blocked and "dynamic" in blocked
 assert not mg.dynamic_gh_pr_merge("something pr merge 42")
 assert not mg.dynamic_gh_pr_merge("gh -R owner/target pr merge 42")
+# env -S can construct gh inside the split-string operand
+assert mg.env_split_string_merge_risk("env -S 'g''h -R owner/target' pr merge 42")
+assert mg.env_split_string_merge_risk("env -S 'gh -R owner/target pr merge 42'")
+blocked = mg.check_command("env -S 'g''h -R owner/target' pr merge 42", cwd="/tmp")
+assert blocked and "split-string" in blocked
+# Relative config dir under env -C resolves against different cwds — fail closed
+assert mg.gh_config_relative_after_chdir(
+    "env -C /tmp/enterprise GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42"
+)
+_n, _repo, _err, _scrub = mg.resolve_pr_number(
+    "env -C /tmp/enterprise GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42"
+)
+assert _n is None and _err and "relative" in _err
+assert not mg.gh_config_relative_after_chdir(
+    "GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42"
+)
+assert not mg.gh_config_relative_after_chdir(
+    "env -C /tmp/enterprise GH_CONFIG_DIR=/tmp/enterprise/.gh gh -R owner/target pr merge 42"
+)
 xargs_err = mg.check_command(
     "printf '42\\n' | xargs gh -R owner/target pr merge", cwd="/tmp"
 )
