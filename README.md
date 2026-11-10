@@ -54,6 +54,8 @@ This repository includes a diverse collection of example skills demonstrating di
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**orchata**](orchata/SKILL.md) - Plan and execute a task end to end with multi-agent orchestration, involving the human only where their hands are needed
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**plan-review**](plan-review/SKILL.md) - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**pr-merge-flow**](pr-merge-flow/SKILL.md) - Keep parallel PRs from restarting each other's CI: hand merges to auto-merge and sync the base only on a real conflict
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**adversarial-review**](adversarial-review/SKILL.md) - Codex-first adversarial PR review loop with required inline line-item comments
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**review-gate**](review-gate/SKILL.md) - Enforce review before merge: trusted pull_request_target gate, doctor + merge guard
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**resume**](resume/SKILL.md) - Pick up in-flight work by reconciling run state, the activity log and the tracker against git
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**seed-data**](seed-data/SKILL.md) - Create, modify, or audit application data across environments with data classification, idempotency enforcement, and framework-aware workflow
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**ship**](ship/SKILL.md) - Close out a branch in one command: verify, commit, push, open the PR and sync the tracker

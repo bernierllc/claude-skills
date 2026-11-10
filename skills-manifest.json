@@ -1,7 +1,12 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-03T23:17:20.865976+00:00",
+  "generatedAt": "2026-11-10T02:10:05.758577+00:00",
   "skills": {
+    "adversarial-review": {
+      "version": "1.0.2",
+      "description": "Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.",
+      "author": "Bernier LLC"
+    },
     "algorithmic-art": {
       "version": "1.0.0",
       "description": "Creating algorithmic art using p5.js with seeded randomness and interactive parameter exploration. Use this when users request creating art using code, generative art, algorithmic art, flow fields, or particle systems. Create original algorithmic art rather than copying existing artists' work to avoid copyright violations.",
@@ -96,6 +101,11 @@
     "resume": {
       "version": "1.4.0",
       "description": "Use at the start of a session in a repo with prior work in flight, or when the user says \"resume\", \"/resume\", \"where were we\", \"pick up where we left off\". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.",
+      "author": "Bernier LLC"
+    },
+    "review-gate": {
+      "version": "1.0.101",
+      "description": "Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.",
       "author": "Bernier LLC"
     },
     "seed-data": {
