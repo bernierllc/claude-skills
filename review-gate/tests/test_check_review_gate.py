@@ -486,7 +486,9 @@ assert blocked and "subcommand" in blocked
 assert mg.env_split_string_merge_risk("env -S 'g''h -R owner/target' pr merge 42")
 assert mg.env_split_string_merge_risk("env -S 'gh -R owner/target pr merge 42'")
 blocked = mg.check_command("env -S 'g''h -R owner/target' pr merge 42", cwd="/tmp")
-assert blocked and "split-string" in blocked
+# quote-smash may trip first; either fail-closed path is OK
+assert blocked and ("split-string" in blocked or "quote" in blocked)
+assert mg.env_split_string_merge_risk("env -S 'g''h -R owner/target' pr merge 42")
 # Relative config dir under env -C resolves against different cwds — fail closed
 assert mg.gh_config_relative_after_chdir(
     "env -C /tmp/enterprise GH_CONFIG_DIR=.gh gh -R owner/target pr merge 42"
@@ -678,6 +680,12 @@ wrapped = mg.check_command("bash -c 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
+# Quote-concatenation hides `gh` from MERGE_RE / shlex inside wrappers
+smash = "bash -c 'g''h -R owner/target pr merge 42'"
+assert mg.quote_smashed_merge(smash)
+smash_err = mg.check_command(smash, cwd="/tmp")
+assert smash_err and ("quote" in smash_err or "concatenat" in smash_err)
+assert not mg.quote_smashed_merge("bash -c 'gh -R owner/target pr merge 42'")
 # Wrapped merge in one segment must not be masked by a literal merge in another
 subshell_merge = (
     "echo $(gh -R owner/target pr merge 2 --auto); "

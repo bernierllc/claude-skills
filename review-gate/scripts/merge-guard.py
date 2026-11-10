@@ -24,6 +24,8 @@ _spec.loader.exec_module(gate)
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 # Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
 MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
+# Quote-smashed executable: Bash concatenates `g''h` / `g"h"` into `gh`.
+QUOTE_SMASHED_GH_RE = re.compile(r"g['\"]+h", re.I)
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
 # Pull *URL* selectors must include a scheme (gh treats scheme-less paths as branch names).
 # Groups: host, owner, repo, number. Optional query/fragment/trailing path (gh accepts them).
@@ -710,6 +712,34 @@ def dynamic_merge_argv(part: str) -> bool:
             continue
         if _command_name_dynamic(tok):
             return True
+    return False
+
+
+def _collapse_empty_quotes(text: str) -> str:
+    """Remove adjacent empty quote pairs (``g''h`` → ``gh``)."""
+    out = text
+    while True:
+        nxt = out.replace("''", "").replace('""', "")
+        if nxt == out:
+            return out
+        out = nxt
+
+
+def quote_smashed_merge(cmd: str) -> bool:
+    """True when quote-concatenation hides ``gh`` before ``pr``…``merge``.
+
+    Example: ``bash -c 'g''h -R owner/target pr merge 42'`` — Bash concatenates
+    ``g''h`` into ``gh``, but ``MERGE_RE`` / ``shlex`` never see a ``gh`` token.
+    """
+    if MERGE_RE.search(cmd):
+        return False
+    collapsed = _collapse_empty_quotes(cmd)
+    if collapsed != cmd and MERGE_RE.search(collapsed):
+        return True
+    if QUOTE_SMASHED_GH_RE.search(cmd) and re.search(
+        r"\bpr\b.*\bmerge\b", cmd, re.S | re.I
+    ):
+        return True
     return False
 
 
@@ -1791,6 +1821,13 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
     cmd = strip_heredoc_bodies(cmd)
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    # Quote-smashed `g''h` inside `bash -c` / eval — Bash concatenates to `gh`.
+    if quote_smashed_merge(cmd) or any(quote_smashed_merge(p) for p in parts):
+        return (
+            "review-gate: quote-concatenated `gh` with `pr merge` "
+            "(e.g. `bash -c 'g''h … pr merge'`); run literal "
+            "`gh -R owner/repo pr merge <n>`"
+        )
     # Every segment — including those after a literal `gh pr merge` — must not
     # hide a dynamically named merge (`$'\\x67\\x68'`, `./[g]h`, …).
     if any(dynamic_gh_pr_merge(p) for p in parts):
