@@ -325,6 +325,24 @@ def extract_merge_selector(cmd: str) -> str | None:
     return None
 
 
+def has_literal_repo(part: str) -> bool:
+    """True when the merge names a concrete owner/repo (-R, GH_REPO=, or pull URL)."""
+    repo = extract_repo(part)
+    if repo and repo != "$UNRESOLVED" and "/" in repo:
+        return True
+    selector = extract_merge_selector(part)
+    if selector and PULL_URL.search(selector):
+        return True
+    return False
+
+
+COMPOUND_MERGE_MSG = (
+    "review-gate: compound shell command with `gh pr merge`; "
+    "pass literal `-R owner/repo` on each merge "
+    "(cd/export/subshell/cwd chains are not modeled)"
+)
+
+
 def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     """Legacy helper: numeric selector only. Prefer resolve_pr_number for merges."""
     repo = extract_repo(cmd)
@@ -473,69 +491,38 @@ def iter_merge_segments(
     """Return ((segment, cwd)…, error).
 
     Quote-aware split on `&&`, `||`, `|`, `;`, `&`, and newlines.
-    Unresolvable / conditional cd/pushd/popd before a merge without `-R` fails closed.
+
+    Policy (fail closed): any *compound* command (more than one shell segment)
+    requires a literal `-R`/`--repo`/GH_REPO=/pull-URL on each merge. We do not
+    model cd/export/subshell/cwd interactions across segments — that rat-hole
+    kept producing review findings. Prefer `gh -R owner/repo pr merge <n>`.
     """
-    cwd = start_cwd
-    unresolved_cd = False
+    chains = split_shell_chains(cmd)
+    compound = len(chains) > 1
     out: list[tuple[str, str]] = []
-    for part, sep_after in split_shell_chains(cmd):
+    for part, _sep_after in chains:
         if not is_gh_pr_merge(part):
-            tokens = _shell_tokens(part)
-            # Subshell opener — fail closed (parent cwd / nesting is not modeled).
-            if tokens and tokens[0].startswith("("):
-                unresolved_cd = True
-                continue
-            if tokens and tokens[0] in SOURCE_BUILTINS:
-                unresolved_cd = True
-                continue
-            leading = _leading_dir_builtin(tokens)
-            if leading == "popd":
-                unresolved_cd = True
-                continue
-            if leading in DIR_BUILTINS:
-                # `cd … ||/&/| merge` does not apply cwd to the parent shell.
-                if sep_after in CONDITIONAL_SEPS:
-                    unresolved_cd = True
-                    continue
-                target = parse_dir_builtin(part, leading)
-                if _cd_target_unresolvable(target):
-                    unresolved_cd = True
-                    continue
-                assert target is not None
-                expanded = os.path.expanduser(target)
-                cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
-                unresolved_cd = False
-                continue
-            # `if cd …`, `then pushd …` — not `echo cd` (cd as a plain argument).
-            if tokens and tokens[0] in SHELL_KEYWORDS and any(
-                t in DIR_BUILTINS or t == "popd" or t.lstrip("(") in DIR_BUILTINS
-                for t in tokens[1:]
-            ):
-                unresolved_cd = True
-                continue
-        if is_gh_pr_merge(part):
-            toks = _shell_tokens(part)
-            merge_verbs = sum(
-                1
-                for i, t in enumerate(toks)
-                if t == "merge" and "pr" in toks[:i] and "gh" in toks[:i]
+            continue
+        toks = _shell_tokens(part)
+        merge_verbs = sum(
+            1
+            for i, t in enumerate(toks)
+            if t == "merge" and "pr" in toks[:i] and "gh" in toks[:i]
+        )
+        if merge_verbs > 1:
+            return [], (
+                "review-gate: multiple `gh pr merge` invocations in one shell "
+                "segment; run them as separate commands"
             )
-            if merge_verbs > 1:
-                return [], (
-                    "review-gate: multiple `gh pr merge` invocations in one shell "
-                    "segment; run them as separate commands"
-                )
-            if scoped_dir_requires_repo(part) and not extract_repo(part):
-                return [], (
-                    "review-gate: command-scoped directory change detected "
-                    "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
-                )
-            if unresolved_cd and not extract_repo(part):
-                return [], (
-                    "review-gate: cannot resolve directory change before `gh pr merge`; "
-                    "use a literal `cd`/`pushd` path or pass `-R owner/repo`"
-                )
-            out.append((part, cwd))
+        if scoped_dir_requires_repo(part) and not has_literal_repo(part):
+            return [], (
+                "review-gate: command-scoped directory change detected "
+                "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
+            )
+        if compound and not has_literal_repo(part):
+            return [], COMPOUND_MERGE_MSG
+        # Always evaluate against the tool cwd; literal -R selects the repo.
+        out.append((part, start_cwd))
     return out, None
 
 
@@ -578,7 +565,7 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if seg_err:
         return seg_err
     if not segments:
-        if scoped_dir_requires_repo(cmd) and not extract_repo(cmd):
+        if scoped_dir_requires_repo(cmd) and not has_literal_repo(cmd):
             return (
                 "review-gate: command-scoped directory change detected "
                 "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"

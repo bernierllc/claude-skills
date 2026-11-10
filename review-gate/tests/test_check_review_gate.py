@@ -171,32 +171,33 @@ assert not mg.has_override(
 assert not mg.has_override(
     'gh pr merge 42 --body "notes # review-gate-ok: placeholder"'
 )
-# cd before merge must resolve the target repo from the post-cd directory
+# Compound commands require literal -R (cwd/cd/export chains are not modeled)
 segs, err = mg.iter_merge_segments(
     "cd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
 )
-assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+assert segs == [] and err and "compound" in err
 segs, err = mg.iter_merge_segments(
-    "cd /workspace/other\ngh pr merge 42 --squash", "/tmp/start"
+    "cd /workspace/other && gh -R owner/r pr merge 42 --squash", "/tmp/start"
 )
-assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+assert err is None and segs == [("gh -R owner/r pr merge 42 --squash", "/tmp/start")]
 segs, err = mg.iter_merge_segments(
-    "cd -P /workspace/other && gh pr merge 42 --squash", "/tmp/start"
+    "cd /workspace/other\ngh -R owner/r pr merge 42 --squash", "/tmp/start"
 )
-assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+assert err is None and len(segs) == 1
 segs, err = mg.iter_merge_segments(
-    "pushd /workspace/other && gh pr merge 42 --squash", "/tmp/start"
+    "pushd /workspace/other && gh -R owner/r pr merge 42 --squash", "/tmp/start"
 )
-assert err is None and segs == [("gh pr merge 42 --squash", "/workspace/other")]
+assert err is None and len(segs) == 1
 segs, err = mg.iter_merge_segments(
-    "gh pr merge 1 --match-head-commit deadbeef || gh pr merge 2", "/tmp/start"
+    "gh -R owner/a pr merge 1 --match-head-commit deadbeef || gh -R owner/b pr merge 2",
+    "/tmp/start",
 )
 assert err is None and [s for s, _ in segs] == [
-    "gh pr merge 1 --match-head-commit deadbeef",
-    "gh pr merge 2",
+    "gh -R owner/a pr merge 1 --match-head-commit deadbeef",
+    "gh -R owner/b pr merge 2",
 ]
 segs, err = mg.iter_merge_segments('cd "$OTHER_REPO" && gh pr merge 42', "/tmp/start")
-assert segs == [] and err and "cannot resolve" in err
+assert segs == [] and err and "compound" in err
 assert mg.extract_merge_selector("gh pr merge --squash") is None
 assert (
     mg.extract_merge_selector("gh pr merge --match-head-commit deadbeef --auto") is None
@@ -231,67 +232,43 @@ for env_cmd in (
 ):
     err = mg.check_command(env_cmd, cwd="/tmp")
     assert err and "command-scoped" in err, env_cmd
-# Quoted separators must not invent directory changes
-segs, err = mg.iter_merge_segments(
-    "echo 'ignored; cd /workspace/safe' && gh pr merge 42", "/tmp/start"
-)
-assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
-# Conditional cd || merge must not apply the new cwd (fail closed without -R)
-segs, err = mg.iter_merge_segments(
-    "cd /definitely-missing || gh pr merge 42", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-segs, err = mg.iter_merge_segments(
-    "cd /definitely-missing || gh -R owner/r pr merge 42", "/tmp/start"
-)
-assert err is None and len(segs) == 1
-assert mg.extract_repo(segs[0][0]) == "owner/r"
-# Backgrounded cd does not change the parent shell cwd
-segs, err = mg.iter_merge_segments(
-    "cd /workspace/safe & gh pr merge 42", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-# Compact subshell `(cd … && merge)` fails closed without -R
-segs, err = mg.iter_merge_segments(
-    "(cd /workspace/other && gh pr merge 42)", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-segs, err = mg.iter_merge_segments(
-    "(cd /workspace/other && gh -R owner/r pr merge 42)", "/tmp/start"
-)
-assert err is None and len(segs) == 1
-assert mg.extract_repo(segs[0][0]) == "owner/r"
-# GH_REPO assignment selects the target repo
+# Compound without -R fails closed (including quoted separators / comments / export)
+for compound_cmd in (
+    "echo 'ignored; cd /workspace/safe' && gh pr merge 42",
+    "cd /definitely-missing || gh pr merge 42",
+    "cd /workspace/safe & gh pr merge 42",
+    "(cd /workspace/other && gh pr merge 42)",
+    "echo \\\ncd /workspace/safe && gh pr merge 42",
+    "source /tmp/move-to-other-repo.sh && gh pr merge 42",
+    ". /tmp/move-to-other-repo.sh && gh pr merge 42",
+    "echo ok # ignored && cd /workspace/safe\ngh pr merge 42",
+    "export GH_REPO=owner/target && gh pr merge 42",
+    "false && cd /workspace/safe; gh pr merge 42",
+    "(echo setup; cd /workspace/safe); gh pr merge 42",
+    "if cd /workspace/other; then gh pr merge 42; fi",
+):
+    segs, err = mg.iter_merge_segments(compound_cmd, "/tmp/start")
+    assert segs == [] and err and "compound" in err, compound_cmd
+# Same compounds with literal -R are allowed
+for ok_cmd in (
+    "cd /definitely-missing || gh -R owner/r pr merge 42",
+    "(cd /workspace/other && gh -R owner/r pr merge 42)",
+    "source /tmp/move-to-other-repo.sh && gh -R owner/r pr merge 42",
+    "export GH_REPO=owner/target && gh -R owner/r pr merge 42",
+    "false && cd /workspace/safe; gh -R owner/r pr merge 42",
+    "(echo setup; cd /workspace/safe); gh -R owner/r pr merge 42",
+    "if cd /workspace/other; then gh -R owner/r pr merge 42; fi",
+):
+    segs, err = mg.iter_merge_segments(ok_cmd, "/tmp/start")
+    assert err is None and len(segs) == 1 and mg.has_literal_repo(segs[0][0]), ok_cmd
+# Same-segment GH_REPO= still counts as literal repo
 assert mg.extract_repo("GH_REPO=owner/target gh pr merge 99") == "owner/target"
-# Escaped newline is a line continuation, not a chain boundary / fake cd
-segs, err = mg.iter_merge_segments(
-    "echo \\\ncd /workspace/safe && gh pr merge 42", "/tmp/start"
-)
-assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
-# source / . can change cwd — fail closed without -R
-segs, err = mg.iter_merge_segments(
-    "source /tmp/move-to-other-repo.sh && gh pr merge 42", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-segs, err = mg.iter_merge_segments(
-    ". /tmp/move-to-other-repo.sh && gh pr merge 42", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-segs, err = mg.iter_merge_segments(
-    "source /tmp/move-to-other-repo.sh && gh -R owner/r pr merge 42", "/tmp/start"
-)
-assert err is None and len(segs) == 1
-assert mg.extract_repo(segs[0][0]) == "owner/r"
+assert mg.has_literal_repo("GH_REPO=owner/target gh pr merge 99")
 # Shell wrappers must not bypass the gate
 wrapped = mg.check_command("bash -c 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
 wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
 assert wrapped and "shell-wrapped" in wrapped
-# Comment text must not invent chain boundaries / fake cd
-segs, err = mg.iter_merge_segments(
-    "echo ok # ignored && cd /workspace/safe\ngh pr merge 42", "/tmp/start"
-)
-assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
 # Dynamic -R / GH_REPO operands fail closed
 assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
 n, r, e = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')
@@ -302,16 +279,6 @@ segs, err = mg.iter_merge_segments(
     "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"
 )
 assert segs == [] and err and "command-scoped" in err
-# Directory change behind shell control keywords fails closed without -R
-segs, err = mg.iter_merge_segments(
-    "if cd /workspace/other; then gh pr merge 42; fi", "/tmp/start"
-)
-assert segs == [] and err and "cannot resolve" in err
-segs, err = mg.iter_merge_segments(
-    "if cd /workspace/other; then gh -R owner/r pr merge 42; fi", "/tmp/start"
-)
-assert err is None and len(segs) == 1
-assert mg.extract_repo(segs[0][0]) == "owner/r"
 _orig_one = mg.check_one
 mg.check_one = lambda segment, cwd=None: None
 try:
