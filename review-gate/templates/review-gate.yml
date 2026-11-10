@@ -7,8 +7,10 @@
 # repository default branch (so staging PRs work after installing on main only).
 # pull_request_target runs this workflow from the base branch.
 #
-# Required-check name is the job display name "Review Gate" (eligible events) or
-# the Checks API check run of the same name (review-comment refresh path).
+# Required-check name is the job display name "Review Gate" (pull_request_review)
+# or the Checks API check run of the same name. pull_request_target attaches the
+# Actions job to the *base* SHA, so that path also publishes Checks API on the
+# PR head (same as the review-comment refresh path).
 name: Review Gate
 
 on:
@@ -67,7 +69,9 @@ jobs:
             gh api -X POST "repos/$REPO/actions/runs/$id/cancel" || true
           done
 
-  # Eligible events for required status checks (Actions job conclusion counts).
+  # pull_request_review: Actions job conclusion is eligible for required checks.
+  # pull_request_target: job is attached to the base SHA — also publish Checks API
+  # on the PR head so synchronize / opened / label paths clear the required context.
   gate:
     name: Review Gate
     if: >
@@ -80,6 +84,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -99,7 +105,29 @@ jobs:
             echo "Run install-workflow.py and merge it to the default branch (and ideally every protected base)."
             exit 1
           fi
-          python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO"
+          set +e
+          out=$(python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO" 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            if [ "$rc" -eq 0 ]; then
+              conclusion=success
+              title="review-gate ok"
+            else
+              conclusion=failure
+              title="review-gate failed"
+            fi
+            summary=$(printf '%s' "$out" | head -c 60000)
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name="Review Gate" \
+              -f head_sha="$SHA" \
+              -f status="completed" \
+              -f conclusion="$conclusion" \
+              -f "output[title]=$title" \
+              -f "output[summary]=$summary"
+          fi
+          exit "$rc"
 
   # pull_request_review_comment is NOT an eligible Actions event for required
   # checks (GitHub docs). Publish the same "Review Gate" context via Checks API

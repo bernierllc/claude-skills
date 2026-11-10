@@ -219,14 +219,14 @@ assert mg.extract_merge_selector(
     "gh pr merge https://github.com/o/r/pull/7 --squash"
 ) == "https://github.com/o/r/pull/7"
 assert mg.extract_merge_selector("gh pr merge feature-branch --squash") == "feature-branch"
-# URL selector must carry owner/repo, not only the number
+# URL selector must carry host/owner/repo (dotcom kept explicit for --hostname)
 n, r, e = mg.resolve_pr_number("gh pr merge https://github.com/owner/other/pull/7 --squash")
-assert e is None and n == 7 and r == "owner/other"
+assert e is None and n == 7 and r == "github.com/owner/other"
 # URL selector wins over a conflicting -R (matches gh)
 n, r, e = mg.resolve_pr_number(
     "gh pr merge https://github.com/owner/target/pull/7 -R owner/safe --squash"
 )
-assert e is None and n == 7 and r == "owner/target"
+assert e is None and n == 7 and r == "github.com/owner/target"
 # Enterprise pull URLs retain the hostname for gate queries
 n, r, e = mg.resolve_pr_number(
     "gh pr merge https://ghe.example/owner/repo/pull/7 --squash"
@@ -241,13 +241,13 @@ assert (
     mg.extract_repo("GH_HOST=ghe.example GH_REPO=owner/target gh pr merge 42")
     == "ghe.example/owner/target"
 )
-# Already-hosted -R keeps its host; github.com GH_HOST is a no-op
+# Already-hosted -R keeps its host; github.com GH_HOST stays explicit
 assert (
     mg.extract_repo("GH_HOST=ghe.example gh -R other.ghe/owner/target pr merge 42")
     == "other.ghe/owner/target"
 )
 assert mg.extract_repo("GH_HOST=github.com gh -R owner/target pr merge 42") == (
-    "owner/target"
+    "github.com/owner/target"
 )
 assert mg.extract_repo('GH_HOST="$HOST" gh -R owner/target pr merge 42') == (
     "$UNRESOLVED"
@@ -270,11 +270,32 @@ assert (
 assert mg.extract_repo('env GH_HOST="$HOST" gh -R owner/target pr merge 42') == (
     "$UNRESOLVED"
 )
+# ``env -u GH_HOST`` / ``-i`` force explicit github.com (override process GH_HOST)
+assert (
+    mg.extract_repo("env -u GH_HOST gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
+    mg.extract_repo("env --unset GH_HOST gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
+    mg.extract_repo("env -i gh -R owner/target pr merge 42")
+    == "github.com/owner/target"
+)
+assert (
+    mg.extract_repo("env -u GH_HOST GH_HOST=ghe.other gh -R owner/target pr merge 42")
+    == "ghe.other/owner/target"
+)
 assert g.parse_repo_with_host(r) == ("ghe.example", "owner", "repo")
 assert g.parse_repo("github.com/owner/repo") == ("owner", "repo")
 assert g.parse_repo("owner/repo") == ("owner", "repo")
 assert g.parse_repo_with_host("owner/repo") == (None, "owner", "repo")
-assert g.parse_repo_with_host("github.com/owner/repo") == (None, "owner", "repo")
+assert g.parse_repo_with_host("github.com/owner/repo") == (
+    "github.com",
+    "owner",
+    "repo",
+)
 assert g.parse_repo_with_host("ghe.example/owner/repo") == (
     "ghe.example",
     "owner",
@@ -424,6 +445,8 @@ assert 'for ref in "$BASE_SHA" "$DEFAULT_BRANCH"' in yml
 assert "actions/checkout" not in yml
 assert re.search(r"(?m)^\s+name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml
+assert 'EVENT_NAME: ${{ github.event_name }}' in yml
+assert 'if [ "$EVENT_NAME" = "pull_request_target" ]' in yml
 assert "cancel-ci-on-finding" in yml
 assert "Not a P0/P1 finding" in yml
 

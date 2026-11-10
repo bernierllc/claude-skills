@@ -47,13 +47,27 @@ def run_gh(
     return json.loads(proc.stdout)
 
 
+def _normalize_api_hostname(host: str | None) -> str | None:
+    """Normalize a hostname for ``gh api --hostname``.
+
+    Keep ``github.com`` explicit so a process-level Enterprise ``GH_HOST`` cannot
+    redirect hostless/default API calls away from an intentional dotcom target.
+    """
+    if not host:
+        return None
+    if host.lower() in DOTCOM_HOSTS:
+        return "github.com"
+    return host
+
+
 def parse_repo_with_host(
     repo: str | None, cwd: str | None = None
 ) -> tuple[str | None, str, str]:
     """Resolve (hostname|None, owner, name).
 
-    Accepts gh's `[HOST/]OWNER/REPO` form. `github.com` is normalized to
-    hostname=None (gh's default). Enterprise hosts are preserved for `--hostname`.
+    Accepts gh's `[HOST/]OWNER/REPO` form. Explicit ``github.com`` is retained
+    (as ``github.com``) so ``--hostname`` overrides an inherited Enterprise
+    ``GH_HOST``. Other Enterprise hosts are preserved as-is.
     """
     if repo and "/" in repo:
         parts = [p for p in repo.strip().strip("/").split("/") if p]
@@ -63,9 +77,7 @@ def parse_repo_with_host(
                 name = name[: -len(".git")]
             host: str | None = None
             if len(parts) >= 3:
-                host = parts[0]
-                if host.lower() in DOTCOM_HOSTS:
-                    host = None
+                host = _normalize_api_hostname(parts[0])
             return host, owner, name
     view_cmd = [
         "gh",
@@ -90,8 +102,9 @@ def parse_repo_with_host(
     host = None
     if len(slug_and_url) > 1:
         m = re.match(r"https?://([^/]+)/", slug_and_url[1], re.I)
-        if m and m.group(1).lower() not in DOTCOM_HOSTS:
-            host = m.group(1)
+        if m:
+            # Dotcom URLs stay explicit so inherited GH_HOST cannot hijack queries.
+            host = _normalize_api_hostname(m.group(1))
     return host, owner, name
 
 

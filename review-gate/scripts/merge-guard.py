@@ -231,29 +231,45 @@ ENV_VALUE_FLAGS = frozenset(
 )
 
 
-def _env_wrapper_assignments(tokens: list[str]) -> dict[str, str]:
-    """Collect NAME=VALUE args from an `env` wrapper before `gh`.
+def _env_wrapper_state(tokens: list[str]) -> tuple[dict[str, str], bool]:
+    """Collect env NAME=VALUE / -u / -i effects before `gh`.
 
-    Handles ``env GH_HOST=… gh …`` and ``env -C /tmp GH_HOST=… gh …``.
+    Returns ``(assignments, cleared_gh_host)``. ``cleared_gh_host`` is True when
+    the child no longer inherits GH_HOST (``-u/--unset GH_HOST`` or ``-i``) and
+    no later assignment re-sets it — callers force an explicit github.com host
+    so the gate query does not use the hook process Enterprise GH_HOST.
     """
     try:
         env_i = next(i for i, t in enumerate(tokens) if t == "env")
         gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
     except StopIteration:
-        return {}
+        return {}, False
     if env_i >= gh_i:
-        return {}
+        return {}, False
     out: dict[str, str] = {}
+    cleared_gh_host = False
     i = env_i + 1
     while i < gh_i:
         tok = tokens[i]
         if ASSIGNMENT_RE.match(tok):
             key, _, val = tok.partition("=")
             out[key] = val
+            if key == "GH_HOST":
+                cleared_gh_host = False
             i += 1
             continue
         if tok.startswith("-"):
+            if tok in ("-i", "--ignore-environment"):
+                out.clear()
+                cleared_gh_host = True
+                i += 1
+                continue
             if tok.startswith("--") and "=" in tok:
+                # ``--unset=GH_HOST``
+                flag, _, val = tok.partition("=")
+                if flag in ("--unset", "-u") and val == "GH_HOST":
+                    out.pop("GH_HOST", None)
+                    cleared_gh_host = True
                 i += 1
                 continue
             # Sticky ``-C/path`` (no separate operand).
@@ -262,12 +278,18 @@ def _env_wrapper_assignments(tokens: list[str]) -> dict[str, str]:
                 continue
             base = tok.split("=", 1)[0]
             if base in ENV_VALUE_FLAGS:
+                if i + 1 >= gh_i:
+                    break
+                operand = tokens[i + 1]
+                if base in ("-u", "--unset") and operand == "GH_HOST":
+                    out.pop("GH_HOST", None)
+                    cleared_gh_host = True
                 i += 2
                 continue
             i += 1
             continue
         break
-    return out
+    return out, cleared_gh_host
 
 
 def is_gh_pr_merge(part: str) -> bool:
@@ -309,10 +331,10 @@ def _normalize_repo_operand(val: str) -> str:
 
 
 def repo_from_pull_url_match(m: re.Match[str]) -> str:
-    """Build `[HOST/]OWNER/REPO` from a PULL_URL match (Enterprise host retained)."""
+    """Build `HOST/OWNER/REPO` from a PULL_URL match (dotcom kept explicit)."""
     host, owner, name = m.group(1), m.group(2), m.group(3)
     if host.lower() in DOTCOM_PULL_HOSTS:
-        return f"{owner}/{name}"
+        return f"github.com/{owner}/{name}"
     return f"{host}/{owner}/{name}"
 
 
@@ -320,7 +342,9 @@ def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
     """Prefix a hostless OWNER/REPO with a GH_HOST assignment.
 
     Matches ``gh help environment``: GH_HOST (leading or via ``env``) selects
-    the API host when the repository slug does not already embed one. Dynamic
+    the API host when the repository slug does not already embed one. Dotcom is
+    kept as an explicit ``github.com/…`` slug so API calls can pass
+    ``--hostname`` and override a process-level Enterprise GH_HOST. Dynamic
     hosts fail closed.
     """
     if not repo or repo == "$UNRESOLVED":
@@ -334,7 +358,7 @@ def _apply_gh_host(repo: str | None, assignments: dict[str, str]) -> str | None:
     if _repo_operand_unresolvable(gh_host):
         return "$UNRESOLVED"
     if gh_host.lower() in DOTCOM_PULL_HOSTS:
-        return repo
+        return f"github.com/{repo}"
     return f"{gh_host}/{repo}"
 
 
@@ -342,13 +366,18 @@ def extract_repo(cmd: str) -> str | None:
     """Return the last -R/--repo from argv, or a leading/env GH_REPO= assignment.
 
     gh uses the last repeated inherited ``-R``/``--repo``. Leading ``GH_HOST=``
-    and ``env GH_HOST=…`` are applied to hostless slugs. Returns the sentinel
-    ``$UNRESOLVED`` when the operand is dynamic so callers can fail closed.
+    and ``env GH_HOST=…`` are applied to hostless slugs. ``env -u GH_HOST`` /
+    ``env -i`` force an explicit github.com host so the gate does not inherit a
+    process Enterprise GH_HOST. Returns ``$UNRESOLVED`` when dynamic.
     """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
     # ``env NAME=VALUE … gh`` overlays leading assignments (matches the child env).
-    assignments = {**assignments, **_env_wrapper_assignments(rest)}
+    env_assigns, cleared_gh_host = _env_wrapper_state(rest)
+    assignments = {**assignments, **env_assigns}
+    if cleared_gh_host and "GH_HOST" not in env_assigns:
+        # Child has no GH_HOST → gh defaults to github.com; say so explicitly.
+        assignments["GH_HOST"] = "github.com"
     found: str | None = None
     i = 0
     while i < len(rest):
