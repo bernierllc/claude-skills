@@ -661,6 +661,14 @@ export_host = "export GH_HOST=ghe.example; gh -R owner/target pr merge 42"
 assert mg.prior_tracked_gh_export(export_host)
 export_err = mg.check_command(export_host, cwd="/tmp")
 assert export_err and "exported" in export_err
+declare_host = "declare -x GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+assert mg.prior_tracked_gh_export(declare_host)
+assert mg.check_command(declare_host, cwd="/tmp") and "exported" in mg.check_command(
+    declare_host, cwd="/tmp"
+)
+assert mg.prior_tracked_gh_export(
+    "typeset -x GH_HOST=ghe.example; gh -R owner/target pr merge 42"
+)
 # Same-segment leading assign is still OK (mirrored by _child_gh_env)
 assert not mg.prior_tracked_gh_export(
     "GH_HOST=ghe.example gh -R owner/target pr merge 42"
@@ -675,6 +683,27 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# eval can install a shadowing gh the regex never sees
+eval_redef = (
+    "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.eval_before_merge(eval_redef)
+eval_err = mg.check_command(eval_redef, cwd="/tmp")
+assert eval_err and "eval" in eval_err
+# Escaped whitespace before # is not a comment — keep `;` as a chain separator
+esc_hash = (
+    r"m=merge; gh -R owner/target pr merge 1 --body=\ #x; "
+    r"$'\x67\x68' -R owner/safe pr \"$m\" 2 # review-gate-ok: approved"
+)
+esc_parts = [p for p, _ in mg.split_shell_chains(esc_hash)]
+assert len(esc_parts) >= 2
+assert not any(
+    mg.segment_has_override(p) for p in esc_parts if mg.is_gh_pr_merge(p)
+) or mg.check_command(esc_hash, cwd="/tmp")
+esc_err = mg.check_command(esc_hash, cwd="/tmp")
+assert esc_err  # must not allow via coalesced override
+
 # Bundled short flags: -dR owner/target (gh/cobra accepts this)
 assert mg.extract_repo("gh pr merge 42 -dR owner/target") == "owner/target"
 assert mg.extract_merge_selector("gh pr merge 42 -dR owner/target") == "42"

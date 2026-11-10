@@ -438,8 +438,10 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
             i += 2
             continue
         # Shell comment — keep text on the segment (for `# review-gate-ok:`) but do
-        # not treat `&&` / `|` inside the comment as chain operators.
-        if c == "#" and (i == 0 or cmd[i - 1].isspace()):
+        # not treat `&&` / `|` inside the comment as chain operators. Escaped
+        # whitespace before `#` (e.g. `--body=\ #x; …`) is argument text, not a
+        # comment — same parity as `_is_unescaped_shell_comment_hash`.
+        if _is_unescaped_shell_comment_hash(cmd, i):
             while i < n and cmd[i] != "\n":
                 buf.append(cmd[i])
                 i += 1
@@ -796,19 +798,37 @@ def path_override_for_merge(cmd: str) -> bool:
 
 
 def _part_exports_tracked_gh(part: str) -> bool:
-    """True when the segment ``export``s a tracked gh/config env var."""
+    """True when the segment export-marks a tracked gh/config env var.
+
+    Covers ``export``, ``declare -x``, ``typeset -x``, and ``local -x``.
+    """
     tokens = _shell_tokens(part)
     rest, _leading = _skip_leading_assignments(tokens)
     i = 0
     while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
         i += 1
-    if i >= len(rest) or rest[i] != "export":
+    if i >= len(rest):
         return False
+    head = rest[i]
+    if head == "export":
+        for tok in rest[i + 1 :]:
+            if tok.startswith("-") and "=" not in tok:
+                continue
+            key = tok.split("=", 1)[0]
+            if key in GH_TRACKED_ENV_VARS:
+                return True
+        return False
+    if head not in ("declare", "typeset", "local"):
+        return False
+    # ``declare -x NAME=…`` / ``declare -ax GH_HOST=…``
+    export_mark = False
     for tok in rest[i + 1 :]:
         if tok.startswith("-") and "=" not in tok:
+            if "x" in tok[1:]:
+                export_mark = True
             continue
         key = tok.split("=", 1)[0]
-        if key in GH_TRACKED_ENV_VARS:
+        if export_mark and key in GH_TRACKED_ENV_VARS:
             return True
     return False
 
@@ -816,8 +836,8 @@ def _part_exports_tracked_gh(part: str) -> bool:
 def prior_tracked_gh_export(cmd: str) -> bool:
     """True when an earlier segment exports GH_HOST/config before a merge.
 
-    ``export`` persists across ``;``/``&&`` while ``check_one`` only sees the
-    merge segment — fail closed rather than silently validating the wrong host.
+    ``export`` / ``declare -x`` persist across ``;``/``&&`` while ``check_one``
+    only sees the merge segment — fail closed rather than validating the wrong host.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     seen_export = False
@@ -828,6 +848,30 @@ def prior_tracked_gh_export(cmd: str) -> bool:
             continue
         if _part_exports_tracked_gh(part):
             seen_export = True
+    return False
+
+
+def _part_has_eval(part: str) -> bool:
+    """True when the segment runs ``eval`` (can define ``gh`` at runtime)."""
+    tokens = _shell_tokens(part)
+    rest, _leading = _skip_leading_assignments(tokens)
+    i = 0
+    while i < len(rest) and rest[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    return i < len(rest) and rest[i] == "eval"
+
+
+def eval_before_merge(cmd: str) -> bool:
+    """True when ``eval`` precedes a merge (can install a shadowing ``gh``)."""
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    seen_eval = False
+    for part in parts:
+        if is_gh_pr_merge(part):
+            if seen_eval:
+                return True
+            continue
+        if _part_has_eval(part):
+            seen_eval = True
     return False
 
 
@@ -1530,12 +1574,18 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "review-gate: command-scoped PATH override with `gh pr merge` "
             "(can swap the `gh` binary); unset PATH for the merge command"
         )
-    # Prior `export GH_HOST=…` (etc.) is invisible to the merge-segment env mirror.
+    # Prior `export`/`declare -x` of GH_HOST=… is invisible to the merge-segment env.
     if prior_tracked_gh_export(cmd):
         return (
             "review-gate: exported GH_HOST/GH_REPO/GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME "
             "before `gh pr merge` (not modeled across segments); set them on the "
             "merge command itself (e.g. `GH_HOST=… gh -R owner/repo pr merge <n>`)"
+        )
+    # `eval` can install a shadowing `gh` function the regexes never see.
+    if eval_before_merge(cmd):
+        return (
+            "review-gate: `eval` before `gh pr merge` (can redefine `gh` at runtime); "
+            "run literal `gh -R owner/repo pr merge <n>` without eval"
         )
     # Function/alias/hash named `gh` shadows the binary the gate inspects.
     if redefines_gh(cmd):
