@@ -438,6 +438,42 @@ def is_gh_pr_merge(part: str) -> bool:
         return False
 
 
+def _command_name_dynamic(tok: str) -> bool:
+    """True when a command token may expand to a different executable at runtime."""
+    if not tok:
+        return False
+    # `$…`, backticks, tilde, ANSI-C residue (`$\x67\x68` after shlex).
+    if "$" in tok or "`" in tok or tok.startswith("~") or "\\" in tok:
+        return True
+    return False
+
+
+def dynamic_gh_pr_merge(part: str) -> bool:
+    """True when ``pr``…``merge`` follows a dynamic executable (not literal ``gh``).
+
+    Example: ``$'\\x67\\x68' -R owner/target pr merge 42`` runs ``gh`` after Bash
+    expands the ANSI-C quote, but tokenizers only see a non-``gh`` command name.
+    Fail closed — do not treat it as unrelated shell input.
+    """
+    if is_gh_pr_merge(part):
+        return False
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        pr_i = next(i for i, t in enumerate(tokens) if t == "pr")
+        next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
+    except StopIteration:
+        return False
+    i = _index_after_env_wrapper(tokens)
+    while i < len(tokens) and tokens[i] in SHELL_PREFIX_KEYWORDS:
+        i += 1
+    if i >= len(tokens) or i >= pr_i:
+        return False
+    cmd = tokens[i]
+    if cmd == "gh":
+        return False
+    return _command_name_dynamic(cmd)
+
+
 def env_wraps_merge(part: str) -> bool:
     """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
     tokens, _ = _skip_leading_assignments(_shell_tokens(part))
@@ -1035,6 +1071,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             return (
                 "review-gate: shell-wrapped `gh pr merge` detected "
                 "(e.g. `bash -c` / `eval`); run `gh -R owner/repo pr merge <n>` directly"
+            )
+        # `$'\x67\x68' … pr merge` / `$(printf gh) … pr merge` — dynamic executable.
+        if any(dynamic_gh_pr_merge(p) for p in parts):
+            return (
+                "review-gate: dynamic `gh` executable name "
+                "(e.g. $'\\x67\\x68' / $(…) / `…`); "
+                "run literal `gh -R owner/repo pr merge <n>`"
             )
         return None
     start = cwd or os.getcwd()

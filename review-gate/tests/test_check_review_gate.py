@@ -397,6 +397,15 @@ assert mg.gh_is_direct_command("gh -R owner/target pr merge 42")
 assert mg.gh_is_direct_command("env GH_HOST=ghe.example gh -R owner/t pr merge 42")
 assert not mg.gh_is_direct_command("ssh buildbox gh pr merge 42")
 assert not mg.gh_is_direct_command("xargs gh -R owner/target pr merge")
+# Dynamic / ANSI-C executable names that expand to gh must not bypass the gate
+dyn = r"$'\x67\x68' -R owner/target pr merge 42"
+assert not mg.is_gh_pr_merge(dyn)
+assert mg.dynamic_gh_pr_merge(dyn)
+blocked = mg.check_command(dyn, cwd="/tmp")
+assert blocked and "dynamic" in blocked
+assert mg.dynamic_gh_pr_merge("$(printf gh) -R owner/target pr merge 42")
+assert not mg.dynamic_gh_pr_merge("something pr merge 42")
+assert not mg.dynamic_gh_pr_merge("gh -R owner/target pr merge 42")
 xargs_err = mg.check_command(
     "printf '42\\n' | xargs gh -R owner/target pr merge", cwd="/tmp"
 )
