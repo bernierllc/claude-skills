@@ -725,6 +725,11 @@ def _collapse_empty_quotes(text: str) -> str:
         out = nxt
 
 
+def _dequote_shell_text(text: str) -> str:
+    """Strip ``'`` / ``"`` so quote-concatenated names normalize (``g'h'`` → ``gh``)."""
+    return text.replace("'", "").replace('"', "")
+
+
 def quote_smashed_merge(cmd: str) -> bool:
     """True when quote-concatenation hides ``gh`` before ``pr``…``merge``.
 
@@ -1069,19 +1074,31 @@ def eval_before_merge(cmd: str) -> bool:
 
 
 def redefines_gh(cmd: str) -> bool:
-    """True when the command defines a ``gh`` function/alias/hash override."""
+    """True when the command defines a ``gh`` function/alias/hash override.
+
+    Also inspects a quote-stripped form so ``alias g'h'=…`` / ``g''h(){…}`` match
+    after Bash quote-removal turns the name into ``gh``.
+    """
     if not MERGE_RE.search(cmd):
         return False
-    return bool(
-        GH_FUNC_RE.search(cmd) or GH_ALIAS_RE.search(cmd) or GH_HASH_RE.search(cmd)
-    )
+    for candidate in (cmd, _dequote_shell_text(cmd)):
+        if (
+            GH_FUNC_RE.search(candidate)
+            or GH_ALIAS_RE.search(candidate)
+            or GH_HASH_RE.search(candidate)
+        ):
+            return True
+    return False
 
 
 def redefines_prefix_builtin(cmd: str) -> bool:
     """True when a stripped wrapper (``command``/``env``/…) is redefined before a merge."""
     if not MERGE_RE.search(cmd):
         return False
-    return bool(PREFIX_FUNC_RE.search(cmd) or PREFIX_ALIAS_RE.search(cmd))
+    for candidate in (cmd, _dequote_shell_text(cmd)):
+        if PREFIX_FUNC_RE.search(candidate) or PREFIX_ALIAS_RE.search(candidate):
+            return True
+    return False
 
 
 def _part_enables_set_option(part: str, letter: str, option: str) -> bool:

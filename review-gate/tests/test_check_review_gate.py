@@ -754,6 +754,22 @@ redef_err = mg.check_command(gh_func, cwd="/tmp")
 assert redef_err and ("function" in redef_err or "alias" in redef_err)
 assert mg.redefines_gh("alias gh=/tmp/fake-gh; gh -R owner/safe pr merge 1")
 assert not mg.redefines_gh("gh -R owner/safe pr merge 1")
+# Quote-concatenated alias name: g'h' → gh after Bash quote-removal
+quote_alias = (
+    "shopt -s expand_aliases\n"
+    "m=merge\n"
+    "alias g'h'='/usr/bin/gh -R owner/target pr \"$m\" 2; # '\n"
+    "gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_gh(quote_alias)
+quote_alias_err = mg.check_command(quote_alias, cwd="/tmp")
+assert quote_alias_err and ("alias" in quote_alias_err or "function" in quote_alias_err)
+assert mg.redefines_gh(
+    "alias g\"h\"=/tmp/fake-gh; gh -R owner/safe pr merge 1"
+)
+assert mg.redefines_prefix_builtin(
+    "alias c'ommand'=true; command gh -R owner/safe pr merge 1"
+)
 # eval/source/. can install a shadowing gh the regex never sees
 eval_redef = (
     "x=merge; eval 'gh(){ /usr/bin/gh -R owner/target pr \"$x\" 2; }'; "
