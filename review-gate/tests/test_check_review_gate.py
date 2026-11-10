@@ -582,6 +582,14 @@ assert n is None and e and "GH_CONFIG_DIR" in e and scrub is False
 assert not mg.gh_config_overlay_unresolved(
     "GH_CONFIG_DIR=/tmp/enterprise gh -R owner/target pr merge 42"
 )
+# Unquoted ~/… is tilde-expanded by Bash; reject rather than pass literal ~
+assert mg.gh_config_overlay_unresolved(
+    "GH_CONFIG_DIR=~/enterprise gh -R owner/target pr merge 42"
+)
+n, r, e, scrub = mg.resolve_pr_number(
+    "GH_CONFIG_DIR=~/enterprise gh -R owner/target pr merge 42"
+)
+assert n is None and e and "~" in e and scrub is False
 # Dynamic -R / GH_REPO operands fail closed
 assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
 n, r, e, scrub = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')

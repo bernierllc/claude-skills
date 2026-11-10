@@ -542,6 +542,19 @@ def _repo_operand_unresolvable(repo: str | None) -> bool:
     return "$" in repo or "`" in repo
 
 
+def _env_overlay_unresolvable(val: str | None) -> bool:
+    """True when a command-scoped env overlay still needs shell expansion.
+
+    Covers ``$`` / backticks and leading ``~`` (Bash tilde-expands unquoted
+    ``~/…`` / ``~user/…``; after ``shlex`` we cannot tell quoting, so fail closed).
+    """
+    if not val:
+        return False
+    if _repo_operand_unresolvable(val):
+        return True
+    return val.startswith("~")
+
+
 def _normalize_repo_operand(val: str) -> str:
     return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
 
@@ -716,15 +729,16 @@ def _apply_overlay_env_var(
     val = overlays[key]
     if val == "":
         env.pop(key, None)
-    elif not _repo_operand_unresolvable(val):
+    elif not _env_overlay_unresolvable(val):
         env[key] = val
 
 
 def gh_config_overlay_unresolved(cmd: str) -> bool:
-    """True when a command-scoped gh config/host path still contains ``$`` / `` ` ``.
+    """True when a command-scoped gh config/host path still needs shell expansion.
 
-    Bash expands ``GH_CONFIG_DIR="$HOME/enterprise"`` for the merge child, but
-    our parser only sees the raw ``$HOME/…`` — fail closed rather than checking
+    Bash expands ``GH_CONFIG_DIR="$HOME/enterprise"`` and unquoted
+    ``GH_CONFIG_DIR=~/enterprise`` for the merge child, but our parser only
+    sees the raw ``$HOME/…`` / ``~/…`` — fail closed rather than checking
     against the hook's inherited config dir/host.
     """
     tokens = _shell_tokens(cmd)
@@ -735,7 +749,7 @@ def gh_config_overlay_unresolved(cmd: str) -> bool:
         if key not in overlays:
             continue
         val = overlays[key]
-        if val and _repo_operand_unresolvable(val):
+        if val and _env_overlay_unresolvable(val):
             return True
     return False
 
@@ -799,7 +813,7 @@ def resolve_pr_number(
     if gh_config_overlay_unresolved(cmd):
         return None, None, (
             "review-gate: dynamic GH_CONFIG_DIR/XDG_CONFIG_HOME/HOME/GH_HOST "
-            "(e.g. \"$HOME/…\"); pass a literal path or unset the var"
+            "(e.g. \"$HOME/…\" or \"~/…\"); pass a literal path or unset the var"
         ), scrub_gh_repo
     selector = extract_merge_selector(cmd)
     if selector and selector.isdigit():
