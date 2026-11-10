@@ -164,6 +164,11 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
             buf.append(nxt)
             i += 2
             continue
+        # Shell comment — ignore through end of line (do not split on `&&` inside it).
+        if c == "#" and (i == 0 or cmd[i - 1].isspace()):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
         if c == "&" and i + 1 < n and cmd[i + 1] == "&":
             flush("&&")
             i += 2
@@ -235,8 +240,19 @@ def scoped_dir_requires_repo(part: str) -> bool:
     return env_wraps_merge(part) or bool(SUBSHELL_CD_RE.search(part))
 
 
+def _repo_operand_unresolvable(repo: str | None) -> bool:
+    """True when -R/--repo/GH_REPO still contains shell expansion."""
+    if not repo:
+        return False
+    return "$" in repo or "`" in repo
+
+
 def extract_repo(cmd: str) -> str | None:
-    """Return -R/--repo from argv, or a leading GH_REPO= assignment."""
+    """Return -R/--repo from argv, or a leading GH_REPO= assignment.
+
+    Returns the sentinel ``$UNRESOLVED`` when the operand is dynamic so callers
+    can fail closed (empty string would be ambiguous with “no repo”).
+    """
     tokens = _shell_tokens(cmd)
     rest, assignments = _skip_leading_assignments(tokens)
     i = 0
@@ -244,12 +260,15 @@ def extract_repo(cmd: str) -> str | None:
         tok = rest[i]
         if tok in ("-R", "--repo"):
             if i + 1 < len(rest):
-                return rest[i + 1]
+                val = rest[i + 1]
+                return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
             return None
         if tok.startswith("--repo="):
-            return tok.split("=", 1)[1]
+            val = tok.split("=", 1)[1]
+            return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
         if tok.startswith("-R") and tok != "-R":
-            return tok[2:]
+            val = tok[2:]
+            return "$UNRESOLVED" if _repo_operand_unresolvable(val) else val
         if tok.startswith("-"):
             if "=" in tok:
                 i += 1
@@ -263,7 +282,9 @@ def extract_repo(cmd: str) -> str | None:
             continue
         i += 1
     gh_repo = assignments.get("GH_REPO")
-    return gh_repo or None
+    if gh_repo is None or gh_repo == "":
+        return None
+    return "$UNRESOLVED" if _repo_operand_unresolvable(gh_repo) else gh_repo
 
 
 def extract_merge_selector(cmd: str) -> str | None:
@@ -320,6 +341,11 @@ def resolve_pr_number(cmd: str, cwd: str | None = None) -> tuple[int | None, str
     and omitted selector (current branch) via `gh pr view`.
     """
     repo = extract_repo(cmd)
+    if repo == "$UNRESOLVED":
+        return None, None, (
+            "review-gate: dynamic `-R`/`--repo`/GH_REPO operand (e.g. \"$VAR\"); "
+            "pass a literal `owner/repo`"
+        )
     selector = extract_merge_selector(cmd)
     if selector and selector.isdigit():
         return int(selector), repo, None
@@ -538,6 +564,12 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     if not any(is_gh_pr_merge(p) for p in parts):
+        # `bash -c 'gh pr merge …'` / `eval '…'` leave the merge inside one token.
+        if MERGE_RE.search(cmd):
+            return (
+                "review-gate: shell-wrapped `gh pr merge` detected "
+                "(e.g. `bash -c` / `eval`); run `gh -R owner/repo pr merge <n>` directly"
+            )
         return None
     if has_override(cmd):
         return None

@@ -282,6 +282,21 @@ segs, err = mg.iter_merge_segments(
 )
 assert err is None and len(segs) == 1
 assert mg.extract_repo(segs[0][0]) == "owner/r"
+# Shell wrappers must not bypass the gate
+wrapped = mg.check_command("bash -c 'gh pr merge 42'", cwd="/tmp")
+assert wrapped and "shell-wrapped" in wrapped
+wrapped = mg.check_command("eval 'gh pr merge 42'", cwd="/tmp")
+assert wrapped and "shell-wrapped" in wrapped
+# Comment text must not invent chain boundaries / fake cd
+segs, err = mg.iter_merge_segments(
+    "echo ok # ignored && cd /workspace/safe\ngh pr merge 42", "/tmp/start"
+)
+assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
+# Dynamic -R / GH_REPO operands fail closed
+assert mg.extract_repo('gh pr merge 42 -R "$TARGET_REPO"') == "$UNRESOLVED"
+n, r, e = mg.resolve_pr_number('gh pr merge 42 -R "$TARGET_REPO"')
+assert n is None and e and "dynamic" in e
+assert mg.extract_repo('GH_REPO=$TARGET_REPO gh pr merge 42') == "$UNRESOLVED"
 # -R on a later merge must not waive scoped-dir on an earlier merge segment
 segs, err = mg.iter_merge_segments(
     "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"
