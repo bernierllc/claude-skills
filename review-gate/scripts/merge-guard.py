@@ -1419,6 +1419,19 @@ GH_SUBCOMMANDS_BY_TOP: dict[str, frozenset[str]] = {
     "variable": frozenset({"delete", "get", "list", "set"}),
     "workflow": frozenset({"disable", "enable", "list", "run", "view"}),
 }
+# Third-level allowlists for ``gh <top> <sub> <nested>`` (from ``gh … --help``).
+# Unknown third words under these paths may be multiword aliases
+# (``gh alias set 'repo autolink sneak' 'pr merge …'`` → ``gh repo autolink sneak``).
+GH_NESTED_SUBCOMMANDS: dict[tuple[str, str], frozenset[str]] = {
+    ("codespace", "ports"): frozenset({"forward", "visibility"}),
+    ("issue", "artifact"): frozenset(
+        {"create", "delete", "download", "edit", "list", "view"}
+    ),
+    ("repo", "autolink"): frozenset({"create", "delete", "list", "view"}),
+    ("repo", "deploy-key"): frozenset({"add", "delete", "list"}),
+    ("repo", "gitignore"): frozenset({"list", "view"}),
+    ("repo", "license"): frozenset({"list", "view"}),
+}
 GH_ALIAS_MUTATE = frozenset({"set", "import", "delete"})
 GH_GLOBAL_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
 
@@ -1476,9 +1489,10 @@ def _part_gh_alias_configures(part: str) -> bool:
 def _part_opaque_gh_command(part: str) -> bool:
     """True when ``gh`` invokes a possible alias rather than a known command path.
 
-    Covers ``gh sneak``, ``gh -R owner/repo sneak``, and multiword aliases under
-    any namespaced command (``gh pr sneak``, ``gh repo sneak`` after
-    ``gh alias set 'repo sneak' 'pr merge …'``).
+    Covers ``gh sneak``, ``gh -R owner/repo sneak``, multiword aliases under
+    any namespaced command (``gh pr sneak``, ``gh repo sneak``), and aliases
+    nested below a known second-level path (``gh repo autolink sneak`` after
+    ``gh alias set 'repo autolink sneak' 'pr merge …'``).
     """
     rest = _tokens_after_gh(part)
     if rest is None:
@@ -1503,7 +1517,20 @@ def _part_opaque_gh_command(part: str) -> bool:
     if known is None:
         # Freeform tops (``api``, ``browse``, …) — second word is an argument.
         return False
-    return nxt not in known
+    if nxt not in known:
+        return True
+    # Nested third-level path: ``gh repo autolink <cmd>`` — unknown third words
+    # may be multiword aliases under that nested namespace.
+    nested = GH_NESTED_SUBCOMMANDS.get((sub, nxt))
+    if nested is None:
+        return False
+    deeper = _skip_gh_leading_flags(after[1:])
+    if not deeper:
+        return False
+    leaf = deeper[0]
+    if leaf.startswith("-"):
+        return False
+    return leaf not in nested
 
 
 def gh_alias_merge_risk(cmd: str) -> bool:
@@ -1511,7 +1538,8 @@ def gh_alias_merge_risk(cmd: str) -> bool:
 
     ``gh alias set sneak 'pr merge 2 -R owner/target'; gh sneak`` never matches
     ``is_gh_pr_merge``, so the gate would otherwise allow it. Fail closed on alias
-    mutation and on opaque ``gh <name>`` / ``gh <ns> <alias>`` invocations.
+    mutation and on opaque ``gh <name>`` / ``gh <ns> <alias>`` /
+    ``gh <ns> <sub> <alias>`` invocations.
     """
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     return any(

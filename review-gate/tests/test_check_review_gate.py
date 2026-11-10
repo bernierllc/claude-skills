@@ -486,6 +486,18 @@ assert mg.gh_alias_merge_risk(
 )
 assert mg.gh_alias_merge_risk("gh issue sneak")
 assert mg.gh_alias_merge_risk("gh run sneak")
+# Nested third-level aliases under known second-level namespaces
+assert mg.gh_alias_merge_risk("gh repo autolink sneak")
+assert mg.gh_alias_merge_risk(
+    "gh alias set 'repo autolink sneak' 'pr merge 2 -R owner/target'; "
+    "gh repo autolink sneak"
+)
+assert mg.gh_alias_merge_risk("gh repo deploy-key sneak")
+assert mg.gh_alias_merge_risk("gh codespace ports sneak")
+assert mg.gh_alias_merge_risk("gh issue artifact sneak")
+assert not mg.gh_alias_merge_risk("gh repo autolink list")
+assert not mg.gh_alias_merge_risk("gh repo deploy-key list")
+assert not mg.gh_alias_merge_risk("gh codespace ports forward")
 # Built-ins must not be treated as opaque aliases
 assert not mg.gh_alias_merge_risk("gh discussion list")
 assert not mg.gh_alias_merge_risk("gh skill list")
