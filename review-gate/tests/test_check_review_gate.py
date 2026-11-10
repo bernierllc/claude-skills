@@ -1417,6 +1417,17 @@ assert mg.path_override_for_merge(
     "select PATH in /tmp/a; do gh -R owner/safe pr merge 1; break; done"
 )
 assert mg.sets_path_override('for "$v" in /tmp/fake')
+# getopts writes the next option into NAME while keeping export
+assert mg.sets_path_override("getopts x PATH")
+getopts_path = "getopts x PATH -x; gh -R owner/safe pr merge 1"
+assert mg.path_override_for_merge(getopts_path)
+getopts_path_err = mg.check_command(getopts_path, cwd="/tmp")
+assert getopts_path_err and "PATH" in getopts_path_err
+assert mg.sets_path_override('getopts x "$v"')
+assert mg._part_exports_tracked_gh("getopts x GH_HOST")
+assert mg.prior_tracked_gh_export(
+    "getopts x GH_HOST -x; gh -R owner/safe pr merge 1"
+)
 
 # Doctor must detect required Review Gate status-check context
 _doctor_path = Path(__file__).parent.parent / "scripts" / "doctor-review-gate.py"

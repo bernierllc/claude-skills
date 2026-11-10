@@ -1663,8 +1663,9 @@ def sets_path_override(part: str) -> bool:
 
     Includes indexed writes such as ``PATH[0]=/tmp/fake`` (Bash converts the
     exported scalar into an array used for command lookup), loop targets
-    (``for PATH in …`` / ``select PATH in …``), and dynamic writers such as
-    ``printf -v \"$v\" …`` where ``$v`` may expand to ``PATH``.
+    (``for PATH in …`` / ``select PATH in …``), ``getopts`` name targets, and
+    dynamic writers such as ``printf -v \"$v\" …`` where ``$v`` may expand to
+    ``PATH``.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1737,6 +1738,13 @@ def sets_path_override(part: str) -> bool:
         ):
             return True
         return False
+    # ``getopts optstring NAME [args]`` writes the next option letter into NAME.
+    if head == "getopts":
+        if i + 2 < len(rest) and (
+            _is_path_name(rest[i + 2]) or _var_target_dynamic(rest[i + 2])
+        ):
+            return True
+        return False
     return False
 
 
@@ -1757,10 +1765,10 @@ def _part_exports_tracked_gh(part: str) -> bool:
     """True when the segment mutates a tracked gh/config env var for later children.
 
     Covers ``export``, ``declare``/``readonly``, standalone ``GH_HOST=…``,
-    indirect writers (``printf -v``, ``read``, ``mapfile``/``readarray``), and
-    shell-loop targets (``for GH_HOST in …`` / ``select GH_HOST in …``). Bash
-    keeps the export attribute on reassignment, so an inherited exported value
-    is updated for the merge child only.
+    indirect writers (``printf -v``, ``read``, ``mapfile``/``readarray``,
+    ``getopts``), and shell-loop targets (``for GH_HOST in …`` /
+    ``select GH_HOST in …``). Bash keeps the export attribute on reassignment,
+    so an inherited exported value is updated for the merge child only.
     """
     tokens = _shell_tokens(part)
     rest, leading = _skip_leading_assignments(tokens)
@@ -1825,6 +1833,13 @@ def _part_exports_tracked_gh(part: str) -> bool:
                 continue
             if _is_tracked_gh_name(tok) or _var_target_dynamic(tok):
                 return True
+        return False
+    # ``getopts optstring NAME [args]`` writes into NAME (keeps export attr).
+    if head == "getopts":
+        if i + 2 < len(rest) and (
+            _is_tracked_gh_name(rest[i + 2]) or _var_target_dynamic(rest[i + 2])
+        ):
+            return True
         return False
     return False
 
