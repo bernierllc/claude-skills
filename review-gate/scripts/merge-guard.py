@@ -26,9 +26,9 @@ OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
 # Pull *URL* selectors must include a scheme (gh treats scheme-less paths as branch names).
-# Groups: host, owner, repo, number.
+# Groups: host, owner, repo, number. Optional query/fragment/trailing path (gh accepts them).
 PULL_URL = re.compile(
-    r"https?://(?:www\.)?([^/\s]+)/([^/]+)/([^/]+)/pull/(\d+)",
+    r"https?://(?:www\.)?([^/\s]+)/([^/]+)/([^/]+)/pull/(\d+)(?:[/?#][^\s]*)?",
     re.I,
 )
 DOTCOM_PULL_HOSTS = frozenset({"github.com", "www.github.com"})
@@ -102,21 +102,23 @@ def shell_comments(cmd: str) -> list[str]:
     return comments
 
 
+def segment_has_override(part: str) -> bool:
+    """True when `# review-gate-ok:` is a shell comment on this merge segment."""
+    if not is_gh_pr_merge(part):
+        return False
+    return any(OVERRIDE.search(c) for c in shell_comments(part))
+
+
 def has_override(cmd: str) -> bool:
-    """True when `# review-gate-ok:` is a shell comment on a merge segment.
+    """True when any merge segment carries `# review-gate-ok:`.
 
     Overrides must be attached to the ``gh pr merge`` invocation itself — not
-    buried in heredoc data or a prior unrelated line (those can look like
-    comments to a naive scanner).
+    buried in heredoc data or a prior unrelated line. Each merge segment is
+    evaluated independently (an override on one does not waive others).
     """
     chains = split_shell_chains(cmd)
     parts = [p for p, _ in chains] if chains else [cmd]
-    for part in parts:
-        if not is_gh_pr_merge(part):
-            continue
-        if any(OVERRIDE.search(c) for c in shell_comments(part)):
-            return True
-    return False
+    return any(segment_has_override(p) for p in parts)
 
 
 def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
@@ -859,13 +861,13 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
                 "(e.g. `bash -c` / `eval`); run `gh -R owner/repo pr merge <n>` directly"
             )
         return None
-    if has_override(cmd):
-        return None
     start = cwd or os.getcwd()
     segments, seg_err = iter_merge_segments(cmd, start)
     if seg_err:
         return seg_err
     if not segments:
+        if segment_has_override(cmd):
+            return None
         if not gh_is_direct_command(cmd):
             return (
                 "review-gate: `gh pr merge` must be the directly executed command "
@@ -878,6 +880,8 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             )
         return check_one(cmd, start)
     for segment, seg_cwd in segments:
+        if segment_has_override(segment):
+            continue
         err = check_one(segment, seg_cwd)
         if err:
             return err

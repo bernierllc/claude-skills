@@ -189,6 +189,35 @@ assert not mg.has_override(
 )
 assert not mg.has_override("# review-gate-ok: prior line\ngh pr merge 42")
 assert mg.has_override("gh pr merge 42  # review-gate-ok: attached")
+# Override on one merge must not waive a second merge in the same command
+assert mg.segment_has_override("gh -R owner/safe pr merge 1  # review-gate-ok: approved")
+assert not mg.segment_has_override("gh -R owner/target pr merge 2")
+_called_ovr = {"n": 0}
+_orig_one_ovr = mg.check_one
+
+
+def _count_ovr(segment, cwd=None):
+    _called_ovr["n"] += 1
+    return f"blocked:{segment}"
+
+
+mg.check_one = _count_ovr
+try:
+    ovr_compound = mg.check_command(
+        "gh -R owner/safe pr merge 1  # review-gate-ok: approved\n"
+        "gh -R owner/target pr merge 2",
+        cwd="/tmp",
+    )
+    assert ovr_compound and "blocked:" in ovr_compound and _called_ovr["n"] == 1
+finally:
+    mg.check_one = _orig_one_ovr
+# Query/fragment suffixes on pull URLs still count (and beat conflicting -R)
+assert mg.is_pull_url_selector("https://github.com/owner/target/pull/7?foo=bar")
+assert mg.is_pull_url_selector("https://github.com/owner/target/pull/7#discussion")
+n, r, e, scrub = mg.resolve_pr_number(
+    "gh pr merge 'https://github.com/owner/target/pull/7?foo=bar' -R owner/safe"
+)
+assert e is None and n == 7 and r == "github.com/owner/target" and scrub is False
 # Codex review with missing commit.oid must not satisfy the current head
 assert not g.codex_done_on_head(
     pr(
