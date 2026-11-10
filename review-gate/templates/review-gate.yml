@@ -1,0 +1,158 @@
+# Review Gate — required check + CI cancel on new review comments.
+# Installed from bernierllc/claude-skills skill `review-gate`.
+# Pair with GitHub ruleset pull_request.required_review_thread_resolution: true.
+name: Review Gate
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, edited, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
+  checks: write
+
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cancel-ci-on-review-comment:
+    if: github.event_name == 'pull_request_review_comment' && github.event.action == 'created'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel in-progress CI runs for this head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # List in-progress / queued runs on this SHA; skip this workflow.
+          ids=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&status=in_progress&per_page=50" \
+            --jq '.workflow_runs[] | select(.name != "Review Gate") | .id')
+          ids_q=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&status=queued&per_page=50" \
+            --jq '.workflow_runs[] | select(.name != "Review Gate") | .id')
+          for id in $ids $ids_q; do
+            echo "Cancelling run $id"
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" || true
+          done
+
+  gate:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'pull_request_review' ||
+      (github.event_name == 'pull_request_review_comment')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout review-gate checker
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+          # Prefer in-repo copy of the checker if present; otherwise embed inline below.
+
+      - name: Run review-gate checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Inline portable checker (kept in sync with review-gate/scripts/check-review-gate.py).
+          # Prefer a vendored script if the repo chose to commit one:
+          if [ -f scripts/check-review-gate.py ]; then
+            python3 scripts/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO"
+            exit $?
+          fi
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          P2_ROOT = re.compile(r"\bp2\b", re.I)
+          CLOSING = re.compile(
+              r"notion\.(so|com)/|fixed in (commit )?`?[0-9a-f]{7,40}`?|not-a-finding:\s*\S",
+              re.I,
+          )
+          FALLBACK = re.compile(r"\b(agy|superpowers|claude|antigravity)\b", re.I)
+          REVIEW_SECTION = re.compile(r"(?m)^##\s+Review\b")
+          MAIN_LABELS = {"review:high", "review:ultra"}
+
+          def gh_graphql(query, **vars):
+              args = ["gh", "api", "graphql", "-f", f"query={query}"]
+              for k, v in vars.items():
+                  args.extend(["-F", f"{k}={v}"])
+              out = subprocess.check_output(args, text=True)
+              return json.loads(out)
+
+          owner, name = os.environ["REPO"].split("/", 1)
+          number = int(os.environ["PR_NUMBER"])
+          q = """
+          query($owner:String!, $name:String!, $number:Int!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                body baseRefName headRefOid
+                labels(first: 50) { nodes { name } }
+                reviews(last: 40) {
+                  nodes { state body commit { oid } author { login } }
+                }
+                reviewThreads(first: 100) {
+                  nodes {
+                    comments(first: 20) { nodes { body } }
+                  }
+                }
+              }
+            }
+          }
+          """
+          pr = gh_graphql(q, owner=owner, name=name, number=number)["data"]["repository"]["pullRequest"]
+          reasons = []
+          body = pr.get("body") or ""
+          if not REVIEW_SECTION.search(body):
+              reasons.append("PR body missing ## Review section")
+          head = pr.get("headRefOid") or ""
+          codex_ok = False
+          for rev in pr.get("reviews", {}).get("nodes") or []:
+              commit = (rev.get("commit") or {}).get("oid") or ""
+              if head and commit and commit != head:
+                  continue
+              b = rev.get("body") or ""
+              author = ((rev.get("author") or {}).get("login") or "").lower()
+              if (rev.get("state") or "").upper() == "PENDING":
+                  continue
+              if "running" in b.lower() and len(b) < 400:
+                  continue
+              if "codex" in author or "chatgpt" in author or "codex" in b.lower():
+                  codex_ok = True
+                  break
+          m = REVIEW_SECTION.search(body)
+          fallback_ok = False
+          if m:
+              rest = body[m.end():]
+              nh = re.search(r"(?m)^##\s+", rest)
+              section = rest[: nh.start()] if nh else rest
+              fallback_ok = bool(FALLBACK.search(section))
+          if not (codex_ok or fallback_ok):
+              reasons.append("No completed Codex review on current head / no named fallback in ## Review")
+          for i, thread in enumerate(pr.get("reviewThreads", {}).get("nodes") or [], 1):
+              comments = thread.get("comments", {}).get("nodes") or []
+              if not comments or not P2_ROOT.search(comments[0].get("body") or ""):
+                  continue
+              if not any(CLOSING.search(c.get("body") or "") for c in comments[1:]):
+                  reasons.append(f"P2 thread #{i} has no closing reply")
+          if (pr.get("baseRefName") or "") == "main":
+              labels = {n.get("name") for n in (pr.get("labels", {}).get("nodes") or [])}
+              if not (labels & MAIN_LABELS):
+                  reasons.append("base is main but review:high / review:ultra label missing")
+          if reasons:
+              print("review-gate failed:")
+              for r in reasons:
+                  print("-", r)
+              sys.exit(1)
+          print("review-gate ok")
+          PY

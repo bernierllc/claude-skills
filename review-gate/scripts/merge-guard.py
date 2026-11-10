@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""PreToolUse guard: block gh pr merge when review-gate checks fail.
+
+Exit 0 = allow. Exit 2 = block (stderr message for the agent).
+Override: include `# review-gate-ok: <reason>` in the Bash command.
+"""
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import sys
+from pathlib import Path
+
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "check_review_gate", Path(__file__).resolve().with_name("check-review-gate.py")
+)
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
+
+OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
+MERGE_RE = re.compile(r"\bgh(?:\s+-R\s+\S+|\s+--repo(?:=|\s+)\S+)*\s+pr\s+merge\b")
+
+
+def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
+    repo = None
+    m_repo = re.search(r"(?:-R|--repo(?:=|\s+))(\S+)", cmd)
+    if m_repo:
+        repo = m_repo.group(1).strip("'\"")
+    # gh pr merge <n>
+    m = re.search(r"\bpr\s+merge\s+(\d+)\b", cmd)
+    if m:
+        return int(m.group(1)), repo
+    # gh pr merge -- <url> rare; skip
+    return None, repo
+
+
+def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    if not MERGE_RE.search(cmd):
+        return None
+    if OVERRIDE.search(cmd):
+        return None
+    number, repo = extract_pr_and_repo(cmd)
+    if number is None:
+        return "review-gate: could not parse PR number from `gh pr merge` command"
+    try:
+        owner, name = gate.parse_repo(repo)
+        pr = gate.pr_payload(owner, name, number)
+        reasons = gate.evaluate(pr)
+    except Exception as e:  # noqa: BLE001
+        # Fail open on infra so a gh outage does not brick merges forever;
+        # still warn via stderr by returning None after print? Prefer fail closed
+        # for missing PR, fail open for transport.
+        msg = str(e).lower()
+        if "not found" in msg:
+            return f"review-gate: {e}"
+        print(f"review-gate: skip (infra): {e}", file=sys.stderr)
+        return None
+    if reasons:
+        return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
+    return None
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    if (payload.get("tool_name") or payload.get("toolName") or "") not in (
+        "Bash",
+        "bash",
+        "Shell",
+        "shell",
+    ):
+        return 0
+    inp = payload.get("tool_input") or payload.get("input") or {}
+    cmd = inp.get("command") or inp.get("cmd") or ""
+    if not cmd:
+        return 0
+    cwd = inp.get("working_directory") or inp.get("cwd")
+    err = check_command(cmd, cwd)
+    if err:
+        print(err, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
