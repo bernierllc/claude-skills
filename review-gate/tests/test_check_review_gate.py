@@ -217,6 +217,29 @@ assert segs[0][0] == "gh -R owner/safe pr merge 1"
 assert segs[1][0] == "gh -R owner/target pr merge 2"
 scoped = mg.check_command("env -C /workspace/other gh pr merge 42", cwd="/tmp")
 assert scoped and "command-scoped" in scoped
+# All GNU env chdir spellings require -R
+for env_cmd in (
+    "env --chdir=/workspace/other gh pr merge 42",
+    "env --chdir /workspace/other gh pr merge 42",
+    "env -C/workspace/other gh pr merge 42",
+):
+    err = mg.check_command(env_cmd, cwd="/tmp")
+    assert err and "command-scoped" in err, env_cmd
+# Quoted separators must not invent directory changes
+segs, err = mg.iter_merge_segments(
+    "echo 'ignored; cd /workspace/safe' && gh pr merge 42", "/tmp/start"
+)
+assert err is None and segs == [("gh pr merge 42", "/tmp/start")]
+# Conditional cd || merge must not apply the new cwd (fail closed without -R)
+segs, err = mg.iter_merge_segments(
+    "cd /definitely-missing || gh pr merge 42", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+segs, err = mg.iter_merge_segments(
+    "cd /definitely-missing || gh -R owner/r pr merge 42", "/tmp/start"
+)
+assert err is None and len(segs) == 1
+assert mg.extract_repo(segs[0][0]) == "owner/r"
 # -R on a later merge must not waive scoped-dir on an earlier merge segment
 segs, err = mg.iter_merge_segments(
     "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"

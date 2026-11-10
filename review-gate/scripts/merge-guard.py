@@ -22,8 +22,6 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
-# Directory builtins appearing as a shell word (not first-token-only).
-DIR_WORD_RE = re.compile(r"(?:^|[\s;|&])(?:cd|pushd|popd)(?:\s|$)")
 MERGE_RE = re.compile(
     r"\bgh(?:\s+-R(?:=\S+|\s+\S+|\S+)|\s+--repo(?:=\S+|\s+\S+))*\s+pr\s+merge\b"
 )
@@ -31,11 +29,8 @@ PULL_URL = re.compile(
     r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
     re.I,
 )
-# Command-scoped directory changes we do not fully parse — require `-R` instead.
-SCOPED_DIR_RE = re.compile(
-    r"(?:(?:^|[\s;|&])env\s+-C\s|(?:^|[\s;|&])\(\s*cd\s)",
-    re.I,
-)
+# Subshell `( cd …` — require `-R` (env wrappers handled via tokens).
+SUBSHELL_CD_RE = re.compile(r"(?:^|[\s;|&])\(\s*cd\s", re.I)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
 # Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
@@ -53,8 +48,8 @@ MERGE_VALUE_FLAGS = frozenset(
         "--repo",
     }
 )
-# Shell chain split: keep `||` distinct from `|` via lookaround.
-CHAIN_SPLIT = re.compile(r"\s*(?:&&|\|\||(?<!\|)\|(?!\|)|;|\n|&)\s*")
+# Separators that do not guarantee a preceding `cd` ran (fail closed).
+CONDITIONAL_SEPS = frozenset({"||", "|"})
 
 
 def _shell_tokens(cmd: str) -> list[str]:
@@ -107,6 +102,98 @@ def shell_comments(cmd: str) -> list[str]:
 def has_override(cmd: str) -> bool:
     """True only when `# review-gate-ok:` appears in a real shell comment."""
     return any(OVERRIDE.search(c) for c in shell_comments(cmd))
+
+
+def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
+    """Split on chain operators outside quotes.
+
+    Returns [(segment, sep_after), ...] where sep_after is one of
+    '', '&&', '||', '|', ';', '&', '\\n'.
+    """
+    parts: list[tuple[str, str]] = []
+    buf: list[str] = []
+    i = 0
+    in_single = False
+    in_double = False
+    n = len(cmd)
+
+    def flush(sep: str) -> None:
+        text = "".join(buf).strip()
+        buf.clear()
+        if text:
+            parts.append((text, sep))
+
+    while i < n:
+        c = cmd[i]
+        if in_single:
+            buf.append(c)
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            buf.append(c)
+            if c == "\\" and i + 1 < n:
+                buf.append(cmd[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == "&" and i + 1 < n and cmd[i + 1] == "&":
+            flush("&&")
+            i += 2
+            continue
+        if c == "|" and i + 1 < n and cmd[i + 1] == "|":
+            flush("||")
+            i += 2
+            continue
+        if c == "|":
+            flush("|")
+            i += 1
+            continue
+        if c == ";":
+            flush(";")
+            i += 1
+            continue
+        if c == "&":
+            flush("&")
+            i += 1
+            continue
+        if c == "\n":
+            flush("\n")
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    flush("")
+    return parts
+
+
+def env_wraps_merge(part: str) -> bool:
+    """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
+    tokens = _shell_tokens(part)
+    try:
+        gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
+    except StopIteration:
+        return False
+    return any(t == "env" for t in tokens[:gh_i])
+
+
+def scoped_dir_requires_repo(part: str) -> bool:
+    """True when the segment uses env/subshell chdir we refuse to model without -R."""
+    return env_wraps_merge(part) or bool(SUBSHELL_CD_RE.search(part))
 
 
 def extract_repo(cmd: str) -> str | None:
@@ -279,22 +366,24 @@ def iter_merge_segments(
 ) -> tuple[list[tuple[str, str]], str | None]:
     """Return ((segment, cwd)…, error).
 
-    Splits on `&&`, `||`, `;`, `&`, and newlines so each merge is checked.
-    Unresolvable cd/pushd/popd before a merge without `-R` fails closed.
+    Quote-aware split on `&&`, `||`, `|`, `;`, `&`, and newlines.
+    Unresolvable / conditional cd/pushd/popd before a merge without `-R` fails closed.
     """
     cwd = start_cwd
     unresolved_cd = False
     out: list[tuple[str, str]] = []
-    for part in CHAIN_SPLIT.split(cmd):
-        part = part.strip()
-        if not part:
-            continue
+    for part, sep_after in split_shell_chains(cmd):
         if not MERGE_RE.search(part):
-            first = _shell_tokens(part)[:1]
+            tokens = _shell_tokens(part)
+            first = tokens[:1]
             if first and first[0] == "popd":
                 unresolved_cd = True
                 continue
             if first and first[0] in DIR_BUILTINS:
+                # `cd … || merge` does not apply the new cwd in Bash when cd fails.
+                if sep_after in CONDITIONAL_SEPS:
+                    unresolved_cd = True
+                    continue
                 target = parse_dir_builtin(part, first[0])
                 if _cd_target_unresolvable(target):
                     unresolved_cd = True
@@ -304,8 +393,8 @@ def iter_merge_segments(
                 cwd = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
                 unresolved_cd = False
                 continue
-            # `if cd …`, `then pushd …`, etc. — not first-token builtins we model.
-            if DIR_WORD_RE.search(part):
+            # `if cd …`, `then pushd …`, etc. — use tokens so quoted text is ignored.
+            if any(t in DIR_BUILTINS or t == "popd" for t in tokens):
                 unresolved_cd = True
                 continue
         if MERGE_RE.search(part):
@@ -315,10 +404,10 @@ def iter_merge_segments(
                     "review-gate: multiple `gh pr merge` invocations in one shell "
                     "segment; run them as separate commands"
                 )
-            if SCOPED_DIR_RE.search(part) and not extract_repo(part):
+            if scoped_dir_requires_repo(part) and not extract_repo(part):
                 return [], (
                     "review-gate: command-scoped directory change detected "
-                    "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
+                    "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
                 )
             if unresolved_cd and not extract_repo(part):
                 return [], (
@@ -361,10 +450,10 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     if seg_err:
         return seg_err
     if not segments:
-        if SCOPED_DIR_RE.search(cmd) and not extract_repo(cmd):
+        if scoped_dir_requires_repo(cmd) and not extract_repo(cmd):
             return (
                 "review-gate: command-scoped directory change detected "
-                "(e.g. `env -C` / subshell `cd`); pass `-R owner/repo` explicitly"
+                "(e.g. `env -C`/`--chdir` / subshell `cd`); pass `-R owner/repo` explicitly"
             )
         return check_one(cmd, start)
     for segment, seg_cwd in segments:
