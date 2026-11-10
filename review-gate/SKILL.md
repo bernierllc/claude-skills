@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge and save CI minutes when review comments land. Use when installing review gates on nevar* repos, when CI should cancel on new review comments, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.11
+version: 1.0.12
 author: Bernier LLC
 ---
 

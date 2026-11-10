@@ -155,9 +155,15 @@ assert mg.extract_pr_and_repo("gh pr merge 99 -R owner/repo --squash") == (99, "
 assert mg.extract_pr_and_repo("gh --repo=owner/repo pr merge 5") == (5, "owner/repo")
 assert mg.extract_pr_and_repo("gh --repo owner/repo pr merge 5") == (5, "owner/repo")
 assert mg.MERGE_RE.search("gh pr merge 1 --squash")
+assert mg.is_gh_pr_merge("gh pr merge 1 --squash")
+assert mg.is_gh_pr_merge("gh pr -R owner/target merge 42")
+assert not mg.is_gh_pr_merge("gh pr view 1")
 assert not mg.MERGE_RE.search("gh pr view 1")
 assert mg.OVERRIDE.search("gh pr merge 1  # review-gate-ok: matt said so")
 assert mg.has_override("gh pr merge 1  # review-gate-ok: matt said so")
+assert mg.extract_repo("gh pr -R owner/target merge 42") == "owner/target"
+assert mg.extract_repo("GH_REPO=owner/target gh pr merge 42") == "owner/target"
+assert mg.extract_merge_selector("gh pr -R owner/target merge 42") == "42"
 # Quoted body text must not count as the Bash escape comment
 assert not mg.has_override(
     "gh pr merge 42 --body 'notes # review-gate-ok: placeholder'"
@@ -240,6 +246,23 @@ segs, err = mg.iter_merge_segments(
 )
 assert err is None and len(segs) == 1
 assert mg.extract_repo(segs[0][0]) == "owner/r"
+# Backgrounded cd does not change the parent shell cwd
+segs, err = mg.iter_merge_segments(
+    "cd /workspace/safe & gh pr merge 42", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+# Compact subshell `(cd … && merge)` fails closed without -R
+segs, err = mg.iter_merge_segments(
+    "(cd /workspace/other && gh pr merge 42)", "/tmp/start"
+)
+assert segs == [] and err and "cannot resolve" in err
+segs, err = mg.iter_merge_segments(
+    "(cd /workspace/other && gh -R owner/r pr merge 42)", "/tmp/start"
+)
+assert err is None and len(segs) == 1
+assert mg.extract_repo(segs[0][0]) == "owner/r"
+# GH_REPO assignment selects the target repo
+assert mg.extract_repo("GH_REPO=owner/target gh pr merge 99") == "owner/target"
 # -R on a later merge must not waive scoped-dir on an earlier merge segment
 segs, err = mg.iter_merge_segments(
     "env -C /workspace/target gh pr merge 1 && gh -R owner/safe pr merge 2", "/tmp"

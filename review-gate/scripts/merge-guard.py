@@ -22,15 +22,15 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
-MERGE_RE = re.compile(
-    r"\bgh(?:\s+-R(?:=\S+|\s+\S+|\S+)|\s+--repo(?:=\S+|\s+\S+))*\s+pr\s+merge\b"
-)
+# Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
+MERGE_RE = re.compile(r"\bgh\b.*\bpr\b.*\bmerge\b", re.S)
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
 PULL_URL = re.compile(
     r"(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)/pull/(\d+)",
     re.I,
 )
-# Subshell `( cd …` — require `-R` (env wrappers handled via tokens).
-SUBSHELL_CD_RE = re.compile(r"(?:^|[\s;|&])\(\s*cd\s", re.I)
+# Subshell `(cd` / `( cd` — require `-R` (env wrappers handled via tokens).
+SUBSHELL_CD_RE = re.compile(r"\(\s*cd\b", re.I)
 # Value-taking flags from `gh pr merge --help` (and shared -R/--repo).
 # Walk argv and consume their values so body text cannot fake a -R match.
 MERGE_VALUE_FLAGS = frozenset(
@@ -48,8 +48,8 @@ MERGE_VALUE_FLAGS = frozenset(
         "--repo",
     }
 )
-# Separators that do not guarantee a preceding `cd` ran (fail closed).
-CONDITIONAL_SEPS = frozenset({"||", "|"})
+# Separators that do not guarantee a preceding `cd` applied to the parent shell.
+CONDITIONAL_SEPS = frozenset({"||", "|", "&"})
 
 
 def _shell_tokens(cmd: str) -> list[str]:
@@ -181,9 +181,35 @@ def split_shell_chains(cmd: str) -> list[tuple[str, str]]:
     return parts
 
 
+def _skip_leading_assignments(tokens: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Strip leading VAR=value tokens; return (rest, assignments)."""
+    env: dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        m = ASSIGNMENT_RE.match(tokens[i])
+        if not m:
+            break
+        key, _, val = tokens[i].partition("=")
+        env[key] = val
+        i += 1
+    return tokens[i:], env
+
+
+def is_gh_pr_merge(part: str) -> bool:
+    """True when tokens contain `gh` … `pr` … `merge` (flags allowed between)."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
+    try:
+        gh_i = tokens.index("gh")
+        pr_i = next(i for i in range(gh_i + 1, len(tokens)) if tokens[i] == "pr")
+        next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
+        return True
+    except (ValueError, StopIteration):
+        return False
+
+
 def env_wraps_merge(part: str) -> bool:
     """True when `env` appears before `gh` in the segment (any -C/--chdir spelling)."""
-    tokens = _shell_tokens(part)
+    tokens, _ = _skip_leading_assignments(_shell_tokens(part))
     try:
         gh_i = next(i for i, t in enumerate(tokens) if t == "gh")
     except StopIteration:
@@ -197,14 +223,15 @@ def scoped_dir_requires_repo(part: str) -> bool:
 
 
 def extract_repo(cmd: str) -> str | None:
-    """Return -R/--repo from the argv, never from quoted flag values (e.g. --body)."""
+    """Return -R/--repo from argv, or a leading GH_REPO= assignment."""
     tokens = _shell_tokens(cmd)
+    rest, assignments = _skip_leading_assignments(tokens)
     i = 0
-    while i < len(tokens):
-        tok = tokens[i]
+    while i < len(rest):
+        tok = rest[i]
         if tok in ("-R", "--repo"):
-            if i + 1 < len(tokens):
-                return tokens[i + 1]
+            if i + 1 < len(rest):
+                return rest[i + 1]
             return None
         if tok.startswith("--repo="):
             return tok.split("=", 1)[1]
@@ -222,16 +249,20 @@ def extract_repo(cmd: str) -> str | None:
             i += 1
             continue
         i += 1
-    return None
+    gh_repo = assignments.get("GH_REPO")
+    return gh_repo or None
 
 
 def extract_merge_selector(cmd: str) -> str | None:
-    """Positional selector after `pr merge`, or None when merging the current branch."""
-    m = re.search(r"\bpr\s+merge\b(.*)$", cmd, re.S)
-    if not m:
+    """Positional selector after `merge`, or None when merging the current branch."""
+    tokens, _ = _skip_leading_assignments(_shell_tokens(cmd))
+    try:
+        gh_i = tokens.index("gh")
+        pr_i = next(i for i in range(gh_i + 1, len(tokens)) if tokens[i] == "pr")
+        merge_i = next(i for i in range(pr_i + 1, len(tokens)) if tokens[i] == "merge")
+    except (ValueError, StopIteration):
         return None
-    tokens = _shell_tokens(m.group(1))
-    i = 0
+    i = merge_i + 1
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith("-"):
@@ -252,6 +283,10 @@ def extract_merge_selector(cmd: str) -> str | None:
                 continue
             i += 1
             continue
+        # Trailing subshell closer etc.
+        if tok in {")", "fi", "done", "esac"}:
+            i += 1
+            continue
         return tok
     return None
 
@@ -259,9 +294,9 @@ def extract_merge_selector(cmd: str) -> str | None:
 def extract_pr_and_repo(cmd: str) -> tuple[int | None, str | None]:
     """Legacy helper: numeric selector only. Prefer resolve_pr_number for merges."""
     repo = extract_repo(cmd)
-    m = re.search(r"\bpr\s+merge\s+(\d+)\b", cmd)
-    if m:
-        return int(m.group(1)), repo
+    selector = extract_merge_selector(cmd)
+    if selector and selector.isdigit():
+        return int(selector), repo
     return None, repo
 
 
@@ -344,7 +379,10 @@ def parse_dir_builtin(part: str, builtin: str) -> str | None:
         tokens = shlex.split(part, posix=True)
     except ValueError:
         tokens = part.split()
-    if not tokens or tokens[0] != builtin:
+    if not tokens:
+        return None
+    head = tokens[0].lstrip("(")
+    if head != builtin:
         return None
     i = 1
     while i < len(tokens):
@@ -358,7 +396,17 @@ def parse_dir_builtin(part: str, builtin: str) -> str | None:
         break
     if i >= len(tokens):
         return None
-    return tokens[i].strip("'\"")
+    return tokens[i].rstrip(")").strip("'\"")
+
+
+def _leading_dir_builtin(tokens: list[str]) -> str | None:
+    """Return cd/pushd/popd if it is the first actionable token (incl. `(cd`)."""
+    if not tokens:
+        return None
+    head = tokens[0].lstrip("(")
+    if head in DIR_BUILTINS or head == "popd":
+        return head
+    return None
 
 
 def iter_merge_segments(
@@ -373,18 +421,22 @@ def iter_merge_segments(
     unresolved_cd = False
     out: list[tuple[str, str]] = []
     for part, sep_after in split_shell_chains(cmd):
-        if not MERGE_RE.search(part):
+        if not is_gh_pr_merge(part):
             tokens = _shell_tokens(part)
-            first = tokens[:1]
-            if first and first[0] == "popd":
+            # Subshell opener — fail closed (parent cwd / nesting is not modeled).
+            if tokens and tokens[0].startswith("("):
                 unresolved_cd = True
                 continue
-            if first and first[0] in DIR_BUILTINS:
-                # `cd … || merge` does not apply the new cwd in Bash when cd fails.
+            leading = _leading_dir_builtin(tokens)
+            if leading == "popd":
+                unresolved_cd = True
+                continue
+            if leading in DIR_BUILTINS:
+                # `cd … ||/&/| merge` does not apply cwd to the parent shell.
                 if sep_after in CONDITIONAL_SEPS:
                     unresolved_cd = True
                     continue
-                target = parse_dir_builtin(part, first[0])
+                target = parse_dir_builtin(part, leading)
                 if _cd_target_unresolvable(target):
                     unresolved_cd = True
                     continue
@@ -394,12 +446,20 @@ def iter_merge_segments(
                 unresolved_cd = False
                 continue
             # `if cd …`, `then pushd …`, etc. — use tokens so quoted text is ignored.
-            if any(t in DIR_BUILTINS or t == "popd" for t in tokens):
+            if any(
+                t in DIR_BUILTINS or t == "popd" or t.lstrip("(") in DIR_BUILTINS
+                for t in tokens
+            ):
                 unresolved_cd = True
                 continue
-        if MERGE_RE.search(part):
-            # Multiple merges in one segment (should be rare after |/|| splits).
-            if len(re.findall(r"\bpr\s+merge\b", part)) > 1:
+        if is_gh_pr_merge(part):
+            toks = _shell_tokens(part)
+            merge_verbs = sum(
+                1
+                for i, t in enumerate(toks)
+                if t == "merge" and "pr" in toks[:i] and "gh" in toks[:i]
+            )
+            if merge_verbs > 1:
                 return [], (
                     "review-gate: multiple `gh pr merge` invocations in one shell "
                     "segment; run them as separate commands"
@@ -441,7 +501,8 @@ def check_one(segment: str, cwd: str | None) -> str | None:
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
-    if not MERGE_RE.search(cmd):
+    parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
+    if not any(is_gh_pr_merge(p) for p in parts):
         return None
     if has_override(cmd):
         return None
