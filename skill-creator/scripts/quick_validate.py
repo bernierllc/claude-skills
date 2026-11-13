@@ -6,7 +6,10 @@ Quick validation script for skills - minimal version
 import sys
 import os
 import re
-import yaml
+try:
+    import yaml
+except ImportError:  # PyYAML is not a declared dependency
+    yaml = None
 from pathlib import Path
 
 def validate_skill(skill_path):
@@ -31,15 +34,22 @@ def validate_skill(skill_path):
     frontmatter_text = match.group(1)
 
     # Parse YAML frontmatter
-    try:
-        frontmatter = yaml.safe_load(frontmatter_text)
-        if not isinstance(frontmatter, dict):
-            return False, "Frontmatter must be a YAML dictionary"
-    except yaml.YAMLError as e:
-        return False, f"Invalid YAML in frontmatter: {e}"
+    if yaml is None:
+        # Top-level "key: value" lines only; enough for the key/name/description checks
+        frontmatter = {m.group(1): m.group(2).strip().strip("'\"")
+                       for m in re.finditer(r"^([A-Za-z_-]+):[ \t]*(.*)$", frontmatter_text, re.MULTILINE)}
+    else:
+        try:
+            frontmatter = yaml.safe_load(frontmatter_text)
+            if not isinstance(frontmatter, dict):
+                return False, "Frontmatter must be a YAML dictionary"
+        except yaml.YAMLError as e:
+            return False, f"Invalid YAML in frontmatter: {e}"
 
     # Define allowed properties
-    ALLOWED_PROPERTIES = {'name', 'description', 'license', 'allowed-tools', 'metadata', 'compatibility'}
+    ALLOWED_PROPERTIES = {'name', 'description', 'license', 'allowed-tools', 'metadata', 'compatibility',
+                          # this repo's skill metadata
+                          'version', 'author', 'source', 'source_path', 'dependencies'}
 
     # Check for unexpected properties (excluding nested keys under metadata)
     unexpected_keys = set(frontmatter.keys()) - ALLOWED_PROPERTIES

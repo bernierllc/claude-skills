@@ -11,6 +11,7 @@ import os
 import select
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -50,6 +51,10 @@ def run_single_query(
     """
     unique_id = uuid.uuid4().hex[:8]
     clean_name = f"{skill_name}-skill-{unique_id}"
+    # Isolated per-query project dir: parallel workers must not see each
+    # other's temp commands in a shared .claude/commands (project_root is unused).
+    isolated_root = tempfile.TemporaryDirectory(prefix="skill-eval-")
+    project_root = isolated_root.name
     project_commands_dir = Path(project_root) / ".claude" / "commands"
     command_file = project_commands_dir / f"{clean_name}.md"
 
@@ -177,8 +182,7 @@ def run_single_query(
 
         return triggered
     finally:
-        if command_file.exists():
-            command_file.unlink()
+        isolated_root.cleanup()
 
 
 def run_eval(
