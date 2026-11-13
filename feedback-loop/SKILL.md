@@ -44,7 +44,8 @@ Never edit these files by hand; always go through the script.
 
 Each line of `entries.jsonl` is one JSON object. Required: `id` (12 hex chars, unique within the
 subject: random for live entries; imports use the first 12 hex chars of the sha256 of
-`ts\nkind\nname\nsummary` so a re-import adds nothing), `ts` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `kind`, `name`,
+`ts\nkind\nname\nsummary`, plus `\n<n>` for the n-th repeat of the same date and summary, so a
+re-import adds nothing), `ts` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `kind`, `name`,
 `severity`, `summary`, `reporter` (`agent`, `cli`, `hook` or `human`). Optional: `suggestion`,
 `phase`, `area` (process only), `project`. A program that cannot run the script (a CLI capturing
 its own crash) may append one such line itself, with a single `O_APPEND` write.
