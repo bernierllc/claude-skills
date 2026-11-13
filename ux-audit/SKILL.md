@@ -1,7 +1,7 @@
 ---
 name: ux-audit
 description: Systematically identify user experience problems in web applications through browser inspection and code analysis. Covers navigation flow, task completion friction, error states, feedback/system status, consistency, forms/input UX, content clarity, accessibility (WCAG 2.1 AA), responsive behavior, trust/support risk, onboarding/discoverability, visual hierarchy, recovery/reversibility, performance/perceived speed, data/table UX, search UX, dark mode/theming, and i18n/l10n. Audits through multiple user personas. Use when asked to audit UX, find confusing UI, review user experience, identify support risks, improve usability, or check accessibility. Produces a prioritized findings list with impact/effort scoring, then fixes small issues directly and proposes mockups/plans for larger ones.
-version: 1.0.0
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -159,3 +159,16 @@ Check for framework indicators and use the appropriate patterns:
 ## Detailed Checklist
 
 See `references/audit-checklist.md` for the complete category-by-category checklist.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:ux-audit`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:ux-audit`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

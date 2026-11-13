@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 1.0.101
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -77,3 +77,19 @@ PreToolUse blocks `gh pr merge` (including `--auto`) when `check-review-gate.py`
 - Loop behavior: skill `adversarial-review` / `~/.claude/references/pr-review-loop.md`
 - Base-sync discipline: skill `pr-merge-flow`
 - Plan of record: `email_demo/plans/2026-10-16-dev-environment-enforcement-plan.md` §6
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:review-gate`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- When the project's own process causes friction during this skill's work (for example a flaky
+  or slow CI job, a test that missed a regression, a plan that was wrong about the code), log it
+  as subject `process:<project>` with `--area <ci|test|plan|review|deploy|dev>`.
+- At the end of a run, check `skill:review-gate`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->
