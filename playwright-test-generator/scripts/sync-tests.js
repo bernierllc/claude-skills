@@ -384,8 +384,11 @@ Usage: node sync-tests.js <verification-doc-path>
     process.exit(1);
   }
 
-  const release = acquireLockSync(projectDir);
+  // A path argument means the pre-commit hook ran us; stdin means the on-edit hook did.
+  const hookId = hasPathArg ? 'ptg-check-changed-docs-pre-commit' : 'ptg-sync-tests-on-doc-edit';
+  let release = () => {};
   try {
+    release = acquireLockSync(projectDir);
     const manifestDir = manifestDirFor(projectDir);
     const result = await syncTests(docPath, manifestDir);
     const parts = [];
@@ -397,7 +400,7 @@ Usage: node sync-tests.js <verification-doc-path>
     console.log(`sync-tests: ${basename(docPath, '.md')} — ${parts.join(', ') || 'no changes'}`);
   } catch (err) {
     console.error(err.message);
-    fbLog('hook:playwright-test-generator/ptg-sync-tests-on-doc-edit', 'medium', `sync-tests failed: ${err.name}`);
+    fbLog(`hook:playwright-test-generator/${hookId}`, 'medium', `sync-tests failed: ${err.name}`);
     process.exitCode = 1;
   } finally {
     release();

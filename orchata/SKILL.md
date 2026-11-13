@@ -1,7 +1,7 @@
 ---
 name: orchata
 description: Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — "orchestrate this", "/orchata", "plan and build this", "run this with subagents", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop (through the feedback-loop skill).
-version: 1.6.0
+version: 2.0.0
 author: Bernier LLC
 ---
 
@@ -79,7 +79,7 @@ All orchata state lives in `~/.claude/orchata/` — **never** in the skill's own
 installs). First run: create the directory and write `capabilities.json` (`{}`).
 
 Friction is no longer kept here: it goes to the `feedback-loop` skill as subject
-`skill:orchata` (see the Feedback section). If a pre-1.6 register `~/.claude/orchata/friction.json`
+`skill:orchata` (see the Feedback section). If a pre-2.0 register `~/.claude/orchata/friction.json`
 still exists and `feedback-loop` is installed, run its `scripts/feedback.py import-orchata` once:
 it moves every entry, the review date, the source repo and an opt-out into the shared store and
 renames the old file to `friction.json.migrated`.
