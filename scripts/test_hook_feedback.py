@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -43,7 +44,11 @@ class HookFeedbackTest(unittest.TestCase):
                                        env={**os.environ, "AGENT_FEEDBACK_BIN": str(fake)})
                     self.assertNotEqual(r.returncode, 0)
                     self.assertIn("RuntimeError", r.stderr)
-                    last = json.loads((Path(str(fake) + ".calls")).read_text().splitlines()[-1])
+                    calls = Path(str(fake) + ".calls")
+                    deadline = time.monotonic() + 10  # the logger is detached; give it time to land
+                    while time.monotonic() < deadline and subject not in (calls.read_text() if calls.exists() else ""):
+                        time.sleep(0.05)
+                    last = json.loads(calls.read_text().splitlines()[-1])
                     self.assertEqual(last[:2], ["log", subject])
                     self.assertTrue(last[last.index("--summary") + 1].endswith("crashed: RuntimeError"), last)
 

@@ -468,10 +468,11 @@ def fb_log(subject: str, severity: str, summary: str) -> None:
     for c in candidates:
         if c and Path(c).is_file():
             try:
-                subprocess.run(["python3", str(c), "log", subject, "--reporter", "hook",
-                                "--severity", severity, "--summary", summary, "--quiet"],
-                               capture_output=True, timeout=5)
-            except (OSError, subprocess.SubprocessError):
+                subprocess.Popen(["python3", str(c), "log", subject, "--reporter", "hook",
+                                  "--severity", severity, "--summary", summary, "--quiet"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
                 pass  # best-effort by design: feedback must never break the hook
             return
 
