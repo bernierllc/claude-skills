@@ -1,5 +1,4 @@
 """Tests for feedback-loop/scripts/feedback.py: the store every item logs friction into."""
-import fcntl
 import importlib.util
 import json
 import os
@@ -11,6 +10,11 @@ import unittest
 from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: the flock-based test skips; WindowsLockTest covers msvcrt
+    fcntl = None
 
 SCRIPT = Path(__file__).resolve().parent.parent / "feedback-loop" / "scripts" / "feedback.py"
 
@@ -200,6 +204,7 @@ class FeedbackStoreTest(unittest.TestCase):
         cfg = json.loads(self.run_fb("config", "--json").stdout)
         self.assertIn("skill:orchata", cfg["opt_out"])
 
+    @unittest.skipUnless(fcntl, "needs fcntl")
     def test_import_holds_the_entries_lock_so_live_logs_cannot_interleave(self):
         src = Path(self.tmp.name) / "friction.json"
         src.write_text(json.dumps({"last_review": "2026-08-01", "entries": [
