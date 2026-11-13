@@ -1,7 +1,7 @@
 ---
 name: slack-gif-creator
 description: Toolkit for creating animated GIFs optimized for Slack, with validators for size constraints and composable animation primitives. This skill applies when users request animated GIFs or emoji animations for Slack from descriptions like "make me a GIF for Slack of X doing Y".
-version: 1.1.0
+version: 1.2.0
 author: Anthropic
 source: anthropics/skills
 source_path: skills/slack-gif-creator
@@ -648,3 +648,16 @@ To use this toolkit, install these dependencies only if they aren't already pres
 ```bash
 pip install pillow imageio numpy
 ```
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:slack-gif-creator`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:slack-gif-creator`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

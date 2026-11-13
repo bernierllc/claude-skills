@@ -1,7 +1,7 @@
 ---
 name: internal-comms
 description: A set of resources to help me write all kinds of internal communications, using the formats that my company likes to use. Claude should use this skill whenever asked to write some sort of internal communications (status reports, leadership updates, 3P updates, company newsletters, FAQs, incident reports, project updates, etc.).
-version: 1.1.0
+version: 1.2.0
 author: Anthropic
 source: anthropics/skills
 source_path: skills/internal-comms
@@ -34,3 +34,16 @@ If the communication type doesn't match any existing guideline, ask for clarific
 
 ## Keywords
 3P updates, company newsletter, company comms, weekly update, faqs, common questions, updates, internal comms
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:internal-comms`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:internal-comms`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->
