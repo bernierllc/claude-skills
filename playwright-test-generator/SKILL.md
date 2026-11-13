@@ -1,6 +1,6 @@
 ---
 name: playwright-test-generator
-version: 4.1.0
+version: 4.2.0
 dependencies:
   skills:
     - name: verification-writer
@@ -857,3 +857,16 @@ Combines the per-doc manifest layout (was PR #39) with the running-app commit ga
 ## Installed directory
 
 AEC prompts for the shared `verification` directory (default `docs/verification`) and whether to install hooks. It creates the directory even if hooks are declined. The choice is stored in `.aec/directories.json` as `{"verification": "docs/verification"}`. Read that setting before writing docs or invoking tools; every `docs/verification` path in this skill is relative to that selected root. Track this configuration with the project so teammates use the same location. Existing projects without this file use `docs/verification`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:playwright-test-generator`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:playwright-test-generator`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

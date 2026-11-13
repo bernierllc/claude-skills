@@ -1,7 +1,7 @@
 ---
 name: feature-map-review
 description: Map every feature of a software project, find its gaps, re-cut plans and backlog by feature, then map the work and the code's boundaries. Builds a feature registry with links, tags plans and tracker rows by feature, records every gap under a permanent id, reviews each feature against its plans, groups gaps into workstreams, writes a plan review, applies what the user accepts and makes one tracker row per workstream. Then types workstream dependencies (critical paths, linchpins, what waits on people, delivery data) and maps the code into contexts (owned files and tables, declared interfaces, imports reaching past them) to show which work can safely run in parallel. Use whenever someone wants a feature map, a gap audit of code against plans, unowned, stale or conflicting plans, a prioritised roadmap, the critical path, what to start next, what can run in parallel, or bounded contexts and interface boundaries, even if they only say "what are we missing", "audit our plans" or "map this project".
-version: 1.0.0
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -353,3 +353,16 @@ When `docs/feature-map/` already exists:
    workstreams that closed. Re-run the delivery brief when the last `git.taken_at` is more than a month old.
 7. Add globs and table owners for new code until `--check` passes, and say in the report how the
    reach-in count and the independent pairs moved since the last build.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:feature-map-review`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:feature-map-review`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

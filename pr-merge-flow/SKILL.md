@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to GitHub auto-merge, wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.2.0
+version: 1.3.0
 author: Bernier LLC
 ---
 
@@ -71,3 +71,19 @@ depend on), append `# sync-base: <reason>` to the command. Say which commit and 
 The reason stays in the transcript.
 
 Self-check: `python3 pr-merge-flow/tests/test_pr_guard.py`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:pr-merge-flow`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- When the project's own process causes friction during this skill's work (for example a flaky
+  or slow CI job, a test that missed a regression, a plan that was wrong about the code), log it
+  as subject `process:<project>` with `--area <ci|test|plan|review|deploy|dev>`.
+- At the end of a run, check `skill:pr-merge-flow`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

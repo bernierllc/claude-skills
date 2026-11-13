@@ -1,7 +1,7 @@
 ---
 name: ship
 description: 'Use when work on the current branch is ready to land — "ship this", "/ship", "wrap this up and open the PR", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, PR (ready for review unless drafts are configured), external-tracker sync, and a five-line report.'
-version: 1.2.0
+version: 1.3.0
 author: Bernier LLC
 ---
 
@@ -78,3 +78,19 @@ tests:   <suite result | "none configured">
 tracker: <synced | fallback | none configured>
 next:    <one concrete step>
 ```
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:ship`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- When the project's own process causes friction during this skill's work (for example a flaky
+  or slow CI job, a test that missed a regression, a plan that was wrong about the code), log it
+  as subject `process:<project>` with `--area <ci|test|plan|review|deploy|dev>`.
+- At the end of a run, check `skill:ship`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

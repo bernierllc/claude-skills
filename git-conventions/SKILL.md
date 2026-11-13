@@ -1,7 +1,7 @@
 ---
 name: git-conventions
 description: Use when committing in a repo that requires lowercase conventional commits, or when a commit is rejected with `commit-msg: subject must be`. Enforces conventional commits with a lowercase subject (`type(scope): description`) through a git commit-msg hook that aec installs into the repo's active hooks directory, so no commitlint install is needed.
-version: 1.0.1
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -39,3 +39,16 @@ or by hand: `git commit --allow-empty -m 'Bad Subject'` is rejected, `git commit
 The global rules said "Commitlint enforces it." Nothing did: no repo had commitlint, husky or a
 `commit-msg` hook. A dependency-free hook that aec installs is the smallest thing that is true
 in every repo, including ones with no `package.json`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:git-conventions`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:git-conventions`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

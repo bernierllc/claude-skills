@@ -1,7 +1,7 @@
 ---
 name: plan-review
 description: Use when reviewing, auditing, or cleaning up plan files. Discovers plans across the repo and Claude's project directory, correlates them with git branches, performs deep code inspection to determine actual completion state vs. claimed status, and produces a gap analysis report. Also triggered by "review my plans", "what's the state of my plans", "clean up plans", or "status of plan X".
-version: 1.0.0
+version: 1.1.0
 author: Bernier LLC
 metadata:
   filePattern:
@@ -281,3 +281,19 @@ Plan review YYYY-MM-DD: X plans (N complete, M partial, K not started), Y orphan
 ```
 
 Save as type: `project`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:plan-review`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- When the project's own process causes friction during this skill's work (for example a flaky
+  or slow CI job, a test that missed a regression, a plan that was wrong about the code), log it
+  as subject `process:<project>` with `--area <ci|test|plan|review|deploy|dev>`.
+- At the end of a run, check `skill:plan-review`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

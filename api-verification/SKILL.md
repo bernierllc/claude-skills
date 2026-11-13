@@ -1,6 +1,6 @@
 ---
 name: api-verification
-version: 1.2.0
+version: 1.3.0
 dependencies:
   skills:
     - name: api-verification-writer
@@ -47,3 +47,16 @@ Run via `aec run-script skill:api-verification matrix.py -- <subcommand> ...` (s
 ## Installed verification directory
 
 Read `.aec/directories.json` before using verification docs. Its `verification` value is the shared directory selected during AEC setup; absent configuration defaults to `docs/verification`. All documentation paths in this skill are relative to that chosen root. The scripts read this configuration automatically; explicit API matrix file arguments still take precedence.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:api-verification`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:api-verification`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

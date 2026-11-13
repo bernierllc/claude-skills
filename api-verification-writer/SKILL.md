@@ -1,6 +1,6 @@
 ---
 name: api-verification-writer
-version: 1.3.0
+version: 1.4.0
 dependencies:
   skills:
     - name: verification-writer
@@ -46,3 +46,16 @@ UI verification docs describe pages. This skill describes **operations**: REST e
 ## Installed directory
 
 AEC prompts for the shared `verification` directory (default `docs/verification`) and whether to install hooks. It creates the directory even if hooks are declined. The choice is stored in `.aec/directories.json` as `{"verification": "docs/verification"}`. Read that setting before writing docs or invoking tools; every `docs/verification` path in this skill is relative to that selected root. Track this configuration with the project so teammates use the same location. Existing projects without this file use `docs/verification`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:api-verification-writer`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:api-verification-writer`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->
