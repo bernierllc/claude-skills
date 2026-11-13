@@ -4,7 +4,7 @@
 Layout under $AGENT_FEEDBACK_HOME (default ~/.agent-feedback):
   config.json                              {"enabled": true, "opt_out": ["skill:foo"]}
   subjects/<kind>/<name>/entries.jsonl     append-only, one JSON entry per line
-  subjects/<kind>/<name>/state.json        {"last_review", "source_repo", "resolutions"}
+  subjects/<kind>/<name>/state.json        {"last_review", "reviewed_count", "source_repo", "resolutions"}
 
 Stdlib only. Subjects are written `kind:name` (e.g. `skill:orchata`, `hook:typecheck-on-edit/post-edit`,
 `process:my-project`). Run `feedback.py <command> -h` for each command's options.
@@ -16,14 +16,16 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 try:
     import fcntl
-except ImportError:  # Windows: O_APPEND single writes are still atomic per write.
+except ImportError:  # shortcut: no file locks on Windows; appends stay atomic, state edits can race. Add msvcrt locking if Windows users report it.
     fcntl = None
 
 KINDS = ("skill", "agent", "hook", "plugin", "aec", "process")
@@ -85,6 +87,27 @@ def write_json(path: Path, data) -> None:
     os.replace(tmp, path)
 
 
+@contextmanager
+def locked(path: Path):
+    """Hold an exclusive lock on `path` for a whole read-modify-write of state or config."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing releases the lock
+
+
+def config_lock() -> Path:
+    return home() / ".config.lock"
+
+
+def state_lock(kind: str, name: str) -> Path:
+    return subject_dir(kind, name) / ".state.lock"
+
+
 def load_config() -> dict:
     cfg = read_json(home() / "config.json", {})
     return {"enabled": cfg.get("enabled", True), "opt_out": list(cfg.get("opt_out", []))}
@@ -92,8 +115,8 @@ def load_config() -> dict:
 
 def load_state(kind: str, name: str) -> dict:
     st = read_json(subject_dir(kind, name) / "state.json", {})
-    return {"last_review": st.get("last_review"), "source_repo": st.get("source_repo"),
-            "resolutions": st.get("resolutions", {})}
+    return {"last_review": st.get("last_review"), "reviewed_count": st.get("reviewed_count", 0),
+            "source_repo": st.get("source_repo"), "resolutions": st.get("resolutions", {})}
 
 
 def load_entries(kind: str, name: str) -> list[dict]:
@@ -111,7 +134,13 @@ def load_entries(kind: str, name: str) -> list[dict]:
     return out
 
 
-def entry_id(ts: str, kind: str, name: str, summary: str) -> str:
+def new_id() -> str:
+    """Live entries get a random id: two identical summaries in the same second stay separate."""
+    return secrets.token_hex(6)
+
+
+def import_id(ts: str, kind: str, name: str, summary: str) -> str:
+    """Imported entries get a content id, so importing the same register twice adds nothing."""
     return hashlib.sha256(f"{ts}\n{kind}\n{name}\n{summary}".encode()).hexdigest()[:12]
 
 
@@ -133,10 +162,9 @@ def is_open(entry: dict, resolutions: dict) -> bool:
 
 
 def since_review(entries: list[dict], state: dict) -> list[dict]:
-    """Open entries logged after last_review (a timestamp; a bare date from an imported register covers that day)."""
-    last = state["last_review"]
+    """Open entries after the last review's mark: the entries file is append-only, so a count is exact."""
     res = state["resolutions"]
-    return [e for e in entries if is_open(e, res) and (not last or e["ts"][: len(last)] > last)]
+    return [e for e in entries[state["reviewed_count"]:] if is_open(e, res)]
 
 
 def threshold(entries: list[dict]) -> str | None:
@@ -191,7 +219,7 @@ def cmd_log(a) -> int:
     if a.area and kind != "process":
         raise UsageError("--area applies to process subjects only")
     ts = now_iso()
-    entry = {"id": entry_id(ts, kind, name, summary), "ts": ts, "kind": kind, "name": name,
+    entry = {"id": new_id(), "ts": ts, "kind": kind, "name": name,
              "severity": a.severity, "summary": summary, "reporter": a.reporter}
     for field in ("suggestion", "phase", "area", "project"):
         value = getattr(a, field)
@@ -231,7 +259,7 @@ def cmd_review(a) -> int:
     shown = [e for e in entries if is_open(e, state["resolutions"])] if a.all else since_review(entries, state)
     order = {s: i for i, s in enumerate(SEVERITIES)}
     shown.sort(key=lambda e: (order[e["severity"]], e["ts"]))
-    data = {"subject": f"{kind}:{name}", "last_review": state["last_review"],
+    data = {"subject": f"{kind}:{name}", "last_review": state["last_review"], "through": len(entries),
             "source_repo": state["source_repo"], "due": threshold(since_review(entries, state)),
             "entries": [{**e, "resolution": state["resolutions"].get(e["id"])} for e in shown]}
     if a.json:
@@ -245,6 +273,7 @@ def cmd_review(a) -> int:
         fix = f" -> {e['suggestion']}" if e.get("suggestion") else ""
         mark = f" [{e['resolution']['status']}]" if e["resolution"] else ""
         print(f"- {e['id']} [{e['severity']}] {e['ts'][:10]} {where + ' ' if where else ''}{e['summary']}{fix}{mark}")
+    print(f"when done: feedback.py mark-reviewed {kind}:{name} --through {len(entries)}")
     return 0
 
 
@@ -254,22 +283,29 @@ def cmd_resolve(a) -> int:
     missing = [i for i in a.ids if i not in known]
     if missing:
         raise UsageError(f"unknown entry id(s) for {kind}:{name}: {', '.join(missing)}")
-    state = load_state(kind, name)
-    for i in a.ids:
-        state["resolutions"][i] = {"status": a.status, "date": today(), **({"pr": a.pr} if a.pr else {})}
-    write_json(subject_dir(kind, name) / "state.json", state)
+    with locked(state_lock(kind, name)):
+        state = load_state(kind, name)
+        for i in a.ids:
+            state["resolutions"][i] = {"status": a.status, "date": today(), **({"pr": a.pr} if a.pr else {})}
+        write_json(subject_dir(kind, name) / "state.json", state)
     print(f"{len(a.ids)} entr{'y' if len(a.ids) == 1 else 'ies'} marked {a.status}")
     return 0
 
 
 def cmd_mark_reviewed(a) -> int:
     kind, name = parse_subject(a.subject)
-    state = load_state(kind, name)
-    state["last_review"] = now_iso()
-    if a.source_repo:
-        state["source_repo"] = a.source_repo
-    write_json(subject_dir(kind, name) / "state.json", state)
-    print(f"{kind}:{name} reviewed {state['last_review']}")
+    count = len(load_entries(kind, name))
+    through = count if a.through is None else a.through
+    if not 0 <= through <= count:
+        raise UsageError(f"--through must be between 0 and {count} (the review's `through` value)")
+    with locked(state_lock(kind, name)):
+        state = load_state(kind, name)
+        state["last_review"] = now_iso()
+        state["reviewed_count"] = max(state["reviewed_count"], through)
+        if a.source_repo:
+            state["source_repo"] = a.source_repo
+        write_json(subject_dir(kind, name) / "state.json", state)
+    print(f"{kind}:{name} reviewed {state['last_review']} ({count - state['reviewed_count']} newer entries stay pending)")
     return 0
 
 
@@ -307,18 +343,16 @@ def cmd_report(a) -> int:
 
 def cmd_config(a) -> int:
     path = home() / "config.json"
-    cfg = load_config()
-    if a.enable or a.disable:
-        cfg["enabled"] = bool(a.enable)
-    for subj in a.opt_out or []:
-        kind, name = parse_subject(subj)
-        if f"{kind}:{name}" not in cfg["opt_out"]:
-            cfg["opt_out"].append(f"{kind}:{name}")
-    for subj in a.opt_in or []:
-        kind, name = parse_subject(subj)
-        cfg["opt_out"] = [s for s in cfg["opt_out"] if s != f"{kind}:{name}"]
-    if a.enable or a.disable or a.opt_out or a.opt_in or not path.exists():
-        write_json(path, cfg)
+    opt_out = [":".join(parse_subject(s)) for s in a.opt_out or []]
+    opt_in = [":".join(parse_subject(s)) for s in a.opt_in or []]
+    with locked(config_lock()):
+        cfg = load_config()
+        if a.enable or a.disable:
+            cfg["enabled"] = bool(a.enable)
+        cfg["opt_out"] += [s for s in opt_out if s not in cfg["opt_out"]]
+        cfg["opt_out"] = [s for s in cfg["opt_out"] if s not in opt_in]
+        if a.enable or a.disable or opt_out or opt_in or not path.exists():
+            write_json(path, cfg)
     print(json.dumps(cfg, indent=2) if a.json else
           f"enabled: {cfg['enabled']}\nopt_out: {', '.join(cfg['opt_out']) or '(none)'}\nstore: {home()}")
     return 0
@@ -331,15 +365,33 @@ def cmd_import_orchata(a) -> int:
         return 0
     old = json.loads(src.read_text(encoding="utf-8"))
     kind, name = "skill", "orchata"
-    have = {e["id"] for e in load_entries(kind, name)}
+    with locked(state_lock(kind, name)):
+        added = _import_orchata_locked(old, kind, name)
+    if old.get("opt_out"):
+        with locked(config_lock()):
+            cfg = load_config()
+            if "skill:orchata" not in cfg["opt_out"]:
+                cfg["opt_out"].append("skill:orchata")
+                write_json(home() / "config.json", cfg)
+    migrated = src.with_name(src.name + ".migrated")
+    os.replace(src, migrated)
+    print(f"imported {added} orchata entries; old register kept at {migrated}")
+    return 0
+
+
+def _import_orchata_locked(old: dict, kind: str, name: str) -> int:
+    existing = load_entries(kind, name)
+    have = {e["id"] for e in existing}
     state = load_state(kind, name)
+    last = old.get("last_review")
+    reviewed = 0  # imported entries dated on or before the old register's last review
     added = 0
-    for item in old.get("entries", []):
+    for item in sorted(old.get("entries", []), key=lambda i: i.get("date") or ""):
         summary = " ".join((item.get("summary") or item.get("what_happened") or "").split())
         if not summary:
             continue
         ts = f"{item.get('date') or today()}T00:00:00Z"
-        entry = {"id": entry_id(ts, kind, name, summary), "ts": ts, "kind": kind, "name": name,
+        entry = {"id": import_id(ts, kind, name, summary), "ts": ts, "kind": kind, "name": name,
                  "severity": item.get("severity") or item.get("level") or "low",
                  "summary": summary, "reporter": "agent"}
         if entry["severity"] not in SEVERITIES:
@@ -353,18 +405,14 @@ def cmd_import_orchata(a) -> int:
             append_entry(kind, name, entry)
             have.add(entry["id"])
             added += 1
-    state["last_review"] = state["last_review"] or old.get("last_review")
+            reviewed += bool(last and ts[: len(last)] <= last)
+    if not existing and not state["reviewed_count"]:
+        # Sorted by date, so the reviewed entries are exactly the first `reviewed` lines.
+        state["reviewed_count"] = reviewed
+    state["last_review"] = state["last_review"] or last
     state["source_repo"] = state["source_repo"] or old.get("source_repo")
     write_json(subject_dir(kind, name) / "state.json", state)
-    if old.get("opt_out"):
-        cfg = load_config()
-        if "skill:orchata" not in cfg["opt_out"]:
-            cfg["opt_out"].append("skill:orchata")
-            write_json(home() / "config.json", cfg)
-    migrated = src.with_name(src.name + ".migrated")
-    os.replace(src, migrated)
-    print(f"imported {added} orchata entries; old register kept at {migrated}")
-    return 0
+    return added
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -403,8 +451,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pr", help="PR or issue URL carrying the fix")
     s.set_defaults(fn=cmd_resolve)
 
-    s = sub.add_parser("mark-reviewed", help="set last_review to now")
+    s = sub.add_parser("mark-reviewed", help="close a review: entries up to its mark stop counting")
     s.add_argument("subject")
+    s.add_argument("--through", type=int, help="the `through` value `review` printed; entries logged "
+                   "after it stay pending (default: everything logged so far)")
     s.add_argument("--source-repo", help="cache where the subject's source lives")
     s.set_defaults(fn=cmd_mark_reviewed)
 

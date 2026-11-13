@@ -109,7 +109,6 @@ class FeedbackStoreTest(unittest.TestCase):
         self.assertEqual((row["due"], row["since_review"], row["open"]), (None, 0, 1))
         self.assertEqual(row["source_repo"], "my-org/my-skills")
         self.assertEqual(self.status("--due"), [])
-        time.sleep(1.1)  # timestamps are second-resolution
         self.log("skill:demo", "high", "second")
         self.assertEqual(self.status("skill:demo")[0]["due"], "1 high")
         self.run_fb("resolve", "skill:demo", a, "--status", "folded", "--pr", "https://example.com/pr/1")
@@ -118,6 +117,34 @@ class FeedbackStoreTest(unittest.TestCase):
         self.assertEqual([e["summary"] for e in review["entries"]], ["second"])
         r = self.run_fb("resolve", "skill:demo", "deadbeef0000", "--status", "merged", ok=False)
         self.assertEqual(r.returncode, 2)
+
+    def test_identical_entries_in_the_same_second_get_distinct_ids(self):
+        a = self.log("skill:demo", "high", "same thing")
+        b = self.log("skill:demo", "high", "same thing")
+        self.assertNotEqual(a, b)
+        self.run_fb("resolve", "skill:demo", a, "--status", "folded")
+        self.assertEqual(self.status("skill:demo")[0]["open"], 1)
+
+    def test_entries_logged_during_a_review_stay_pending(self):
+        self.log("skill:demo", "high", "seen in review")
+        through = json.loads(self.run_fb("review", "skill:demo", "--json").stdout)["through"]
+        self.log("skill:demo", "high", "logged while the review ran")
+        self.run_fb("mark-reviewed", "skill:demo", "--through", str(through))
+        [row] = self.status("skill:demo")
+        self.assertEqual((row["since_review"], row["due"]), (1, "1 high"))
+        r = self.run_fb("mark-reviewed", "skill:demo", "--through", "9", ok=False)
+        self.assertEqual(r.returncode, 2)
+
+    def test_parallel_resolutions_and_opt_outs_all_survive(self):
+        n = 40
+        ids = [self.log("skill:demo", "low", f"entry {i}") for i in range(n)]
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            list(pool.map(lambda i: self.run_fb("resolve", "skill:demo", i, "--status", "folded"), ids))
+            list(pool.map(lambda i: self.run_fb("config", "--opt-out", f"skill:s{i}"), range(n)))
+        state = json.loads((self.home / "subjects/skill/demo/state.json").read_text())
+        self.assertEqual(set(state["resolutions"]), set(ids))
+        cfg = json.loads(self.run_fb("config", "--json").stdout)
+        self.assertEqual(len(cfg["opt_out"]), n)
 
     def test_deferred_entries_stay_open(self):
         a = self.log("skill:demo", "high", "later")

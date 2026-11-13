@@ -37,13 +37,14 @@ directory. Root: `$AGENT_FEEDBACK_HOME`, default `~/.agent-feedback/`.
 ```
 config.json                              {"enabled": true, "opt_out": ["skill:foo"]}
 subjects/<kind>/<name>/entries.jsonl     append-only, one entry per line (parallel-safe)
-subjects/<kind>/<name>/state.json        last_review, source_repo, resolutions
+subjects/<kind>/<name>/state.json        last_review, reviewed_count, source_repo, resolutions
 ```
 
 Never edit these files by hand; always go through the script.
 
-Each line of `entries.jsonl` is one JSON object. Required: `id` (first 12 hex chars of the
-sha256 of `ts\nkind\nname\nsummary`), `ts` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `kind`, `name`,
+Each line of `entries.jsonl` is one JSON object. Required: `id` (12 hex chars, unique within the
+subject: random for live entries; imports use the first 12 hex chars of the sha256 of
+`ts\nkind\nname\nsummary` so a re-import adds nothing), `ts` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `kind`, `name`,
 `severity`, `summary`, `reporter` (`agent`, `cli`, `hook` or `human`). Optional: `suggestion`,
 `phase`, `area` (process only), `project`. A program that cannot run the script (a CLI capturing
 its own crash) may append one such line itself, with a single `O_APPEND` write.
@@ -81,7 +82,9 @@ or ≥3 medium, or ≥5 total**. Only then make the offer. Never offer for a sub
 
 ## The review conversation
 
-1. Get the entries: `feedback.py review <subject>` (`--json` for structure).
+1. Get the entries: `feedback.py review <subject>` (`--json` for structure). Keep its `through`
+   value (`<N>`): it marks exactly the entries this review showed, so anything logged while the
+   conversation runs stays pending for the next review.
 2. Show them in this compact shape. Every line names the subject, because the entries come from
    **past** runs, not this conversation:
 
@@ -101,8 +104,8 @@ or ≥3 medium, or ≥5 total**. Only then make the offer. Never offer for a sub
 
 - **Y:** walk the entries, draft the concrete changes, resolve the source (below), and open the
   PR or issue **only on explicit confirmation**. Record outcomes with `resolve`, then
-  `mark-reviewed`.
-- **N:** `mark-reviewed` so the same entries do not re-trigger; logging continues and the offer
+  `mark-reviewed --through <N>`.
+- **N:** `mark-reviewed --through <N>` so the same entries do not re-trigger; logging continues and the offer
   returns only when new entries hit the threshold.
 - **Never:** confirm once ("Stop logging feedback for <name> and never ask again?"), then
   `feedback.py config --opt-out <subject>`.
@@ -114,7 +117,7 @@ feedback.py resolve <subject> <id> [<id> ...] --status folded --pr <url>   # fix
 feedback.py resolve <subject> <id> --status merged                          # that PR merged
 feedback.py resolve <subject> <id> --status not-a-problem                   # not the subject's fault
 feedback.py resolve <subject> <id> --status deferred                        # real, not now; stays open
-feedback.py mark-reviewed <subject> [--source-repo <owner/repo or path>]
+feedback.py mark-reviewed <subject> --through <N> [--source-repo <owner/repo or path>]
 ```
 
 `folded`, `merged` and `not-a-problem` close an entry; `deferred` keeps it open. The entries file

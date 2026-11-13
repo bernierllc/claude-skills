@@ -47,8 +47,9 @@ A hook that correctly blocks something is working and logs nothing.
 
 Rules:
 
-- Best-effort and silent: never print the logger's output, never wait on it, never change the
-  hook's exit code because of it.
+- Best-effort and silent: dispatch the logger in the background and never wait on it, never
+  print its output, and return success from the logging function on every path, so a hook
+  running under `set -e` or checking `$?` is unaffected.
 - Subject: `hook:<owning-item>/<hook-id>` (for example `hook:my-skill/post-edit`), reporter
   `hook`.
 - Summary names the failure, never file contents, arguments or environment values.
@@ -56,13 +57,17 @@ Rules:
 Shell:
 
 ```bash
-fb_log() {  # fb_log <severity> <summary>
-  local fb="${AGENT_FEEDBACK_BIN:-}"
-  for c in "$fb" "${CLAUDE_PROJECT_DIR:-.}/.claude/skills/feedback-loop/scripts/feedback.py" \
+fb_log() {  # fb_log <severity> <summary>: backgrounded, always returns 0
+  local c
+  for c in "${AGENT_FEEDBACK_BIN:-}" "${CLAUDE_PROJECT_DIR:-.}/.claude/skills/feedback-loop/scripts/feedback.py" \
            "$HOME/.claude/skills/feedback-loop/scripts/feedback.py"; do
-    [ -n "$c" ] && [ -f "$c" ] && { python3 "$c" log "hook:my-skill/post-edit" --reporter hook \
-      --severity "$1" --summary "$2" --quiet >/dev/null 2>&1 || true; return 0; }
+    if [ -n "$c" ] && [ -f "$c" ]; then
+      ( python3 "$c" log "hook:my-skill/post-edit" --reporter hook \
+          --severity "$1" --summary "$2" --quiet </dev/null >/dev/null 2>&1 & ) 2>/dev/null
+      return 0
+    fi
   done
+  return 0
 }
 command -v tsc >/dev/null || fb_log medium "tsc not found; type-check skipped"
 ```
@@ -71,7 +76,7 @@ Python:
 
 ```python
 def fb_log(severity: str, summary: str) -> None:
-    """Best-effort: a missing or failing feedback store never affects the hook."""
+    """Best-effort and detached: the hook never waits on, or fails because of, the feedback store."""
     import os, subprocess
     from pathlib import Path
     candidates = [os.environ.get("AGENT_FEEDBACK_BIN"),
@@ -80,10 +85,11 @@ def fb_log(severity: str, summary: str) -> None:
     for c in candidates:
         if c and Path(c).is_file():
             try:
-                subprocess.run(["python3", str(c), "log", "hook:my-skill/post-edit", "--reporter", "hook",
-                                "--severity", severity, "--summary", summary, "--quiet"],
-                               capture_output=True, timeout=5)
-            except (OSError, subprocess.SubprocessError):
+                subprocess.Popen(["python3", str(c), "log", "hook:my-skill/post-edit", "--reporter", "hook",
+                                  "--severity", severity, "--summary", summary, "--quiet"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
                 pass  # best-effort by design: feedback must never break the hook
             return
 ```
