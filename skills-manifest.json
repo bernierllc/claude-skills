@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-13T18:23:55.233462+00:00",
+  "generatedAt": "2026-11-13T18:45:43.087908+00:00",
   "skills": {
     "adversarial-review": {
       "version": "1.1.0",
@@ -53,6 +53,11 @@
     "feature-map-review": {
       "version": "1.1.0",
       "description": "Map every feature of a software project, find its gaps, re-cut plans and backlog by feature, then map the work and the code's boundaries. Builds a feature registry with links, tags plans and tracker rows by feature, records every gap under a permanent id, reviews each feature against its plans, groups gaps into workstreams, writes a plan review, applies what the user accepts and makes one tracker row per workstream. Then types workstream dependencies (critical paths, linchpins, what waits on people, delivery data) and maps the code into contexts (owned files and tables, declared interfaces, imports reaching past them) to show which work can safely run in parallel. Use whenever someone wants a feature map, a gap audit of code against plans, unowned, stale or conflicting plans, a prioritised roadmap, the critical path, what to start next, what can run in parallel, or bounded contexts and interface boundaries, even if they only say \"what are we missing\", \"audit our plans\" or \"map this project\".",
+      "author": "Bernier LLC"
+    },
+    "feedback-loop": {
+      "version": "1.0.0",
+      "description": "Use when a skill, agent, hook, plugin, AEC or the development process itself (tests, CI, planning, review, deploy) caused rework, a wrong default, a missed case or a needless pause, to log that friction to a local per-subject store; and when an item's run ends with its feedback due for review, or the user says \"review feedback\", \"what friction have we logged\", \"feedback status\", to walk the entries with the user and turn accepted ones into a PR, issue or plan file.",
       "author": "Bernier LLC"
     },
     "gdocs": {
