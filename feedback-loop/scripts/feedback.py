@@ -171,9 +171,13 @@ def new_id() -> str:
     return secrets.token_hex(6)
 
 
-def import_id(ts: str, kind: str, name: str, summary: str) -> str:
-    """Imported entries get a content id, so importing the same register twice adds nothing."""
-    return hashlib.sha256(f"{ts}\n{kind}\n{name}\n{summary}".encode()).hexdigest()[:12]
+def import_id(ts: str, kind: str, name: str, summary: str, repeat: int = 0) -> str:
+    """Imported entries get a content id, so importing the same register twice adds nothing.
+
+    ``repeat`` numbers later entries with the same date and summary, so they stay separate.
+    """
+    tail = f"\n{repeat}" if repeat else ""
+    return hashlib.sha256(f"{ts}\n{kind}\n{name}\n{summary}{tail}".encode()).hexdigest()[:12]
 
 
 def entry_line(entry: dict) -> bytes:
@@ -264,8 +268,9 @@ def cmd_status(a) -> int:
     rows = [summarize(k, n) for k, n in subjects]
     if a.kind:
         rows = [r for r in rows if r["subject"].startswith(a.kind + ":")]
-    if a.due:
-        rows = [r for r in rows if r["due"]]
+    if a.due:  # "Never" (opt-out) and a disabled store mean no more review offers
+        cfg = load_config()
+        rows = [r for r in rows if r["due"] and cfg["enabled"] and r["subject"] not in cfg["opt_out"]]
     if a.json:
         print(json.dumps({"enabled": load_config()["enabled"], "subjects": rows}, indent=2))
         return 0
@@ -421,12 +426,15 @@ def _import_entries(old: dict, kind: str, name: str, fd: int) -> int:
     last = old.get("last_review")
     reviewed = 0  # imported entries dated on or before the old register's last review
     added = 0
+    repeats = Counter()
     for item in sorted(old.get("entries", []), key=lambda i: i.get("date") or ""):
         summary = " ".join((item.get("summary") or item.get("what_happened") or "").split())
         if not summary:
             continue
         ts = f"{item.get('date') or today()}T00:00:00Z"
-        entry = {"id": import_id(ts, kind, name, summary), "ts": ts, "kind": kind, "name": name,
+        repeat = repeats[(ts, summary)]
+        repeats[(ts, summary)] += 1
+        entry = {"id": import_id(ts, kind, name, summary, repeat), "ts": ts, "kind": kind, "name": name,
                  "severity": item.get("severity") or item.get("level") or "low",
                  "summary": summary, "reporter": "agent"}
         if entry["severity"] not in SEVERITIES:

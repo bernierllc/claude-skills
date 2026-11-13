@@ -197,6 +197,28 @@ class FeedbackStoreTest(unittest.TestCase):
         self.run_fb("import-orchata", "--path", str(src))
         self.assertEqual(len(self.entries("skill", "orchata")), 3)
 
+    def test_import_keeps_repeated_legacy_entries_and_stays_idempotent(self):
+        src = Path(self.tmp.name) / "friction.json"
+        body = json.dumps({"entries": [
+            {"date": "2026-07-01", "severity": "low", "project": "a", "summary": "same"},
+            {"date": "2026-07-01", "severity": "high", "project": "b", "summary": "same"}]})
+        src.write_text(body)
+        self.run_fb("import-orchata", "--path", str(src))
+        src.write_text(body)
+        self.run_fb("import-orchata", "--path", str(src))
+        got = self.entries("skill", "orchata")
+        self.assertEqual([(e["project"], e["severity"]) for e in got], [("a", "low"), ("b", "high")])
+        self.assertEqual(len({e["id"] for e in got}), 2)
+
+    def test_due_skips_opted_out_and_disabled_subjects(self):
+        self.log("skill:demo", "high", "x")
+        self.run_fb("config", "--opt-out", "skill:demo")
+        self.assertEqual(self.status("--due"), [])
+        self.run_fb("config", "--opt-in", "skill:demo", "--disable")
+        self.assertEqual(self.status("--due"), [])
+        self.run_fb("config", "--enable")
+        self.assertEqual([r["subject"] for r in self.status("--due")], ["skill:demo"])
+
     def test_import_orchata_carries_opt_out(self):
         src = Path(self.tmp.name) / "friction.json"
         src.write_text(json.dumps({"opt_out": True, "entries": []}))
