@@ -64,7 +64,8 @@ class FeedbackStoreTest(unittest.TestCase):
         self.assertEqual(subjects, {"skill:a": 1, "hook:typecheck-on-edit/post-edit": 1, "process:my-project": 1})
 
     def test_unsafe_or_malformed_subjects_are_rejected(self):
-        for bad in ("skill:../x", "skill:/abs", "skill:a//b", "nope:x", "skill:", "skill", "hook:a/../b"):
+        for bad in ("skill:../x", "skill:/abs", "skill:a//b", "nope:x", "skill:", "skill", "hook:a/../b",
+                    "skill:CON", "skill:nul.txt", "hook:a/com1", "skill:x.", "skill:x/y."):
             with self.subTest(subject=bad):
                 r = self.run_fb("log", bad, "--severity", "low", "--summary", "x", ok=False)
                 self.assertEqual(r.returncode, 2)
@@ -80,6 +81,7 @@ class FeedbackStoreTest(unittest.TestCase):
                 r = self.run_fb("log", "skill:demo", "--severity", "low", "--summary", secret, ok=False)
                 self.assertEqual(r.returncode, 2)
                 self.assertIn("credential", r.stderr)
+        self.log("skill:demo", "low", "task-abcdefghijklmnopqrst stalled")  # 'sk-' inside a word is not a key
 
     def test_disabled_and_opted_out_are_quiet_noops(self):
         self.run_fb("config", "--opt-out", "skill:muted")

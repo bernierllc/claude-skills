@@ -40,10 +40,11 @@ STATUSES = ("folded", "merged", "not-a-problem", "deferred")
 CLOSED = {"folded", "merged", "not-a-problem"}
 REPORTERS = ("agent", "cli", "hook", "human")
 AREAS = ("dev", "test", "ci", "plan", "review", "deploy")
-SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# No trailing dot and no Windows device names: either would alias another subject's directory there.
+SEGMENT = re.compile(r"^(?!(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$))[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$", re.I)
 # Refuse obvious credentials; summaries stay local but get pasted into PRs and issues at review.
 SECRET = re.compile(
-    r"(sk-[A-Za-z0-9_-]{16,}|sk_(live|test)_[A-Za-z0-9]{8,}|rk_live_[A-Za-z0-9]{8,}"
+    r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{16,}|sk_(live|test)_[A-Za-z0-9]{8,}|rk_live_[A-Za-z0-9]{8,}"
     r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}"
     r"|AKIA[0-9A-Z]{16}|SG\.[A-Za-z0-9_-]{16,}\.|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
 )
