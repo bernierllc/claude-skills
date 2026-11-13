@@ -163,7 +163,7 @@ feedback.py config --opt-out skill:foo   # silence one subject
 feedback.py config --opt-in skill:foo
 ```
 
-AEC users can also toggle it with AEC's `feedback_loop` preference, which writes the same file.
+With AEC installed, `aec feedback enable|disable|opt-out|opt-in` runs these same commands.
 
 ## Adding feedback to an item
 
