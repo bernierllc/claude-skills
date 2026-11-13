@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-13T17:54:07.616422+00:00",
+  "generatedAt": "2026-11-13T18:44:42.481584+00:00",
   "skills": {
     "adversarial-review": {
       "version": "1.0.2",
@@ -56,7 +56,7 @@
       "author": "Bernier LLC"
     },
     "feedback-loop": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Use when a skill, agent, hook, plugin, AEC or the development process itself (tests, CI, planning, review, deploy) caused rework, a wrong default, a missed case or a needless pause, to log that friction to a local per-subject store; and when an item's run ends with its feedback due for review, or the user says \"review feedback\", \"what friction have we logged\", \"feedback status\", to walk the entries with the user and turn accepted ones into a PR, issue or plan file.",
       "author": "Bernier LLC"
     },

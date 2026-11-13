@@ -1,7 +1,7 @@
 ---
 name: feedback-loop
 description: Use when a skill, agent, hook, plugin, AEC or the development process itself (tests, CI, planning, review, deploy) caused rework, a wrong default, a missed case or a needless pause, to log that friction to a local per-subject store; and when an item's run ends with its feedback due for review, or the user says "review feedback", "what friction have we logged", "feedback status", to walk the entries with the user and turn accepted ones into a PR, issue or plan file.
-version: 1.0.0
+version: 1.0.1
 author: Bernier LLC
 ---
 
