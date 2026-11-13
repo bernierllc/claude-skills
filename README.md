@@ -50,6 +50,7 @@ This repository includes a diverse collection of example skills demonstrating di
 ## Developer Workflow
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**commit**](commit/SKILL.md) - Standardized commit workflow with commitlint validation, gitignore checks, and safe push procedures
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**feature-map-review**](feature-map-review/SKILL.md) - Map every feature of a project, record every gap under a permanent id, re-cut plans and backlog by feature, then map the work graph and code boundaries to show what can run in parallel
+- ![Bernier LLC](assets/bernier-emoji-16.png) [**feedback-loop**](feedback-loop/SKILL.md) - Log friction from skills, agents, hooks, plugins, AEC and the dev process to a local per-subject store, then review it with the user and turn it into PRs, issues or plan files
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**git-conventions**](git-conventions/SKILL.md) - Enforce lowercase conventional commits through a commit-msg hook, no commitlint install needed
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**orchata**](orchata/SKILL.md) - Plan and execute a task end to end with multi-agent orchestration, involving the human only where their hands are needed
 - ![Bernier LLC](assets/bernier-emoji-16.png) [**plan-review**](plan-review/SKILL.md) - Audit and clean up plan files by correlating them with git branches and performing code inspection to determine actual completion state
