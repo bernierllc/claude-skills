@@ -10,6 +10,7 @@ import { resolve, relative, basename, join, sep } from 'node:path';
 import { hashItem, hashGeneratedTest } from './lib/hash.js';
 import { acquireLockSync, loadManifest, saveManifest, manifestDirFor } from './lib/manifest.js';
 import { isEntryPoint } from './lib/repo.js';
+import { fbLog } from './lib/feedback.js';
 
 // Format A: - [ ] [depth] **ITEM-ID** action text --- outcome. *Expected: type*
 // ID allows uppercase, lowercase, digits, hyphens (e.g., EVT-FRM-01a, ML-ART-30).
@@ -383,8 +384,11 @@ Usage: node sync-tests.js <verification-doc-path>
     process.exit(1);
   }
 
-  const release = acquireLockSync(projectDir);
+  // A path argument means the pre-commit hook ran us; stdin means the on-edit hook did.
+  const hookId = hasPathArg ? 'ptg-check-changed-docs-pre-commit' : 'ptg-sync-tests-on-doc-edit';
+  let release = () => {};
   try {
+    release = acquireLockSync(projectDir);
     const manifestDir = manifestDirFor(projectDir);
     const result = await syncTests(docPath, manifestDir);
     const parts = [];
@@ -396,6 +400,7 @@ Usage: node sync-tests.js <verification-doc-path>
     console.log(`sync-tests: ${basename(docPath, '.md')} — ${parts.join(', ') || 'no changes'}`);
   } catch (err) {
     console.error(err.message);
+    fbLog(`hook:playwright-test-generator/${hookId}`, 'medium', `sync-tests failed: ${err.name}`);
     process.exitCode = 1;
   } finally {
     release();

@@ -3963,6 +3963,28 @@ def main() -> int:
         return 2
     return 0
 
+def fb_log(subject: str, severity: str, summary: str) -> None:
+    """Best-effort feedback-loop capture: a missing or failing store never affects this hook."""
+    import os
+    import subprocess
+    candidates = [os.environ.get("AGENT_FEEDBACK_BIN"),
+                  Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")) / ".claude/skills/feedback-loop/scripts/feedback.py",
+                  Path.home() / ".claude/skills/feedback-loop/scripts/feedback.py"]
+    for c in candidates:
+        if c and Path(c).is_file():
+            try:
+                subprocess.Popen(["python3", str(c), "log", subject, "--reporter", "hook",
+                                  "--severity", severity, "--summary", summary, "--quiet"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
+                pass  # best-effort by design: feedback must never break the hook
+            return
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        fb_log("hook:review-gate/rg-merge-guard", "high", f"merge-guard crashed: {type(exc).__name__}")
+        raise

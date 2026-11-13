@@ -1,7 +1,7 @@
 ---
 name: typecheck-on-edit
 description: Use in any TypeScript repo where Claude Code edits files. Installs a PostToolUse hook that type-checks the project after every Edit or Write of a .ts/.tsx file (tsgo if installed, else the repo's tsc) and surfaces the first errors to the model as a blocking error, plus a SessionStart check that warns when the lockfile is newer than node_modules. Replaces hand-written `npx tsc --noEmit | head -20` hooks that ran on every edit of every file and whose output the model never saw.
-version: 1.0.1
+version: 1.1.0
 author: Bernier LLC
 ---
 
@@ -47,3 +47,16 @@ In a fresh Claude Code session in the repo, have the model write `export const x
 Edit a `.md` file: nothing runs.
 
 `bash scripts/selftest.sh` (from this skill's directory) runs both hook commands from `hooks.json` against scratch repos with a stub compiler: clean, diagnostic, no compiler, no tsconfig, references (root plus each reference, `//` lines skipped), and the lockfile check's fresh, stale, missing and symlinked cases. CI runs it through `scripts/test_skill_selftests.py`.
+
+<!-- feedback-loop:begin -->
+## Feedback
+
+If the `feedback-loop` skill is installed, use it to improve this skill over time:
+
+- When this skill's own instructions cause rework, a wrong default, a missed case or a needless
+  pause, log it as it happens: subject `skill:typecheck-on-edit`, with the phase or section at fault and the
+  concrete fix to these instructions.
+- At the end of a run, check `skill:typecheck-on-edit`; if a review is due, make the feedback-loop offer.
+
+If `feedback-loop` is not installed, ignore this section.
+<!-- feedback-loop:end -->

@@ -1,9 +1,9 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-13T18:45:27.672301+00:00",
+  "generatedAt": "2026-11-13T18:47:42.518224+00:00",
   "skills": {
     "adversarial-review": {
-      "version": "1.0.2",
+      "version": "1.1.0",
       "description": "Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.",
       "author": "Bernier LLC"
     },
@@ -13,11 +13,11 @@
       "author": "Anthropic"
     },
     "api-verification": {
-      "version": "1.2.0",
+      "version": "1.3.0",
       "description": "Verifies who can call each REST endpoint and MCP tool by running a principal x operation access matrix against a local or test server and comparing responses to what the verification docs declare. Flags over-permissive and over-restrictive operations, and refuses non-local hosts by default. Use after API or MCP auth changes, before releases, or to check that docs and behavior agree on public vs gated surfaces. Companion to api-verification-writer; the API counterpart of browser-verification."
     },
     "api-verification-writer": {
-      "version": "1.3.0",
+      "version": "1.4.0",
       "description": "Writes verification docs for REST endpoints and MCP tools, one operation per doc, under docs/verification/api/ and docs/verification/mcp/. Inventories surfaces from OpenAPI, an MCP tools/list dump and framework route scans, flags spec/code drift, missing auth declarations and thin MCP tool metadata, and records who may call each operation in access frontmatter. Use when an API route, OpenAPI spec or MCP server changes, when documenting API/MCP behavior for customers or agents, or when the access manifest needs API/MCP entries. Companion to verification-writer (UI) and api-verification (runs the access matrix)."
     },
     "artifacts-builder": {
@@ -31,7 +31,7 @@
       "author": "Anthropic"
     },
     "browser-verification": {
-      "version": "2.4.1",
+      "version": "2.5.0",
       "description": "Use when performing manual QA verification of web application features in a browser, running verification checklists, or testing a feature and its tangential features after code changes",
       "author": "Bernier LLC"
     },
@@ -41,17 +41,17 @@
       "author": "Anthropic"
     },
     "commit": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Use when the user wants to commit and optionally push their changes. Standardizes the commit workflow with commitlint validation, gitignore checks, and safe push procedures.",
       "author": "Bernier LLC"
     },
     "gslides": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Google Slides skill for creating, editing, and enhancing Google Slides presentations programmatically.",
       "author": "Bernier LLC"
     },
     "feature-map-review": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Map every feature of a software project, find its gaps, re-cut plans and backlog by feature, then map the work and the code's boundaries. Builds a feature registry with links, tags plans and tracker rows by feature, records every gap under a permanent id, reviews each feature against its plans, groups gaps into workstreams, writes a plan review, applies what the user accepts and makes one tracker row per workstream. Then types workstream dependencies (critical paths, linchpins, what waits on people, delivery data) and maps the code into contexts (owned files and tables, declared interfaces, imports reaching past them) to show which work can safely run in parallel. Use whenever someone wants a feature map, a gap audit of code against plans, unowned, stale or conflicting plans, a prioritised roadmap, the critical path, what to start next, what can run in parallel, or bounded contexts and interface boundaries, even if they only say \"what are we missing\", \"audit our plans\" or \"map this project\".",
       "author": "Bernier LLC"
     },
@@ -61,12 +61,12 @@
       "author": "Bernier LLC"
     },
     "gdocs": {
-      "version": "1.1.0",
+      "version": "1.2.0",
       "description": "Writes and updates Google Docs with intelligent content synthesis. Transforms raw content (notes, transcripts, research, drafts) into professional, document-appropriate text with proper formatting and attribution. Supports multi-tab documents, structure-aware insertion (tables, lists, paragraphs), and automatic style matching.",
       "author": "Bernier LLC"
     },
     "git-conventions": {
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Use when committing in a repo that requires lowercase conventional commits, or when a commit is rejected with `commit-msg: subject must be`. Enforces conventional commits with a lowercase subject (`type(scope): description`) through a git commit-msg hook that aec installs into the repo's active hooks directory, so no commitlint install is needed.",
       "author": "Bernier LLC"
     },
@@ -81,45 +81,45 @@
       "author": "Anthropic"
     },
     "orchata": {
-      "version": "1.5.0",
-      "description": "Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — \"orchestrate this\", \"/orchata\", \"plan and build this\", \"run this with subagents\", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop.",
+      "version": "2.0.0",
+      "description": "Use when the user wants a task or project planned and executed end-to-end with multi-agent orchestration — \"orchestrate this\", \"/orchata\", \"plan and build this\", \"run this with subagents\", or any request to take a feature/project from intake through planning, parallel implementation, and verification while only involving the human for items that genuinely need their hands. Encodes intake questions, model-tier selection, escalation punch lists, and a self-improvement friction loop (through the feedback-loop skill).",
       "author": "Bernier LLC"
     },
     "plan-review": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Use when reviewing, auditing, or cleaning up plan files. Discovers plans across the repo and Claude's project directory, correlates them with git branches, performs deep code inspection to determine actual completion state vs. claimed status, and produces a gap analysis report. Also triggered by \"review my plans\", \"what's the state of my plans\", \"clean up plans\", or \"status of plan X\".",
       "author": "Bernier LLC"
     },
     "playwright-test-generator": {
-      "version": "4.1.0",
+      "version": "4.2.0",
       "description": "Convert verification docs to Playwright tests incrementally. Read verification checklists from docs/verification/, diff against a manifest, and produce or patch Playwright .spec.ts files. Support incremental updates, test pinning, missing data-testid tracking, hook-driven automation, auth-aware test generation, version-tracked derivative metadata, interaction classification, and completeness enforcement. Use when setting up automated regression testing from verification docs, when verification docs change, or when manifest items are flagged pending_generation."
     },
     "playwright-test-runner": {
-      "version": "1.4.1",
+      "version": "1.5.0",
       "description": "Autonomous Playwright test execution, environment management, profiling, and bug-fixing loop. Spins up isolated test environments (database, server), executes test suites, profiles performance, diagnoses failures, implements fixes, cleans up all test artifacts, and tears down the environment. Companion to playwright-test-generator. Use when running Playwright test suites, when tests are failing and need diagnosis/fixing, when validating a feature branch before merge, or when the test suite needs a full pass with autonomous repair. Triggered by test failures, CI red builds, pre-merge validation, or explicit user request to run and fix tests."
     },
     "pr-merge-flow": {
-      "version": "1.2.0",
+      "version": "1.3.0",
       "description": "Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to GitHub auto-merge, wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.",
       "author": "Bernier LLC"
     },
     "resume": {
-      "version": "1.4.0",
+      "version": "1.5.0",
       "description": "Use at the start of a session in a repo with prior work in flight, or when the user says \"resume\", \"/resume\", \"where were we\", \"pick up where we left off\". Reads checkpointed run state, the activity log, and the external tracker, reconciles them against git reality, and continues from the recorded next action instead of re-planning.",
       "author": "Bernier LLC"
     },
     "review-gate": {
-      "version": "1.0.101",
+      "version": "1.1.0",
       "description": "Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.",
       "author": "Bernier LLC"
     },
     "seed-data": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Use when creating, modifying, or auditing application data that must exist in databases across environments — classifies data as reference/seed/fixture, picks the right framework workflow, and enforces idempotency and environment targeting.",
       "author": "Bernier LLC"
     },
     "ship": {
-      "version": "1.2.0",
+      "version": "1.3.0",
       "description": "Use when work on the current branch is ready to land — \"ship this\", \"/ship\", \"wrap this up and open the PR\", or the end of any implementation session. Runs the closing ritual as one command: verify (typecheck + tests), conventional commit, push, PR (ready for review unless drafts are configured), external-tracker sync, and a five-line report.",
       "author": "Bernier LLC"
     },
@@ -144,22 +144,22 @@
       "author": "Anthropic"
     },
     "typecheck-on-edit": {
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Use in any TypeScript repo where Claude Code edits files. Installs a PostToolUse hook that type-checks the project after every Edit or Write of a .ts/.tsx file (tsgo if installed, else the repo's tsc) and surfaces the first errors to the model as a blocking error, plus a SessionStart check that warns when the lockfile is newer than node_modules. Replaces hand-written `npx tsc --noEmit | head -20` hooks that ran on every edit of every file and whose output the model never saw.",
       "author": "Bernier LLC"
     },
     "ui-audit": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Automated UI audit system for discovering routes, creating exploration tasks, and generating Playwright tests. Supports multiple user types, auth detection, and ticket-driven workflow with Vibe-Kanban integration.",
       "author": "Bernier LLC"
     },
     "ux-audit": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Systematically identify user experience problems in web applications through browser inspection and code analysis. Covers navigation flow, task completion friction, error states, feedback/system status, consistency, forms/input UX, content clarity, accessibility (WCAG 2.1 AA), responsive behavior, trust/support risk, onboarding/discoverability, visual hierarchy, recovery/reversibility, performance/perceived speed, data/table UX, search UX, dark mode/theming, and i18n/l10n. Audits through multiple user personas. Use when asked to audit UX, find confusing UI, review user experience, identify support risks, improve usability, or check accessibility. Produces a prioritized findings list with impact/effort scoring, then fixes small issues directly and proposes mockups/plans for larger ones.",
       "author": "Bernier LLC"
     },
     "verification-writer": {
-      "version": "3.8.0",
+      "version": "3.9.0",
       "description": "Use when generating, updating, or auditing manual verification docs (docs/verification/*.md) for browser-based QA. Analyzes codebase routes, components, forms, error handling, and user types to produce tiered verification checklists and a findings report of gaps. Also invoked by browser-verification when docs are stale or missing.",
       "author": "Bernier LLC"
     },
