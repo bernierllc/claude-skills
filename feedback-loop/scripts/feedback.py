@@ -23,11 +23,17 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import time
+
 try:
     import fcntl
-except ImportError:  # shortcut: no file locks on Windows; appends stay atomic, state edits can race. Add msvcrt locking if Windows users report it.
+    msvcrt = None
+except ImportError:  # Windows
     fcntl = None
+    import msvcrt
 
+# msvcrt locks are mandatory: lock one byte far past any real content so readers are never blocked.
+WIN_LOCK_OFFSET = 2**31 - 2
 KINDS = ("skill", "agent", "hook", "plugin", "aec", "process")
 SEVERITIES = ("high", "medium", "low")
 STATUSES = ("folded", "merged", "not-a-problem", "deferred")
@@ -88,16 +94,41 @@ def write_json(path: Path, data) -> None:
 
 
 @contextmanager
-def locked(path: Path):
-    """Hold an exclusive lock on `path` for a whole read-modify-write of state or config."""
+def _exclusive(path: Path, flags: int):
+    """Open `path` and hold an exclusive lock on it (flock, or msvcrt on Windows) until exit."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(path, flags | os.O_CREAT, 0o600)
     try:
         if fcntl:
             fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        else:
+            os.lseek(fd, WIN_LOCK_OFFSET, os.SEEK_SET)  # msvcrt locks bytes from the current position
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        try:
+            yield fd
+        finally:
+            if msvcrt:
+                os.lseek(fd, WIN_LOCK_OFFSET, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
     finally:
-        os.close(fd)  # closing releases the lock
+        os.close(fd)  # on POSIX, closing releases the flock
+
+
+@contextmanager
+def locked(path: Path):
+    """Hold an exclusive lock on `path` for a whole read-modify-write of state or config."""
+    with _exclusive(path, os.O_RDWR):
+        yield
+
+
+def entries_lock(kind: str, name: str):
+    """The subject's entries file, opened for append and locked; yields the fd to write lines to."""
+    return _exclusive(subject_dir(kind, name) / "entries.jsonl", os.O_WRONLY | os.O_APPEND)
 
 
 def config_lock() -> Path:
@@ -144,17 +175,13 @@ def import_id(ts: str, kind: str, name: str, summary: str) -> str:
     return hashlib.sha256(f"{ts}\n{kind}\n{name}\n{summary}".encode()).hexdigest()[:12]
 
 
+def entry_line(entry: dict) -> bytes:
+    return (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def append_entry(kind: str, name: str, entry: dict) -> None:
-    path = subject_dir(kind, name) / "entries.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        if fcntl:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, line)
-    finally:
-        os.close(fd)  # closing releases the lock
+    with entries_lock(kind, name) as fd:
+        os.write(fd, entry_line(entry))
 
 
 def is_open(entry: dict, resolutions: dict) -> bool:
@@ -380,6 +407,13 @@ def cmd_import_orchata(a) -> int:
 
 
 def _import_orchata_locked(old: dict, kind: str, name: str) -> int:
+    # Hold the entries lock for the whole import: a live `log` landing between imported lines
+    # would fall inside the reviewed prefix computed below and never be offered for review.
+    with entries_lock(kind, name) as fd:
+        return _import_entries(old, kind, name, fd)
+
+
+def _import_entries(old: dict, kind: str, name: str, fd: int) -> int:
     existing = load_entries(kind, name)
     have = {e["id"] for e in existing}
     state = load_state(kind, name)
@@ -402,7 +436,7 @@ def _import_orchata_locked(old: dict, kind: str, name: str) -> int:
         if item.get("pr"):
             state["resolutions"].setdefault(entry["id"], {"status": "folded", "pr": item["pr"], "date": today()})
         if entry["id"] not in have:
-            append_entry(kind, name, entry)
+            os.write(fd, entry_line(entry))
             have.add(entry["id"])
             added += 1
             reviewed += bool(last and ts[: len(last)] <= last)

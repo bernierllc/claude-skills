@@ -1,4 +1,6 @@
 """Tests for feedback-loop/scripts/feedback.py: the store every item logs friction into."""
+import fcntl
+import importlib.util
 import json
 import os
 import subprocess
@@ -6,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -194,6 +197,53 @@ class FeedbackStoreTest(unittest.TestCase):
         self.run_fb("import-orchata", "--path", str(src))
         cfg = json.loads(self.run_fb("config", "--json").stdout)
         self.assertIn("skill:orchata", cfg["opt_out"])
+
+    def test_import_holds_the_entries_lock_so_live_logs_cannot_interleave(self):
+        src = Path(self.tmp.name) / "friction.json"
+        src.write_text(json.dumps({"last_review": "2026-08-01", "entries": [
+            {"date": "2026-07-01", "severity": "high", "summary": "old"}]}))
+        path = self.home / "subjects/skill/orchata/entries.jsonl"
+        path.parent.mkdir(parents=True)
+        with open(path, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            proc = subprocess.Popen([sys.executable, str(SCRIPT), "import-orchata", "--path", str(src)],
+                                    env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            time.sleep(0.5)
+            self.assertIsNone(proc.poll(), "import wrote while another writer held the entries lock")
+        self.assertEqual(proc.wait(timeout=10), 0, proc.stderr.read())
+        self.assertEqual([e["summary"] for e in self.entries("skill", "orchata")], ["old"])
+
+
+class WindowsLockTest(unittest.TestCase):
+    """Without fcntl, every read-modify-write and append still takes an exclusive (msvcrt) lock."""
+
+    def test_msvcrt_lock_is_taken_and_released(self):
+        spec = importlib.util.spec_from_file_location("feedback_win", SCRIPT)
+        fb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fb)
+        calls = []
+
+        class FakeMsvcrt:
+            LK_NBLCK, LK_UNLCK = "lock", "unlock"
+            fails = 2  # contended twice, then granted
+
+            @classmethod
+            def locking(cls, fd, mode, nbytes):
+                if mode == "lock" and cls.fails:
+                    cls.fails -= 1
+                    raise OSError("locked")
+                calls.append((mode, os.lseek(fd, 0, os.SEEK_CUR), nbytes))
+
+        fb.fcntl, fb.msvcrt = None, FakeMsvcrt
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(fb.time, "sleep"), \
+                mock.patch.dict(os.environ, {"AGENT_FEEDBACK_HOME": d}):
+            fb.append_entry("skill", "demo", {"id": "x", "summary": "s"})
+            with fb.locked(fb.config_lock()):
+                pass
+            lines = (Path(d) / "subjects/skill/demo/entries.jsonl").read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        off = fb.WIN_LOCK_OFFSET
+        self.assertEqual(calls, [("lock", off, 1), ("unlock", off, 1)] * 2)
 
 
 if __name__ == "__main__":
