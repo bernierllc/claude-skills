@@ -1,8 +1,10 @@
 ---
 name: brand-guidelines
 description: Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand colors or style guidelines, visual formatting, or company design standards apply.
-version: 1.0.0
+version: 1.1.0
 author: Anthropic
+source: anthropics/skills
+source_path: skills/brand-guidelines
 license: Complete terms in LICENSE.txt
 ---
 
