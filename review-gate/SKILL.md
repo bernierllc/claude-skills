@@ -25,6 +25,8 @@ python3 "$(aec path skill review-gate)/scripts/install-workflow.py"
 #   cp …/scripts/check-review-gate.py scripts/check-review-gate.py
 ```
 
+Upgrading an existing install: 2.0.0 tightens the fallback rule, and the repo's committed checker is a copy. Re-run `install-workflow.py --force` in each repo to pick it up; until then that repo still accepts the old looser fallback.
+
 Then flip GitHub rulesets (no Actions minutes):
 
 ```bash

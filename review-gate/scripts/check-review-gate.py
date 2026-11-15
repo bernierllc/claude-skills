@@ -484,6 +484,33 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
     return False
 
 
+def _rendered_markdown(body: str) -> str:
+    """Drop what GitHub does not render as prose: HTML comments, <pre>, code.
+
+    An attestation shown as an example (comment, fence, indented code) must not
+    count. Unclosed comments and fences run to the end of the body, as GitHub
+    renders them, so this only ever removes more, never less.
+    """
+    text = body.replace("\r\n", "\n")
+    text = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.S)
+    text = re.sub(r"<pre\b.*?(?:</pre\s*>|\Z)", "", text, flags=re.S | re.I)
+    kept: list[str] = []
+    fence: str | None = None
+    for line in text.split("\n"):
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = None
+            continue
+        if marker:
+            fence = marker.group(1)
+            continue
+        if line.startswith(("    ", "\t")):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def review_section_names_fallback(body: str, head: str | None = None) -> bool:
     """Require one explicit completed-review line bound to the current head.
 
@@ -493,13 +520,15 @@ def review_section_names_fallback(body: str, head: str | None = None) -> bool:
     """
     if not head or len(head) < 7:
         return False
-    m = REVIEW_SECTION.search(body or "")
+    body = _rendered_markdown(body or "")
+    m = REVIEW_SECTION.search(body)
     if not m:
         return False
-    rest = (body or "")[m.end() :]
+    rest = body[m.end() :]
     next_h = re.search(r"(?m)^##\s+", rest)
     section = rest[: next_h.start()] if next_h else rest
-    for line in section.splitlines():
+    # \n only: str.splitlines() also splits on U+2028 and friends.
+    for line in section.split("\n"):
         if INCOMPLETE_REVIEW.search(line):
             continue
         attestation = FALLBACK_ATTESTATION.fullmatch(line.strip())

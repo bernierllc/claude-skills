@@ -112,6 +112,36 @@ for line in invalid_lines:
     ), line
 
 attestation = "Fallback review: agy on 89cda061 — verdict: clean"
+# Examples that GitHub does not render as prose must not count.
+hidden = (
+    f"<!-- example only\n{attestation}\n-->",
+    f"<!-- example only\n{attestation}",  # unclosed comment
+    f"```\n{attestation}\n```",
+    f"~~~\n{attestation}\n~~~",
+    f"````\n```\n{attestation}\n````",
+    f"    {attestation}",
+    f"\t{attestation}",
+    f"<pre>\n{attestation}\n</pre>",
+    f"<PRE>{attestation}</PRE>",
+    f"```\n{attestation}",  # unclosed fence
+)
+for block in hidden:
+    assert g.evaluate(pr(
+        body=f"## Review\n\nPending\n\n{block}\n", headRefOid=head, reviews={"nodes": []}
+    )), block
+# A heading hidden in a comment is not a Review section.
+assert g.evaluate(pr(
+    body=f"<!--\n## Review\n{attestation}\n-->", headRefOid=head, reviews={"nodes": []}
+))
+# U+2028 must not split a line into a bare attestation.
+assert g.evaluate(pr(
+    body=f"## Review\n\nnote\u2028{attestation}\n", headRefOid=head, reviews={"nodes": []}
+))
+# A real attestation after a closed comment/fence still passes.
+assert not g.evaluate(pr(
+    body=f"## Review\n\n<!-- c -->\n```\nx\n```\n{attestation}\n",
+    headRefOid=head, reviews={"nodes": []},
+))
 assert g.evaluate(pr(
     body=f"## Review\n\n{attestation}\n",
     headRefOid="dddddddfffffffffff",
