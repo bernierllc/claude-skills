@@ -625,6 +625,7 @@ def _rendered_markdown(body: str) -> str:
     raw_close: re.Pattern[str] | None = None  # end marker of an open <pre>-style block
     in_html = False  # inside a blank-line-terminated html block
     para = False  # previous line was paragraph text (type-7 blocks cannot interrupt it)
+    in_def = False  # inside a possible link reference definition
     for line in body.replace("\r\n", "\n").split("\n"):
         was_para, para = para, False
         if fence is not None:
@@ -633,13 +634,24 @@ def _rendered_markdown(body: str) -> str:
             if (marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence)
                     and not line[marker.end():].strip()):
                 fence = None
+            kept.append(_REJECTED if line.strip() else "")
             continue
         if raw_close is not None:
             if raw_close.search(line):
                 raw_close = None
+            kept.append(_REJECTED if line.strip() else "")
             continue
         if in_html:
             if line.strip():
+                kept.append(_REJECTED)
+                # the strict paragraph test may have taken a paragraph continuation for an html
+                # block, so a fence or raw block opener inside it still opens; the html block
+                # resumes after the raw one closes (both drop: fails closed)
+                if _LOOSE_FENCE.match(line):
+                    break
+                raw = next(((m, c) for st, c in _RAW_BLOCKS if (m := st.match(line))), None)
+                if raw and not (raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)).search(line[raw[0].end():]):
+                    raw_close = raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)
                 continue
             in_html = False
         if not in_comment:
@@ -653,16 +665,21 @@ def _rendered_markdown(body: str) -> str:
                 kept.append("")  # the dropped fence still ends a paragraph (and a quote's lazy continuation)
                 continue
             # indented code cannot interrupt a paragraph (CommonMark): after prose it is a continuation
-            if line.startswith(("    ", "\t")) and not was_para:
+            # 4+ columns of indent, tabs to 4-column stops (` \t` is 4 columns: #105 Codex r7 P1)
+            if line.strip() and len(line) - len(line.lstrip(" \t")) and \
+                    len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip()) >= 4 and not was_para:
+                kept.append(_REJECTED if line.strip() else "")
                 continue
             raw = next(((m, c) for st, c in _RAW_BLOCKS if (m := st.match(line))), None)
             if raw:
                 raw_close = raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)
                 if raw_close.search(line[raw[0].end():]):
                     raw_close = None
+                kept.append(_REJECTED if line.strip() else "")
                 continue
             if _HTML_BLOCK6.match(line) or (not was_para and _HTML_BLOCK7.match(line)):
                 in_html = True
+                kept.append(_REJECTED if line.strip() else "")
                 continue
         # strip HTML comment spans, which may open or close mid-line
         out = ""
@@ -682,19 +699,11 @@ def _rendered_markdown(body: str) -> str:
                 else:
                     out += rest[:start]
                     in_comment, rest = True, rest[start + 4 :]
-        # a heading or thematic break is a complete block, so a tag on the next line may open an html block
-        para = bool(out.strip()) and not re.match(r" {0,3}(?:#{1,6}(?:\s|$)|(?:[-*_][ \t]*){3,}$)", out)
-        # A line that is only list/quote markers, or whose content after them is indented code
-        # (`-     example`: a marker then 5+ spaces), ends or holds no paragraph, so an indented line
-        # after it is code, not a continuation (#105 Codex r6 P1). Any tab there fails closed too.
-        containers = re.match(r"[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t]|$)[ \t]?|>[ \t]?)+", out)
-        if para and containers:
-            content = out[containers.end():]
-            if not content.strip() or content.startswith("   ") and content[:4].isspace() \
-                    or "\t" in out[: len(out) - len(out.lstrip())] or "\t" in content[:4]:
-                para = False
-        if out.strip() or not line.strip():
-            kept.append(out)
+        # paragraph state from the same strict shape test as _plain_lines: anything else (headings,
+        # list items holding code, HTML, headings or nested markers, link definitions) is no paragraph
+        para, in_def = _plain(line, was_para, in_def)
+        para = para and bool(out.strip())
+        kept.append(out if out.strip() else _REJECTED if line.strip() else "")
     return "\n".join(kept)
 
 
@@ -744,10 +753,12 @@ def _unquoted(text: str) -> str:
             # A marker-only line (`>`, `> >`) is a blank line inside the quote: it ends the quoted
             # paragraph, so no lazy continuation follows it (aec #163 Codex P2).
             in_quote = bool(line[marker.end():].strip(" \t>"))
+            kept.append("")
             continue
         # A lazy continuation is paragraph text only: a line that interrupts a paragraph
         # (ATX heading, fence, thematic break, list item) ends the quote and is kept.
         if in_quote and line.strip() and not (_INTERRUPTS.match(line) or _FENCE_OPEN.match(line)):
+            kept.append("")
             continue
         in_quote = False
         kept.append(line)
@@ -765,8 +776,60 @@ def _prose(body: str) -> str:
     is only a commit SHA keeps its text, so `fixed in `abc1234`` still reads."""
     def span(m: re.Match[str]) -> str:
         inner = m.group(2).strip()
-        return inner if re.fullmatch(r"[0-9a-f]{7,40}", inner, re.I) else "code"
-    return _CODE_SPAN.sub(span, _unquoted(_rendered_markdown(body or "")))
+        if re.fullmatch(r"[0-9a-f]{7,40}", inner, re.I):
+            return inner
+        return "\n".join(["code"] * (m.group(0).count("\n") + 1))  # one line per source line
+    source = (body or "").replace("\r\n", "\n").split("\n")
+    rendered = _CODE_SPAN.sub(span, _unquoted(_rendered_markdown(body or ""))).split("\n")
+    return "\n".join(_plain_lines(source, rendered))
+
+
+# Where an attestation or a closing token may start: a letter, a markdown link, or an autolink.
+_PLAIN_START = re.compile(r"[A-Za-z\[]|<https?://", re.I)
+# One list marker followed by 1-4 spaces: the item's content is a paragraph, never indented code.
+_LIST_LEAD = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)]) {1,4}")
+_REJECTED = "\x00"
+
+
+def _plain(src: str, after_para: bool, in_def: bool) -> tuple[bool, bool]:
+    """(is `src` paragraph text by the strict shape below, still inside a link definition)."""
+    if not src.strip():
+        return False, False
+    lead = len(src) - len(src.lstrip(" \t"))
+    text = src[lead:]
+    item = _LIST_LEAD.match(text)
+    content = text[item.end():] if item else text
+    # a link definition (`[x]:`, also after a list marker) can run over the next lines as its
+    # destination and title, which are not paragraph text: no paragraph until a blank line
+    in_def = in_def or bool(re.match(r"\[[^\]]*\]:", content))
+    if content.startswith(">") and content.strip(" \t>") and len(src[:lead].expandtabs(4)) < 4:
+        return True, in_def  # a quoted paragraph: its lazy lines are the quote's (_unquoted drops them)
+    return (not lead or after_para) and not in_def and bool(_PLAIN_START.match(content)), in_def
+
+
+def _plain_lines(source: list[str], rendered: list[str]) -> list[str]:
+    """Allow-list on top of the block parser above (#105 Codex r4-r7: four rounds of CommonMark
+    container cases). That parser keeps line i of the body as line i. A rendered line survives only
+    when its SOURCE line has a shape that can only be paragraph text:
+      - column 0, optionally one list marker plus 1-4 spaces, then a letter, `[` or `<http`; or
+      - indented (spaces or tabs), directly after a surviving paragraph line, then the same start
+        (a paragraph continuation: an indented line after paragraph text is never code).
+    Anything else (an indented line after a heading, blank or non-paragraph line, 5+ spaces after a marker, nested or marker-only containers, headings,
+    setext underlines, HTML or fence openers inside list items) becomes _REJECTED, failing closed:
+    a non-blank line holding no token, so it still separates nothing that a real line would not.
+    Column-0 `#` lines are kept so `## Review` and section ends still read."""
+    out: list[str] = []
+    cont = in_def = False
+    for src, line in zip(source, rendered):
+        if src.startswith("#"):
+            out.append(line)
+            cont = False
+            continue
+        ok, in_def = _plain(src, cont, in_def)
+        ok = ok and bool(line.strip())
+        out.append(line if ok or not line.strip() else _REJECTED)
+        cont = ok
+    return out
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:

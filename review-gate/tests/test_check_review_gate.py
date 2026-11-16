@@ -2093,6 +2093,21 @@ for code_first in ("-     example\n      {inner}", "1.      example\n        {in
     assert g.evaluate(pr(body="## Review\n" + code_first.format(inner=attestation), headRefOid=head,
                          reviews={"nodes": []})), code_first
     assert not g._closes(g._prose(code_first.format(inner="fixed in deadbeef"))), code_first
+# #105 Codex r7 P1s: mixed space/tab indent, code on a list item's opening line, nested markers,
+# setext and list-nested headings, list-nested raw HTML. All render as code or non-paragraph
+# blocks, so neither an attestation nor a closing token in them may count (the _plain_lines allow-list).
+for shape in (" \t{inner}", "-     {inner}", "1.     {inner}", "-  -     example\n         {inner}",
+              "title\n===\n    {inner}", "- # heading\n      {inner}", "- <pre>\n  {inner}\n  </pre>",
+              "- ---\n      {inner}", "* \t{inner}",
+              # quoted list items: lazy lines after them still belong to the quote
+              "- > ex\n    code\n{inner}", "1) a\n- > ex\n\tcode\n{inner}",
+              # a paragraph the strict test rejects, then a raw block opener: the block runs on
+              "    code\n`span\n</pre>\n<pre>\n\n{inner}", "`x\n</b>\n```\n\n{inner}\n```",
+              # a raw block inside an html block: the html block resumes after it
+              "<div>\n<pre>\n</pre>\n`span\n{inner}"):
+    assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
+                         reviews={"nodes": []})), shape
+    assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
 # ...while a list item holding prose keeps its indented continuation
 for prose in ("-    Addressed:\n     fixed in deadbeef", "- Addressed:\n    fixed in deadbeef",
               "1. Addressed:\n    fixed in deadbeef"):
