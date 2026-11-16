@@ -2075,6 +2075,13 @@ for run in ("```", "````", "~~~", "~~~~"):
     top = f"{run}\nexample\n{run}\n\n{{inner}}\n"
     assert g.evaluate(pr(body="## Review\n" + top.format(inner=attestation), headRefOid=head,
                          reviews={"nodes": []})) == [], top
+# Program acceptance: indents 4+ (wide ordered markers, extra spaces after a marker, nested lists)
+for run in ("```", "~~~"):
+    for marker, pad in (("100. ", "     "), ("-    ", "     "), ("1.   ", "     "), ("  - ", "    "), ("   1. ", "      ")):
+        for shape in (f"{marker}{run}\n{pad}{{inner}}\n{pad}{run}\n", f"{marker}x\n\n{pad}{run}\n{pad}{{inner}}\n{pad}{run}\n"):
+            assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
+                                 reviews={"nodes": []})), shape
+            assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
 # valid list continuation prose still closes
 for ok in ("1. Addressed:\n    fixed in deadbeef", "- Addressed:\n  fixed in deadbeef", "1. done\n2. fixed in deadbeef"):
     assert g._closes(g._prose(ok)), ok
