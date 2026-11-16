@@ -18,16 +18,18 @@ pull_request_target), and that job publishes `Review Gate`. A pull_request_targe
 the PR HEAD, in its own workflow run's suite (email_demo #1068: job 133165097976 on head 6402d452, suite
 118647401541), not on the base as 3.2.0-3.2.7 assumed. A Checks API POST cannot pick a suite and lands in
 the head's oldest one, which the required-status rule does not read (BLOCKED "expected", #104), so the
-job is the only placement that holds. The one way another PR's gate job reaches this head is a PR sharing
-the head sha (its own head, or a PR into an attacker branch whose base-branch workflow GitHub ran under
-older pull_request_target semantics), so a trusted-pair job is accepted only when no other PR, open or
-closed, has this head. Any other Actions job named `Review Gate` is forged.
+job is the only placement that holds. Another PR's gate job reaches this head when a PR shares the head
+sha (open, merged, or closed: `commits/{sha}/pulls` omits closed-unmerged PRs, so a PR listing cannot
+rule them out). So a trusted-pair job is accepted only when its workflow run is THIS PR's: the run's
+display_title is the workflow's run-name, `Review Gate - PR #<n>` (RUN_TITLE), fixed from the event when
+the run is created and set only by the trusted default-branch workflow (confirmed live, nevar-auth #23).
+Any other Actions job named `Review Gate` is forged.
 
 DELETE THIS WRAPPER when Option A or B of the aec plan lands (a required workflow or a distinct
 publisher app, making the required checks unforgeable through the Checks API). The detector is then
 retired or kept as defence in depth (plan step S4) and review-gate.yml calls it directly or not at all.
 
-A missing or malformed PR_NUMBER, or a failed PR or PR-list lookup, exits 2.
+A missing or malformed PR_NUMBER, or a failed run lookup, exits 2.
 
 env: REPO (required), PR_NUMBER (needed to accept the gate's own job).
 stdin: `set -o pipefail; gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate`
@@ -41,8 +43,11 @@ import sys
 from pathlib import Path
 
 
+RUN_TITLE = "Review Gate - PR #{pr}"  # = run-name in review-gate.yml; a test parses both and compares
+
+
 class Ambiguous(Exception):
-    """The shared-head condition could not be evaluated: fail closed with exit 2."""
+    """A run's PR could not be established: fail closed with exit 2."""
 
 
 def _gh(*args):
@@ -52,19 +57,11 @@ def _gh(*args):
         raise Ambiguous(f"gh api {args[0]} failed: {exc.stderr.strip()}") from exc
 
 
-def shared_head_refusal(repo):
-    """None when no other PR (open or closed) has this PR's head; else why its gate jobs stay forged."""
-    pr = os.environ.get("PR_NUMBER", "")
-    if not re.fullmatch(r"[1-9][0-9]*", pr):
-        raise Ambiguous(f"PR_NUMBER is missing or malformed ({pr!r}); it is needed to accept the gate's job")
-    sha = _gh(f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha").strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise Ambiguous(f"could not read PR #{pr}'s head ({sha!r})")
-    shared = _gh(f"repos/{repo}/commits/{sha}/pulls?per_page=100", "--paginate", "--jq",
-                 f'.[] | select(.head.sha == "{sha}" and .number != {pr}) | .number').split()
-    if shared:
-        return f"PR(s) #{', #'.join(shared)} share head {sha}, so its gate job cannot be attributed to PR #{pr}"
-    return None
+def foreign_run(repo, pr, run_id):
+    """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
+    title = _gh(f"repos/{repo}/actions/runs/{run_id}", "--jq", ".display_title").strip()
+    want = RUN_TITLE.format(pr=pr)
+    return None if title == want else f"run {run_id} is titled {title!r}, not {want!r}"
 
 
 def main():
@@ -94,11 +91,17 @@ def main():
                 return seen[-1][1]
             for name, where in detector.forged([check_run], record, scoped):
                 flagged.append((name, where, *seen[-1]))
-        refusal = None
-        if any(pair in trusted for *_, pair in flagged):
-            refusal = shared_head_refusal(repo)
-        bad = [(name, where, refusal if pair in trusted else "untrusted workflow")
-               for name, where, _, pair in flagged if pair not in trusted or refusal]
+        bad = []
+        for name, where, run_id, pair in flagged:
+            if pair not in trusted:
+                bad.append((name, where, "untrusted workflow"))
+                continue
+            pr = os.environ.get("PR_NUMBER", "")
+            if not re.fullmatch(r"[1-9][0-9]*", pr):
+                raise Ambiguous(f"PR_NUMBER is missing or malformed ({pr!r}); it is needed to accept the gate's job")
+            why = foreign_run(repo, pr, run_id)
+            if why:
+                bad.append((name, where, why))
     except (ValueError, KeyError, TypeError, subprocess.CalledProcessError, Ambiguous) as exc:
         print(f"::error::could not evaluate check runs, failing closed: {exc}", file=sys.stderr)
         return 2

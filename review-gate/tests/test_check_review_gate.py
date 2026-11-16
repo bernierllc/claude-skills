@@ -289,11 +289,19 @@ for ok in (
     "> quoted context\n> > \nfixed in deadbeef",
     "- Addressed:\n    fixed in deadbeef",  # aec #163 Codex P2: indented list continuation is prose
     "Thanks,\n\tfixed in deadbeef",
+    "1. fixed in deadbeef",  # RG-LISTCONT: CommonMark ordered markers, 1-9 digits
+    "2) fixed in abc1234",
+    "123456789. not-a-finding: intentional",
+    "1. Addressed:\n    fixed in deadbeef",
+    "Replies:\n\n1. fixed in deadbeef\n2) https://notion.so/abc",
 ):
     assert g.evaluate(_p2(ok)) == [], ok
 for bad in (
     "Still open; eventually reply with `fixed in deadbeef`",
     "> fixed in deadbeef",
+    "1234567890. fixed in deadbeef",  # 10 digits is not a list marker
+    "1.fixed in deadbeef",  # marker needs a space
+    "a) fixed in deadbeef",
     "```\nfixed in deadbeef\n```",
     "<!-- fixed in deadbeef -->",
     "will be not-a-finding: maybe",

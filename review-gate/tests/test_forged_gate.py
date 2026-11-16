@@ -49,17 +49,16 @@ if "/contents/scripts/" in path:
     if src is None:
         sys.exit(1)
     print(json.dumps({"content": base64.b64encode(open(src, "rb").read()).decode()})); sys.exit(0)
-if path.startswith("repos/o/r/pulls/") and path.rsplit("/", 1)[1].isdigit():  # the wrapper's PR head lookup
-    if fixture.get("pr_head", HEAD) is None:
-        sys.exit(1)
-    print(fixture.get("pr_head", HEAD)); sys.exit(0)
-if "/commits/" in path and path.split("?")[0].endswith("/pulls"):
-    print("\n".join(fixture.get("shared_prs", []))); sys.exit(0)
 if "/check-runs" in path and "/commits/" in path:
     if fixture.get("listing_fails"):
         sys.exit(1)
     runs = fixture["check_runs"] + created + fixture.get("own_jobs", [])
     print(json.dumps({"total_count": len(runs), "check_runs": runs})); sys.exit(0)
+if "/actions/runs/" in path and ".display_title" in args:  # the wrapper's run-title provenance lookup
+    run_id = path.rsplit("/", 1)[1]
+    if run_id not in fixture.get("titles", {}):
+        sys.exit(1)
+    print(fixture["titles"][run_id]); sys.exit(0)
 if "/actions/runs/" in path:
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture["runs"]:
@@ -123,6 +122,7 @@ class ForgedGateWorkflow(unittest.TestCase):
             (tmp / "fixture.json").write_text(json.dumps(
                 {"scripts": scripts, "check_runs": check_runs, "listing_fails": listing_fails,
                  "runs": {**{i: TRUSTED_RUN for i in own_ids}, **(runs or {})},
+                 "titles": {i: run_title(n) for i, (n, _) in zip(own_ids, prs)},
                  "own_jobs": [job("Review Gate", int(i)) for i in own_ids], **(fixture or {})}))
             workdir = tmp / "job"; workdir.mkdir()
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
@@ -189,11 +189,13 @@ class ForgedGateWorkflow(unittest.TestCase):
         self.gate(legacy, prs=[("7", 1), ("7", 0)])
         self.assertEqual(self.final(), {"41": "success", "42": "success"})
 
-    # nevar-content Codex P1: two PRs on one head sha must not complete each other's legacy runs.
-    def test_shared_head_pr_b_passing_never_flips_pr_a_legacy_run(self):
+    # nevar-content Codex P1: two PRs on one head sha must not complete each other's legacy runs. Each
+    # also sees the other's gate job on the head, so both fail closed (3.2.8): only 41 ever gets PR 11's.
+    def test_shared_head_pr_b_never_flips_pr_a_legacy_run(self):
         self.gate([api_check("Review Gate", 41, pr=11), api_check("Review Gate", 42, pr=12)],
                   prs=[("11", 1), ("12", 0)])
-        self.assertEqual(self.final(), {"41": "failure", "42": "success"})
+        self.assertEqual(self.rcs, [1, 1])
+        self.assertEqual(self.final(), {"41": "failure", "42": "failure"})
 
     def test_unmarked_or_other_pr_runs_and_jobs_are_never_patched(self):
         # Pre-3.2.2 runs carry no PR marker: they could belong to any PR on this head, so never adopt them.
@@ -202,12 +204,14 @@ class ForgedGateWorkflow(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(self.patches, [])
 
-    # Another PR on this head (its own, or one into a contributor branch) could run a trusted-pair job
-    # here; with the job as the result, that job cannot be attributed, so the gate fails closed.
-    def test_head_shared_with_another_pr_fails_the_gate(self):
-        rc, out = self.gate([], fixture={"shared_prs": ["8"]})
+    # #105 Codex P1: another PR on this head (open, merged, or closed-unmerged, which commits/{sha}/pulls
+    # omits) leaves a trusted-pair job here. Its run title names that PR, so it is not this PR's result.
+    def test_another_prs_gate_job_on_this_head_fails_the_gate(self):
+        rc, out = self.gate([job("Review Gate", 517)], runs={"517": TRUSTED_RUN},
+                            fixture={"titles": {"600": run_title(7), "517": run_title(8)}})
         self.assertEqual(rc, 1, out)
-        self.assertIn("#8 share head", out)
+        self.assertIn("'Review Gate - PR #8', not 'Review Gate - PR #7'", out)
+        self.assertFalse([c for c in self.calls if "/pulls" in c], self.calls)  # no PR listing to fool
 
     def test_failed_listing_fails_closed(self):
         rc, out = self.gate([], listing_fails=True)
@@ -226,6 +230,8 @@ class ForgedGateWorkflow(unittest.TestCase):
     # 3.2.7 P1: an unquoted run-name lost " #<n>" to a YAML comment. Parse the real template, as GitHub does.
     def test_run_name_keeps_the_pr_number(self):
         self.assertEqual(run_title(7), "Review Gate - PR #7")
+        wrapper = (SCRIPTS / "check-forged-review-gate.py").read_text()
+        self.assertIn(f'RUN_TITLE = "{run_title("{pr}")}"', wrapper)  # the wrapper matches this exact title
         for line in TEMPLATE.read_text().split("\njobs:\n", 1)[0].splitlines():  # top-level plain scalars
             if line and not line[0].isspace() and not line.startswith("#") and ": " in line:
                 value = line.split(": ", 1)[1].strip()
@@ -254,7 +260,8 @@ class WrapperDetector(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
             (bindir / "fixture.json").write_text(json.dumps({
-                "scripts": {}, "check_runs": check_runs, "runs": runs, **(fixture or {})}))
+                "scripts": {}, "check_runs": check_runs, "runs": runs,
+                "titles": {i: run_title(7) for i in runs}, **(fixture or {})}))
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, REPO="o/r", PR_NUMBER="7")
             for key, value in env_over.items():
                 if value is None:
@@ -276,11 +283,14 @@ class WrapperDetector(unittest.TestCase):
         rc, err = self.wrapper([api_check("Review Gate", 41)], {})
         self.assertEqual(rc, 0, err)
 
-    def test_trusted_pair_job_on_a_head_shared_with_another_pr_exits_1(self):
-        # Open or closed: a child closed after its run fired still shares the head.
-        rc, err = self.wrapper([job("Review Gate", 517)], {"517": TRUSTED_RUN}, fixture={"shared_prs": ["8"]})
-        self.assertEqual(rc, 1, err)
-        self.assertIn("#8 share head", err)
+    def test_trusted_pair_job_of_another_pr_exits_1(self):
+        # A closed-unmerged child's run on this head: no PR listing shows it, its run title does.
+        for title in ("Review Gate - PR #8", "Review Gate - PR #77", "Review Gate - PR", "Review Gate"):
+            with self.subTest(title=title):
+                rc, err = self.wrapper([job("Review Gate", 517)], {"517": TRUSTED_RUN},
+                                       fixture={"titles": {"517": title}})
+                self.assertEqual(rc, 1, err)
+                self.assertIn("not 'Review Gate - PR #7'", err)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
@@ -299,8 +309,7 @@ class WrapperDetector(unittest.TestCase):
         self.assertNotIn("runs/506", err)
 
     def test_ambiguous_input_exits_2(self):
-        for kwargs in ({"PR_NUMBER": None}, {"PR_NUMBER": "7abc"},
-                       {"fixture": {"pr_head": None}}, {"fixture": {"pr_head": "garbage"}}):
+        for kwargs in ({"PR_NUMBER": None}, {"PR_NUMBER": "7abc"}, {"fixture": {"titles": {}}}):
             with self.subTest(kwargs=str(kwargs)):
                 rc, err = self.wrapper([job("Review Gate", 514)], {"514": TRUSTED_RUN}, **kwargs)
                 self.assertEqual(rc, 2, err)

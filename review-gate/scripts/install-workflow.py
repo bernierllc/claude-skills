@@ -2,10 +2,13 @@
 """Copy the review-gate workflow + trusted checker into the current repo."""
 from __future__ import annotations
 
-import ast
 import hashlib
+import json
+import os
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -26,43 +29,59 @@ KNOWN_OLD = frozenset({
 })
 
 
-# What check-forged-review-gate.py imports from the detector; a KEPT copy without them breaks the gate.
-WRAPPER_NEEDS = frozenset({"PROTECTED", "_gh_run_lookup", "_load_check_runs", "forged"})
+WRAPPER = "check-forged-review-gate.py"
+# A legacy (3.2.0-3.2.7) Checks API run: the wrapper loads the detector and calls PROTECTED,
+# _gh_run_lookup, _load_check_runs and forged on it without any network call, and must exit 0.
+SMOKE_INPUT = json.dumps({"total_count": 1, "check_runs": [{
+    "id": 1, "name": "Review Gate", "app": {"slug": "github-actions"}, "external_id": "review-gate-pr-1",
+    "details_url": "https://github.com/o/r/runs/1", "html_url": "https://github.com/o/r/runs/1",
+    "check_suite": {"id": 1}}]})
 
 
-def _detector_compatible(path: Path) -> bool:
-    """True when the detector defines every top-level name the bundled wrapper uses."""
-    try:
-        tree = ast.parse(path.read_bytes())
-    except (SyntaxError, ValueError):
-        return False  # unparseable is incompatible: the wrapper could not load it
-    names = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names.update(t.id for t in targets if isinstance(t, ast.Name))
-    return WRAPPER_NEEDS <= names
+def _detector_compatible(path: Path, wrapper: Path) -> bool:
+    """True when the bundled wrapper actually runs against this detector (names, signatures, map)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copyfile(path, Path(tmp) / VENDORED)
+        shutil.copyfile(wrapper, Path(tmp) / WRAPPER)
+        try:
+            proc = subprocess.run([sys.executable, "-I", str(Path(tmp) / WRAPPER)], input=SMOKE_INPUT,
+                                  capture_output=True, text=True, timeout=60,
+                                  env={"PATH": os.environ.get("PATH", ""), "REPO": "o/r", "PR_NUMBER": "1"})
+        except subprocess.TimeoutExpired:
+            return False  # a hanging detector would hang every gate run too
+    return proc.returncode == 0
 
 
-def _copy(src: Path, dest: Path, force: bool) -> bool:
+def _backup(dest: Path) -> Path:
+    """Save dest beside itself under a name no earlier backup holds (never overwrites one)."""
+    data = dest.read_bytes()
+    for n in range(1000):
+        backup = dest.with_name(dest.name + (".custom.bak" if n == 0 else f".custom.{n}.bak"))
+        try:
+            with open(backup, "xb") as out:
+                out.write(data)
+            return backup
+        except FileExistsError:
+            continue
+    raise SystemExit(f"error: 1000 backups of {dest} already exist; clean them up first")
+
+
+def _copy(src: Path, dest: Path, force: bool, wrapper: Path) -> bool:
     """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector."""
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
     if (src.name == VENDORED and dest.is_file()
             and hashlib.sha256(dest.read_bytes()).hexdigest() not in KNOWN_OLD
-            and _detector_compatible(dest)):
+            and _detector_compatible(dest, wrapper)):
         print(f"KEPT {dest}: it differs from this skill's copy (vendored from aec) and is not a known "
               f"older version, so it was not overwritten. If yours is older, copy scripts/{VENDORED} "
               "from the newest agents-environment-config by hand.", file=sys.stderr)
         return False
-    if src.name == VENDORED and dest.is_file() and force and not _detector_compatible(dest):
-        backup = dest.with_name(dest.name + ".custom.bak")
-        shutil.copy2(dest, backup)
-        print(f"REPLACED {dest}: it lacks what the bundled check-forged-review-gate.py needs "
-              f"({', '.join(sorted(WRAPPER_NEEDS))}); your copy is saved as {backup}.", file=sys.stderr)
+    if src.name == VENDORED and dest.is_file() and force and not _detector_compatible(dest, wrapper):
+        backup = _backup(dest)
+        print(f"REPLACED {dest}: the bundled {WRAPPER} fails against it; your copy is saved as {backup}.",
+              file=sys.stderr)
     elif dest.exists() and not force:
         print(f"already exists: {dest} (pass --force to overwrite)")
         return False
@@ -85,19 +104,19 @@ def main() -> int:
             return 1
 
     root = Path.cwd()
+    wrapper = skill_root / "scripts" / WRAPPER
     detector = root / "scripts" / VENDORED
     if (not force and detector.is_file() and detector.read_bytes() != (skill_root / "scripts" / VENDORED).read_bytes()
-            and not _detector_compatible(detector)):
+            and not _detector_compatible(detector, wrapper)):
         # refuse before writing anything: an upgraded wrapper beside this detector fails every gate run
-        print(f"error: {detector} lacks what the bundled check-forged-review-gate.py needs "
-              f"({', '.join(sorted(WRAPPER_NEEDS))}). Rerun with --force to replace it "
+        print(f"error: the bundled {WRAPPER} fails against {detector}. Rerun with --force to replace it "
               "(your copy is backed up), or update it from the newest agents-environment-config.",
               file=sys.stderr)
         return 1
-    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
+    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force, wrapper)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
-        _copy(src, root / "scripts" / src.name, force)
+        _copy(src, root / "scripts" / src.name, force, wrapper)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0

@@ -21,10 +21,10 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
 # A closing reply must *say* it: the token starts a rendered line (optionally a
-# list bullet), so "still open; later reply `fixed in abc1234`", a quote, or a
+# list marker: bullet, or CommonMark ordered `1.`/`1)` with 1-9 digits), so "still open; later reply `fixed in abc1234`", a quote, or a
 # fenced example does not close the thread.
 CLOSING = re.compile(
-    r"(?m)^[ \t]*(?:[-*+][ \t]+)?(?:tracked:?[ \t]+)?"
+    r"(?m)^[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?(?:tracked:?[ \t]+)?"
     r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
     re.I,
 )
