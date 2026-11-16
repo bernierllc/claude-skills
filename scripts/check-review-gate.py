@@ -20,19 +20,29 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 )
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
-# A P2 thread closes on a reply whose FIRST line starts, at column 0, with a closing token. Nothing
-# precedes that line, so no fence, quote, list, comment or HTML block can enclose it; anything else
-# (a token later in the reply, indented or after a marker) does not close. No Markdown is parsed.
+# A P2 thread closes on a reply whose FIRST line starts, at column 0, with a closing token and is the
+# whole first paragraph: the reply ends there or the next line is blank (only spaces/tabs, as in
+# CommonMark). Nothing precedes that line, so no fence, quote, list, comment or HTML block can enclose
+# it, and nothing directly after it can turn it into a setext heading or a table header. A Notion link
+# needs link text starting with a letter or digit. Anything else does not close. No Markdown is parsed.
 _CLOSING_TOKEN = re.compile(
     r"(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
+    r"(?:(?:\[[A-Za-z0-9][^\[\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
     re.I,
 )
 
 
 def closes(reply: str) -> bool:
-    """True when the reply's first physical line starts with a closing token at column 0."""
-    return bool(_CLOSING_TOKEN.match(reply.split("\n", 1)[0]))
+    """True when the reply's first line starts with a closing token at column 0 and stands alone."""
+    lines = reply.replace("\r\n", "\n").replace("\r", "\n").split("\n", 2)
+    if len(lines) > 1 and not _is_blank(lines[1]):
+        return False
+    return bool(_CLOSING_TOKEN.match(lines[0]))
+
+
+def _is_blank(line: str) -> bool:
+    """CommonMark blank: only spaces and tabs. str.strip() would also drop NBSP, U+2028, form feed, ..."""
+    return not line.strip(" \t")
 
 
 FALLBACK_ATTESTATION = re.compile(
@@ -584,9 +594,9 @@ _FENCE_LINE = re.compile(r"[ \t]*(?:`{3}|~{3})")
 # HTML blocks that run through blank lines (CommonMark types 1-5); a comment is banned anywhere
 _RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<(?:pre|script|style|textarea)(?![A-Za-z0-9-])|[ \t>*+\-0-9.)]*<[?!]", re.I)
 REVIEW_HEADING = "## Review"
-_PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()]*")
+_PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()*_~$]*")
 _ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
-_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*\S[^`<>|\[\]()]*)", re.I)
+_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*\S[^`<>|\[\]()*_~$]*)", re.I)
 
 
 def review_region(body: str) -> tuple[list[str], list[str]]:
@@ -596,7 +606,7 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
     line equal to `## Review`, after a blank line or at the top. The region runs to the next line
     starting `## ` or the end. Every non-blank region line is an exact attestation, an exact closing
     line, or plain prose: starts with a letter or digit, no ordered-list marker, and none of
-    ` < > | [ ] ( ). Any other line fails the check.
+    ` < > | [ ] ( ) * _ ~ $. Blank means only spaces and tabs. Any other line fails the check.
     """
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     problems: list[str] = []
@@ -612,14 +622,14 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
         problems.append(f"PR body must have exactly one line '{REVIEW_HEADING}' (found {len(headings)})")
         return [], problems
     start = headings[0]
-    if start and lines[start - 1].strip():
+    if start and not _is_blank(lines[start - 1]):
         problems.append(f"PR body line {start + 1}: '{REVIEW_HEADING}' must follow a blank line")
     region: list[str] = []
     for n, line in enumerate(lines[start + 1 :], start + 2):
         if line.startswith("## "):
             break
         region.append(line)
-        if not line.strip() or FALLBACK_ATTESTATION.fullmatch(line) or _CLOSING_LINE.fullmatch(line):
+        if _is_blank(line) or FALLBACK_ATTESTATION.fullmatch(line) or _CLOSING_LINE.fullmatch(line):
             continue
         if _PROSE_LINE.fullmatch(line) and not _ORDERED_MARKER.match(line):
             continue

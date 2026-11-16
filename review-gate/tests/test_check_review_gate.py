@@ -173,6 +173,22 @@ for line in (f"    {attestation}", f"\t{attestation}", f" {attestation}", f"- {a
 for line in (f"{attestation} and more", f"Note {attestation}", f"{attestation} ", attestation.replace("—", "-"),
              f"{attestation}.", "Pending: " + attestation):
     assert not g.review_section_names_fallback(f"{R}\n\n{line}\n", head), line
+# blank means only spaces and tabs (CommonMark): an NBSP/U+2028/form-feed/... line does not end an HTML
+# block, so it neither precedes the heading nor counts as a blank region line
+_UNI_BLANKS = ("\u00a0", "\u2028", "\u3000", "\x0c", "\x0b", "\x1c", "\x85", "\u200a")
+for ws in _UNI_BLANKS:
+    for opener in ("<details>", "<div>", "<a>", "<details><summary>"):
+        body = f"{opener}\n{ws}\n{R}\n{attestation}\n"
+        assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), repr(body)
+        assert not g.review_section_names_fallback(body, head), repr(body)
+    assert g.evaluate(pr(body=f"{R}\n\n{ws}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})), repr(ws)
+for blank in (" ", "\t", " \t "):
+    assert g.evaluate(pr(body=f"Intro\n{blank}\n{R}\n{blank}\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
+# emphasis, strikethrough and math markers can span lines around the attestation
+for line in ("x ~~y", "x *y", "x _y", "x $y", "z~~", "z*"):
+    body = f"{R}\n{line}\n{attestation}\n"
+    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
+    assert not g.review_section_names_fallback(body, head), body
 # the region ends at the next `## ` line: an attestation after it does not count
 assert not g.review_section_names_fallback(f"{R}\n\nPending\n\n## Other\n\n{attestation}\n", head)
 # the Claude Code footer belongs outside ## Review
@@ -202,7 +218,9 @@ try:
                           (f"{R}\n\n| {attestation} |\n", False),
                           (f"{R}\n\n<pre>\n\n{attestation}\n", False),
                           (f"{R}\n\n[x]: https://example.org\n\n{attestation}\n", False),
-                          (f"{R}\n\ntext\n===\n\n{attestation}\n", False)):
+                          (f"{R}\n\ntext\n===\n\n{attestation}\n", False),
+                          (f"<details>\n\u00a0\n{R}\n{attestation}\n", False),
+                          (f"{R}\nx ~~y\n{attestation}\nz~~\n", False)):
         mg.gate.pr_payload = lambda *a, _b=body, **k: pr(body=_b, headRefOid=head, reviews={"nodes": []})
         blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
         assert (blocked is None) == allowed, (body, blocked)
@@ -285,14 +303,21 @@ def _p2(reply):
 for ok in ("fixed in deadbeef", "fixed in `deadbeef`", "fixed in commit deadbeef1 — details (with parens) and `code`",
            "not-a-finding: intentional, see SKILL.md", "Tracked: https://app.notion.com/p/4194efecc95a816c",
            "https://www.notion.so/abc123", "[Tracker row](https://app.notion.com/p/abc)",
-           "fixed in deadbeef\n\n```\nanything after the first line\n```"):
+           "fixed in deadbeef\n\n```\nanything after the first line\n```", "fixed in deadbeef\n \t\nmore",
+           "fixed in deadbeef\r\n\r\nmore", "fixed in deadbeef\n"):
     assert g.evaluate(_p2(ok)) == [], ok
     assert g.closes(ok), ok
 for bad in ("Thanks.\nfixed in deadbeef", " fixed in deadbeef", "\tfixed in deadbeef", "- fixed in deadbeef",
             "1. fixed in deadbeef", "> fixed in deadbeef", "```\nfixed in deadbeef\n```", "<!-- fixed in deadbeef -->",
             "`fixed in deadbeef`", "Still open; eventually reply with `fixed in deadbeef`", "will be not-a-finding: maybe",
             "fixed in deadbeefzz", "not-fixed:https://notion.so/ticket", "`https://notion.so/ticket`",
-            "https://evilnotion.so/ticket", "\nfixed in deadbeef", "    fixed in deadbeef"):
+            "https://evilnotion.so/ticket", "\nfixed in deadbeef", "    fixed in deadbeef",
+            # the next line would make the first a setext heading or a table header
+            "fixed in 0123456\n===", "not-a-finding: x\n---", "not-a-finding: a|b\n-|-\nc|d", "fixed in 0123456\r===",
+            "fixed in 0123456\nmore text", "fixed in 0123456\n\u00a0\nmore",
+            # link text must be visible
+            "[](https://notion.so/x)", "[\u200b](https://notion.so/x)", "[![](https://notion.so/x)",
+            "[ ](https://notion.so/x)"):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
 # a non-matching first marker must not hide a valid later one in the same comment
 _two = codex_comment("deadbeef" + head[8:])
