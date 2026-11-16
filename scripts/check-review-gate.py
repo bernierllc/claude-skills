@@ -613,7 +613,8 @@ def _rendered_markdown(body: str) -> str:
                 fence = opener.group(1) or opener.group(2)
                 kept.append("")  # the dropped fence still ends a paragraph (and a quote's lazy continuation)
                 continue
-            if line.startswith(("    ", "\t")):
+            # indented code cannot interrupt a paragraph (CommonMark): after prose it is a continuation
+            if line.startswith(("    ", "\t")) and not was_para:
                 continue
             raw = next(((m, c) for st, c in _RAW_BLOCKS if (m := st.match(line))), None)
             if raw:

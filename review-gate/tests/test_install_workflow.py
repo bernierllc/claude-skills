@@ -16,15 +16,47 @@ def install(repo, *args):
     return subprocess.run([sys.executable, str(INSTALLER), *args], cwd=repo, capture_output=True, text=True)
 
 
+# a newer/custom detector that still defines what the bundled wrapper uses
+COMPATIBLE = (b"# newer aec copy\nPROTECTED = {}\n"
+              b"def forged(c, l, protected=None): return []\n"
+              b"def _gh_run_lookup(repo): return None\ndef _load_check_runs(text): return []\n")
+INCOMPATIBLE = b"# old custom detector\nPROTECTED = {}\ndef forged(c, l): return []\n"
+
+
 class VendoredDetector(unittest.TestCase):
+    def test_incompatible_custom_detector_refuses_without_force(self):
+        # 3.2.8 P2: a KEPT detector the upgraded wrapper cannot use would fail every gate run
+        with tempfile.TemporaryDirectory() as repo:
+            dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
+            dest.parent.mkdir()
+            dest.write_bytes(INCOMPATIBLE)
+            proc = install(repo)
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("lacks", proc.stderr)
+            self.assertEqual(dest.read_bytes(), INCOMPATIBLE)
+            self.assertFalse((Path(repo) / "scripts" / "check-forged-review-gate.py").exists())
+            self.assertFalse((Path(repo) / ".github").exists())
+
+    def test_incompatible_custom_detector_is_backed_up_and_replaced_with_force(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
+            dest.parent.mkdir()
+            dest.write_bytes(INCOMPATIBLE)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / dest.name).read_bytes())
+            self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), INCOMPATIBLE)
+            self.assertIn("REPLACED", proc.stderr)
+
+
     def test_differing_repo_detector_is_left_untouched_even_with_force(self):
         with tempfile.TemporaryDirectory() as repo:
             dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
             dest.parent.mkdir()
-            dest.write_bytes(b"# newer aec copy\n")
+            dest.write_bytes(COMPATIBLE)
             proc = install(repo, "--force")
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(dest.read_bytes(), b"# newer aec copy\n")
+            self.assertEqual(dest.read_bytes(), COMPATIBLE)
             self.assertIn("KEPT", proc.stderr)
             # everything else is still (re)installed
             self.assertEqual((Path(repo) / "scripts" / "check-forged-review-gate.py").read_bytes(),

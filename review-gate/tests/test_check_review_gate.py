@@ -287,6 +287,8 @@ for ok in (
     "> quoted context\n\nfixed in deadbeef",
     "> quoted context\n>\nfixed in deadbeef",  # aec #163 Codex P2: a marker-only line is a blank line
     "> quoted context\n> > \nfixed in deadbeef",
+    "- Addressed:\n    fixed in deadbeef",  # aec #163 Codex P2: indented list continuation is prose
+    "Thanks,\n\tfixed in deadbeef",
 ):
     assert g.evaluate(_p2(ok)) == [], ok
 for bad in (
@@ -306,6 +308,7 @@ for bad in (
     "> Example\n2. note\nfixed in deadbeef",
     "> Example\n-\nfixed in deadbeef",
     "> Example\n>more\nfixed in deadbeef",
+    "Example:\n\n    fixed in deadbeef",  # indented code after a blank line stays code
 ):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
 assert g.evaluate(_p2("not-a-finding: `retry` is idempotent")) == []
@@ -1659,14 +1662,12 @@ assert 'ref="$DEFAULT_BRANCH"' in yml
 assert "$BASE_SHA" not in yml
 assert "BASE_SHA:" not in yml
 assert "actions/checkout" not in yml
-# The required context "Review Gate" is the Checks API run on the PR head; the Actions job is named
-# differently so a stacked child's pull_request_target job (attached to its base = our head) can't pose as it.
-assert '-f name="Review Gate"' in yml
-assert re.search(r"(?m)^\s+name:\s*review-gate-runner\s*$", yml)
-assert not re.search(r"(?m)^    name:\s*Review Gate\s*$", yml)
+# 3.2.8: the required context "Review Gate" is the gate's own job, on the PR head in its own suite;
+# nothing is POSTed (behavior pinned in test_forged_gate.py).
+assert '-f name="Review Gate"' not in yml
+assert re.search(r"(?m)^    name:\s*Review Gate\s*$", yml)
 assert "check-runs" in yml
-# 3.2.1: one run per head, reused (behavior pinned in test_forged_gate.py); a reevaluation
-# first turns every reused run red so a stale success cannot stand.
+# 3.2.1 for legacy API runs: a reevaluation first turns this PR's runs red so a stale success cannot stand.
 assert 'complete_check failure "review-gate running"' in yml
 assert "check-runs/$id" in yml
 assert "cancel-ci-on-finding" not in yml

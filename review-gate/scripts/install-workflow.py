@@ -2,6 +2,7 @@
 """Copy the review-gate workflow + trusted checker into the current repo."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import shutil
 import sys
@@ -25,18 +26,44 @@ KNOWN_OLD = frozenset({
 })
 
 
+# What check-forged-review-gate.py imports from the detector; a KEPT copy without them breaks the gate.
+WRAPPER_NEEDS = frozenset({"PROTECTED", "_gh_run_lookup", "_load_check_runs", "forged"})
+
+
+def _detector_compatible(path: Path) -> bool:
+    """True when the detector defines every top-level name the bundled wrapper uses."""
+    try:
+        tree = ast.parse(path.read_bytes())
+    except (SyntaxError, ValueError):
+        return False  # unparseable is incompatible: the wrapper could not load it
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return WRAPPER_NEEDS <= names
+
+
 def _copy(src: Path, dest: Path, force: bool) -> bool:
     """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector."""
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
     if (src.name == VENDORED and dest.is_file()
-            and hashlib.sha256(dest.read_bytes()).hexdigest() not in KNOWN_OLD):
+            and hashlib.sha256(dest.read_bytes()).hexdigest() not in KNOWN_OLD
+            and _detector_compatible(dest)):
         print(f"KEPT {dest}: it differs from this skill's copy (vendored from aec) and is not a known "
               f"older version, so it was not overwritten. If yours is older, copy scripts/{VENDORED} "
               "from the newest agents-environment-config by hand.", file=sys.stderr)
         return False
-    if dest.exists() and not force:
+    if src.name == VENDORED and dest.is_file() and force and not _detector_compatible(dest):
+        backup = dest.with_name(dest.name + ".custom.bak")
+        shutil.copy2(dest, backup)
+        print(f"REPLACED {dest}: it lacks what the bundled check-forged-review-gate.py needs "
+              f"({', '.join(sorted(WRAPPER_NEEDS))}); your copy is saved as {backup}.", file=sys.stderr)
+    elif dest.exists() and not force:
         print(f"already exists: {dest} (pass --force to overwrite)")
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +85,15 @@ def main() -> int:
             return 1
 
     root = Path.cwd()
+    detector = root / "scripts" / VENDORED
+    if (not force and detector.is_file() and detector.read_bytes() != (skill_root / "scripts" / VENDORED).read_bytes()
+            and not _detector_compatible(detector)):
+        # refuse before writing anything: an upgraded wrapper beside this detector fails every gate run
+        print(f"error: {detector} lacks what the bundled check-forged-review-gate.py needs "
+              f"({', '.join(sorted(WRAPPER_NEEDS))}). Rerun with --force to replace it "
+              "(your copy is backed up), or update it from the newest agents-environment-config.",
+              file=sys.stderr)
+        return 1
     _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
