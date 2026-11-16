@@ -27,9 +27,12 @@ P2_ROOT = re.compile(r"\bp2\b", re.I)
 # needs link text starting with a letter or digit. Anything else does not close. No Markdown is parsed.
 _CLOSING_TOKEN = re.compile(
     r"(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[A-Za-z0-9][^\[\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
-    re.I,
+    r"(?:(?:\[[A-Za-z0-9][^\[\]<>\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*[A-Za-z0-9])",
+    re.I | re.A,
 )
+
+
+CLOSER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 def closes(reply: str) -> bool:
@@ -48,7 +51,7 @@ def _is_blank(line: str) -> bool:
 FALLBACK_ATTESTATION = re.compile(
     r"Fallback review: (codex|agy|antigravity|superpowers|claude-sonnet) on "
     r"([0-9a-f]{7,40}) — verdict: (clean|findings fixed)",
-    re.I,
+    re.I | re.A,
 )
 MAIN_REVIEW_LABELS = {"review:high"}
 # Exact bot logins only — substring matches like "codex-helper" must not pass the gate.
@@ -226,7 +229,7 @@ def _paginate_thread_comments(
         ... on PullRequestReviewThread {
           comments(first: 50, after: $cursor) {
             pageInfo { hasNextPage endCursor }
-            nodes { body author { login } }
+            nodes { body author { login } authorAssociation }
           }
         }
       }
@@ -238,7 +241,7 @@ def _paginate_thread_comments(
         ... on PullRequestReviewThread {
           comments(first: 50) {
             pageInfo { hasNextPage endCursor }
-            nodes { body author { login } }
+            nodes { body author { login } authorAssociation }
           }
         }
       }
@@ -285,7 +288,7 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
               id
               comments(first: 50) {
                 pageInfo { hasNextPage endCursor }
-                nodes { body author { login } }
+                nodes { body author { login } authorAssociation }
               }
             }
           }
@@ -305,7 +308,7 @@ def _paginate_threads(owner: str, name: str, number: int, hostname: str | None =
                       id
                       comments(first: 50) {
                         pageInfo { hasNextPage endCursor }
-                        nodes { body author { login } }
+                        nodes { body author { login } authorAssociation }
                       }
                     }
                   }
@@ -592,17 +595,18 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
 # line, so the author rewrites the body instead of the gate guessing what GitHub renders.
 _FENCE_LINE = re.compile(r"[ \t]*(?:`{3}|~{3})")
 # HTML blocks that run through blank lines (CommonMark types 1-5); a comment is banned anywhere
+_DETAILS_TAG = re.compile(r"<details(?![A-Za-z0-9-])", re.I)
 _RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<(?:pre|script|style|textarea)(?![A-Za-z0-9-])|[ \t>*+\-0-9.)]*<[?!]", re.I)
 REVIEW_HEADING = "## Review"
 _PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()*_~$]*")
 _ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
-_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*\S[^`<>|\[\]()*_~$]*)", re.I)
+_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*[A-Za-z0-9][^`<>|\[\]()*_~$]*)", re.I | re.A)
 
 
 def review_region(body: str) -> tuple[list[str], list[str]]:
     """Return (region lines, problems) for the PR body's single `## Review` section.
 
-    Whole body: no ``` or ~~~ line, no `<!--`, no blank-surviving raw HTML block opener. Exactly one
+    Whole body: no ``` or ~~~ line, no `<!--`, no `<details`, no blank-surviving raw HTML block opener. Exactly one
     line equal to `## Review`, after a blank line or at the top. The region runs to the next line
     starting `## ` or the end. Every non-blank region line is an exact attestation, an exact closing
     line, or plain prose: starts with a letter or digit, no ordered-list marker, and none of
@@ -617,6 +621,8 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
             problems.append(f"PR body line {n}: HTML comments (<!--) are not allowed in a gated PR body")
         elif _RAW_HTML_LINE.match(line):
             problems.append(f"PR body line {n}: raw HTML blocks (<pre>, <script>, <style>, <textarea>, <?, <!) are not allowed in a gated PR body")
+        if _DETAILS_TAG.search(line):
+            problems.append(f"PR body line {n}: <details> is not allowed in a gated PR body (an unclosed one collapses ## Review)")
     headings = [i for i, line in enumerate(lines) if line.rstrip() == REVIEW_HEADING]
     if len(headings) != 1:
         problems.append(f"PR body must have exactly one line '{REVIEW_HEADING}' (found {len(headings)})")
@@ -667,11 +673,13 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         root = comments[0].get("body") or ""
         if not P2_ROOT.search(root):
             continue
-        replies = comments[1:]
+        # Only someone with write access closes: on a public repo anyone can reply to a thread.
+        replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS]
         if any(closes(c.get("body") or "") for c in replies):
             continue
         failures.append(
-            f"P2 thread #{i} has no closing reply (Notion link / fixed in <sha> / not-a-finding:)"
+            f"P2 thread #{i} has no closing reply from a repo owner, member or collaborator "
+            "(Notion link / fixed in <sha> / not-a-finding:)"
         )
     return failures
 

@@ -189,6 +189,14 @@ for line in ("x ~~y", "x *y", "x _y", "x $y", "z~~", "z*"):
     body = f"{R}\n{line}\n{attestation}\n"
     assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
     assert not g.review_section_names_fallback(body, head), body
+# <details> anywhere: an unclosed one collapses the section that follows
+for line in ("<details>", "<DETAILS open>", "text <details>", "<details><summary>x</summary>"):
+    body = f"{line}\n\n{R}\n\n{attestation}\n"
+    assert any("<details>" in r for r in g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))), body
+assert g.evaluate(pr(body=f"<detailsx> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
+# ASCII-only matching: re.I would otherwise fold U+017F to s
+assert g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-sonnet on 89cda061 — verdict: clean")
+assert not g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-\u017fonnet on 89cda061 — verdict: clean")
 # the region ends at the next `## ` line: an attestation after it does not count
 assert not g.review_section_names_fallback(f"{R}\n\nPending\n\n## Other\n\n{attestation}\n", head)
 # the Claude Code footer belongs outside ## Review
@@ -220,7 +228,8 @@ try:
                           (f"{R}\n\n[x]: https://example.org\n\n{attestation}\n", False),
                           (f"{R}\n\ntext\n===\n\n{attestation}\n", False),
                           (f"<details>\n\u00a0\n{R}\n{attestation}\n", False),
-                          (f"{R}\nx ~~y\n{attestation}\nz~~\n", False)):
+                          (f"{R}\nx ~~y\n{attestation}\nz~~\n", False),
+                          (f"<details>\n\n{R}\n\n{attestation}\n", False)):
         mg.gate.pr_payload = lambda *a, _b=body, **k: pr(body=_b, headRefOid=head, reviews={"nodes": []})
         blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
         assert (blocked is None) == allowed, (body, blocked)
@@ -279,6 +288,10 @@ p2 = pr(
 )
 assert any("P2" in r for r in g.evaluate(p2))
 
+def _p2(reply, assoc="MEMBER"):
+    return pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: add a test"},
+                                                               {"body": reply, "authorAssociation": assoc}]}}]})
+
 # Closed P2
 p2_ok = pr(
     reviewThreads={
@@ -287,7 +300,7 @@ p2_ok = pr(
                 "comments": {
                     "nodes": [
                         {"body": "P2: add a test"},
-                        {"body": "fixed in `deadbeef`"},
+                        {"body": "fixed in `deadbeef`", "authorAssociation": "MEMBER"},
                     ]
                 }
             }
@@ -295,9 +308,12 @@ p2_ok = pr(
     }
 )
 assert g.evaluate(p2_ok) == []
+# only an owner, member or collaborator closes: anyone can reply on a public repo
+for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+    assert g.evaluate(_p2("fixed in deadbeef", assoc)) == [], assoc
+for assoc in (None, "NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "member"):
+    assert any("P2" in r for r in g.evaluate(_p2("fixed in deadbeef", assoc))), assoc
 
-def _p2(reply):
-    return pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: add a test"}, {"body": reply}]}}]})
 
 # A P2 reply closes only when its FIRST line starts, at column 0, with a closing token.
 for ok in ("fixed in deadbeef", "fixed in `deadbeef`", "fixed in commit deadbeef1 — details (with parens) and `code`",
@@ -317,7 +333,9 @@ for bad in ("Thanks.\nfixed in deadbeef", " fixed in deadbeef", "\tfixed in dead
             "fixed in 0123456\nmore text", "fixed in 0123456\n\u00a0\nmore",
             # link text must be visible
             "[](https://notion.so/x)", "[\u200b](https://notion.so/x)", "[![](https://notion.so/x)",
-            "[ ](https://notion.so/x)"):
+            "[ ](https://notion.so/x)", "[a<!--](https://notion.so/x)-->", "[a>b](https://notion.so/x)",
+            "not-a-finding: <!-- -->", "not-a-finding: &nbsp;", "not-a-finding: \u200b", "not-a-finding: \u2800",
+            "not-a-finding: _", "fixed in \u017f0123456"):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
 # a non-matching first marker must not hide a valid later one in the same comment
 _two = codex_comment("deadbeef" + head[8:])
