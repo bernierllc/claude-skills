@@ -829,7 +829,30 @@ def _plain_lines(source: list[str], rendered: list[str]) -> list[str]:
         ok = ok and bool(line.strip())
         out.append(line if ok or not line.strip() else _REJECTED)
         cont = ok
+    # Whole-block pass (#105 Codex r8): a run of non-blank source lines is rejected entirely when it
+    # may hold an inline construct spanning lines (an HTML tag or a link destination/title left open
+    # on a line, whose following lines are attribute or title text) or a setext underline (the run
+    # above it is a heading, not a paragraph). Coarser than CommonMark on purpose: fails closed.
+    # An underline ends the block: lines after it start a new run. `out` may be shorter than the
+    # body (an indented fence drops the rest), so only its lines are judged.
+    source = source[: len(out)]
+    start = 0
+    for i in range(len(source) + 1):
+        underline = 0 < i - start and i < len(source) and bool(_SETEXT.match(source[i]))
+        if i < len(source) and source[i].strip() and not underline:
+            continue
+        run = range(start, i + underline)
+        if underline or any(_OPEN_INLINE.search(source[k]) for k in run):
+            for k in run:
+                if not source[k].startswith("#"):
+                    out[k] = _REJECTED
+        start = i + 1
     return out
+
+
+_SETEXT = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
+# a tag opened and not closed on its line, or a link `](` whose `)` is not on its line
+_OPEN_INLINE = re.compile(r"<[A-Za-z/!?][^>]*$|\]\((?:[^()]|\([^()]*\))*$")
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:

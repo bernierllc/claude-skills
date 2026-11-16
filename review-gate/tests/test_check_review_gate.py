@@ -2104,7 +2104,10 @@ for shape in (" \t{inner}", "-     {inner}", "1.     {inner}", "-  -     example
               # a paragraph the strict test rejects, then a raw block opener: the block runs on
               "    code\n`span\n</pre>\n<pre>\n\n{inner}", "`x\n</b>\n```\n\n{inner}\n```",
               # a raw block inside an html block: the html block resumes after it
-              "<div>\n<pre>\n</pre>\n`span\n{inner}"):
+              "<div>\n<pre>\n</pre>\n`span\n{inner}",
+              # #105 Codex r8: attribute or link-title text across lines, setext heading text
+              "<span title=\"\n{inner}\n\">x</span>", "[x](https://example.org/ \"\n{inner}\n\")",
+              "{inner}\n===", "{inner}\n---", "a\n{inner}\n  ---"):
     assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
                          reviews={"nodes": []})), shape
     assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
