@@ -2042,3 +2042,39 @@ assert "comments(first: 50)" in _paginate_src
 assert "_paginate_thread_comments" in _paginate_src
 
 print("ok")
+
+# AEC #163 Codex P1 (db2355a): a fence nested in a list item is code. An example attestation or
+# closing reply inside it must not count, for backtick and tilde fences at list indents 2-4,
+# including a "closer" at another column, which CommonMark does not accept as the closer.
+for run in ("```", "````", "~~~", "~~~~"):
+    for marker, pad in (("- ", "  "), ("* ", "  "), ("1. ", "   "), ("10. ", "    "), ("1) ", "   ")):
+        fenced = f"{marker}{run}\n{pad}{{inner}}\n{pad}{run}\n"
+        body = "## Review\n" + fenced.format(inner=attestation)
+        assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
+        assert not g._closes(g._prose(fenced.format(inner="fixed in deadbeef"))), fenced
+        # an indented fence under a list item (blank line, then the fence at the item's indent)
+        under = f"{marker}example:\n\n{pad}{run}\n{pad}{{inner}}\n{pad}{run}\n"
+        assert g.evaluate(pr(body="## Review\n" + under.format(inner=attestation), headRefOid=head,
+                             reviews={"nodes": []})), under
+        assert not g._closes(g._prose(under.format(inner="fixed in deadbeef"))), under
+    # a less-indented "closer" ends the list item and opens a new fence: what follows is still code
+    for body in (f"- {run}\n  x\n{run}\n{{inner}}\n", f"- a\n\n  {run}\n  x\n {run}\n{{inner}}\n"):
+        assert g.evaluate(pr(body="## Review\n" + body.format(inner=attestation), headRefOid=head,
+                             reviews={"nodes": []})), body
+        assert not g._closes(g._prose(body.format(inner="fixed in deadbeef"))), body
+    # without a list-container parser, what follows a nested fence fails closed even after a
+    # correct closer (the documented cost); what precedes it still reads
+    after = f"- {run}\n  example\n  {run}\n\n{{inner}}\n"
+    assert g.evaluate(pr(body="## Review\n" + after.format(inner=attestation), headRefOid=head,
+                         reviews={"nodes": []})), after
+    assert not g._closes(g._prose(after.format(inner="fixed in deadbeef"))), after
+    before = f"## Review\n{attestation}\n\n## Test plan\n- {run}\n  example\n  {run}\n"
+    assert g.evaluate(pr(body=before, headRefOid=head, reviews={"nodes": []})) == [], before
+    assert g._closes(g._prose(f"fixed in deadbeef\n\n- {run}\n  x\n  {run}\n"))
+    # a top-level fence at column 0 still closes normally (CommonMark), so prose after it reads
+    top = f"{run}\nexample\n{run}\n\n{{inner}}\n"
+    assert g.evaluate(pr(body="## Review\n" + top.format(inner=attestation), headRefOid=head,
+                         reviews={"nodes": []})) == [], top
+# valid list continuation prose still closes
+for ok in ("1. Addressed:\n    fixed in deadbeef", "- Addressed:\n  fixed in deadbeef", "1. done\n2. fixed in deadbeef"):
+    assert g._closes(g._prose(ok)), ok

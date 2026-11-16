@@ -601,6 +601,12 @@ _RAW_BLOCKS = (
 )
 # a backtick fence's info string cannot contain a backtick (CommonMark), or it is not a fence
 _FENCE_OPEN = re.compile(r" {0,3}(?:(`{3,})[^`]*$|(~{3,}))")
+# Any other fence-like line: indented, or after list markers (`- ````, `1. ~~~`, `  ```` under an
+# item). Whether it is code, and where it ends, depends on the list container it sits in, which
+# needs a full CommonMark parser (the runner has stdlib only). So everything from such a line to
+# the end of the body is treated as code: an example attestation or closing reply in a list-nested
+# fence can never count (AEC #163 Codex P1), at the cost that one placed after it fails closed.
+_LOOSE_FENCE = re.compile(r"[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)*[ \t]*(?:`{3,}(?=[^`]*$)|~{3,})")
 
 
 def _rendered_markdown(body: str) -> str:
@@ -638,6 +644,10 @@ def _rendered_markdown(body: str) -> str:
             in_html = False
         if not in_comment:
             opener = _FENCE_OPEN.match(line)
+            if opener and line[:1] in " \t":
+                break  # an indented fence: the rest of the body is unreadable as prose (see _LOOSE_FENCE)
+            if not opener and _LOOSE_FENCE.match(line):
+                break
             if opener:
                 fence = opener.group(1) or opener.group(2)
                 kept.append("")  # the dropped fence still ends a paragraph (and a quote's lazy continuation)
