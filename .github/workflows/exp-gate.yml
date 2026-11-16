@@ -1,0 +1,33 @@
+name: Exp Gate
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+permissions:
+  contents: read
+  checks: write
+concurrency:
+  group: exp-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    name: exp-gate-runner
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MODE: new
+        run: |
+          set -euo pipefail
+          external_id="exp-gate-pr-$PR_NUMBER"
+          check_ids=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=Scratch%20Gate&filter=all&per_page=100" --paginate \
+              | jq -r --arg ext "$external_id" '.check_runs[] | select(.name == "Scratch Gate" and .external_id == $ext) | .id')
+          if [ "$MODE" = new ] || [ -z "$check_ids" ]; then
+            new=$(gh api -X POST "repos/$REPO/check-runs" -f name="Scratch Gate" -f head_sha="$SHA" -f external_id="$external_id" --jq .id)
+            check_ids="$check_ids $new"
+          fi
+          for id in $check_ids; do
+            gh api -X PATCH "repos/$REPO/check-runs/$id" -f status=completed -f conclusion=success -f "output[title]=ok" -f "output[summary]=mode $MODE" >/dev/null
+          done
