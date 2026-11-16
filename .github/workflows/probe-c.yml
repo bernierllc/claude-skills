@@ -1,0 +1,11 @@
+name: Probe c
+run-name: "Probe C - PR #${{ github.ref_name }}"
+on:
+  push:
+    branches: [scratch/runname-probe]
+permissions: {}
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

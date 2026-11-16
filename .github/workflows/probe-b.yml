@@ -1,0 +1,11 @@
+name: Probe b
+run-name: "Probe B - PR ${{ github.event.pull_request.number }}"
+on:
+  push:
+    branches: [scratch/runname-probe]
+permissions: {}
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
