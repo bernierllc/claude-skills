@@ -684,6 +684,15 @@ def _rendered_markdown(body: str) -> str:
                     in_comment, rest = True, rest[start + 4 :]
         # a heading or thematic break is a complete block, so a tag on the next line may open an html block
         para = bool(out.strip()) and not re.match(r" {0,3}(?:#{1,6}(?:\s|$)|(?:[-*_][ \t]*){3,}$)", out)
+        # A line that is only list/quote markers, or whose content after them is indented code
+        # (`-     example`: a marker then 5+ spaces), ends or holds no paragraph, so an indented line
+        # after it is code, not a continuation (#105 Codex r6 P1). Any tab there fails closed too.
+        containers = re.match(r"[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t]|$)[ \t]?|>[ \t]?)+", out)
+        if para and containers:
+            content = out[containers.end():]
+            if not content.strip() or content.startswith("   ") and content[:4].isspace() \
+                    or "\t" in out[: len(out) - len(out.lstrip())] or "\t" in content[:4]:
+                para = False
         if out.strip() or not line.strip():
             kept.append(out)
     return "\n".join(kept)

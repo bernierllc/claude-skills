@@ -2078,3 +2078,15 @@ for run in ("```", "````", "~~~", "~~~~"):
 # valid list continuation prose still closes
 for ok in ("1. Addressed:\n    fixed in deadbeef", "- Addressed:\n  fixed in deadbeef", "1. done\n2. fixed in deadbeef"):
     assert g._closes(g._prose(ok)), ok
+
+# #105 Codex r6 P1: a list item opening with indented code (marker + 5 spaces), or a marker-only
+# quote line, holds no paragraph, so the indented line after it is code, never a continuation.
+for code_first in ("-     example\n      {inner}", "1.      example\n        {inner}",
+                   "> example\n>\n    {inner}", "- > example\n- >\n      {inner}"):
+    assert g.evaluate(pr(body="## Review\n" + code_first.format(inner=attestation), headRefOid=head,
+                         reviews={"nodes": []})), code_first
+    assert not g._closes(g._prose(code_first.format(inner="fixed in deadbeef"))), code_first
+# ...while a list item holding prose keeps its indented continuation
+for prose in ("-    Addressed:\n     fixed in deadbeef", "- Addressed:\n    fixed in deadbeef",
+              "1. Addressed:\n    fixed in deadbeef"):
+    assert g._closes(g._prose(prose)), prose
