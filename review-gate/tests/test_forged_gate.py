@@ -28,6 +28,13 @@ with open(os.path.join(state, "calls.log"), "a") as log:
     log.write(" ".join(args) + "\n")
 fixture = json.load(open(os.path.join(state, "fixture.json")))
 path = next(a for a in args if a.startswith("repos/"))
+fail = fixture.get("fail")  # {"pattern": regex over the joined args, "nth": which match 404s (1-based)}
+if fail and __import__("re").search(fail["pattern"], " ".join(args)):
+    seen_path = os.path.join(state, "fail.count")
+    seen = int(open(seen_path).read()) + 1 if os.path.exists(seen_path) else 1
+    open(seen_path, "w").write(str(seen))
+    if seen == fail.get("nth", 1):
+        print("gh: Not Found (HTTP 404)", file=sys.stderr); sys.exit(1)
 HEAD = "a" * 40
 created_path = os.path.join(state, "created.json")
 created = json.load(open(created_path)) if os.path.exists(created_path) else []
@@ -225,7 +232,47 @@ class ForgedGateWorkflow(unittest.TestCase):
     def test_missing_detector_on_default_branch_fails_closed(self):
         rc, out = self.gate([], missing=("check-forged-gate-names.py",))
         self.assertEqual(rc, 1, out)
-        self.assertIn("Missing trusted scripts/check-forged-gate-names.py", out)
+        self.assertIn("Could not load trusted scripts/check-forged-gate-names.py", out)
+        self.assertIn("::error::review-gate: gh api GET repos/o/r/contents/scripts/check-forged-gate-names.py?ref=main failed", out)
+
+    # nevar-auth #26 (3.2.7): a PATCH got "gh: Not Found (HTTP 404)", the step died without naming the call,
+    # and its POSTed run stayed queued. 3.2.8 POSTs nothing; any API error fails the job, which IS the
+    # check (a terminal failure even with the Checks API down), and the log names method and endpoint.
+    # Legacy cleanup stays best effort: the failed job, not the legacy run, is what blocks the merge.
+    def api_error(self, pattern, nth=1, prs=None):
+        rc, out = self.gate([api_check("Review Gate", 41, pr=7)], prs=prs,
+                            fixture={"fail": {"pattern": pattern, "nth": nth}})
+        self.assertEqual(rc, 1, out)
+        return out
+
+    def test_initial_legacy_patch_error_fails_before_evaluating(self):
+        out = self.api_error(r"PATCH repos/o/r/check-runs/41 ")
+        self.assertIn("::error::review-gate: gh api PATCH repos/o/r/check-runs/41 failed (exit 1)", out)
+        self.assertFalse([c for c in self.calls if "/contents/" in c], self.calls)
+
+    def test_final_legacy_patch_error_turns_a_pass_into_a_failure(self):
+        out = self.api_error(r"PATCH repos/o/r/check-runs/41 ", nth=2)
+        self.assertIn("::error::review-gate: gh api PATCH repos/o/r/check-runs/41 failed (exit 1)", out)
+        self.assertIn("were not all completed; failing closed", out)
+        self.assertEqual(self.patches, ["41 failure"])
+
+    def test_legacy_listing_error_fails_closed_and_names_the_call(self):
+        out = self.api_error(r"check_name=Review%20Gate")
+        self.assertIn("::error::review-gate: gh api GET repos/o/r/commits/" + "a" * 40
+                      + "/check-runs?check_name=Review%20Gate&filter=all&per_page=100 failed", out)
+        self.assertIn("could not list legacy Review Gate check runs", out)
+        self.assertEqual(self.patches, [])
+
+    def test_final_legacy_listing_error_fails_a_passing_gate(self):
+        out = self.api_error(r"check_name=Review%20Gate", nth=2)
+        self.assertIn("could not list legacy Review Gate check runs", out)
+        self.assertEqual(self.patches, ["41 failure"])
+
+    def test_forged_listing_error_names_the_call(self):
+        out = self.api_error(r"check-runs\?per_page=100&filter=all")
+        self.assertIn("::error::review-gate: gh api GET repos/o/r/commits/" + "a" * 40
+                      + "/check-runs?per_page=100&filter=all failed", out)
+        self.assertEqual(self.final(), {"41": "failure"})
 
     # 3.2.7 P1: an unquoted run-name lost " #<n>" to a YAML comment. Parse the real template, as GitHub does.
     def test_run_name_keeps_the_pr_number(self):

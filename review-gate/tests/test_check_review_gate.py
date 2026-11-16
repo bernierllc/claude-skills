@@ -1974,4 +1974,22 @@ _paginate_src = inspect.getsource(g._paginate_threads)
 assert "comments(first: 50)" in _paginate_src
 assert "_paginate_thread_comments" in _paginate_src
 
+
+# An API failure names the method and endpoint (never field values such as the GraphQL query).
+import os as _os, tempfile as _tf
+_d = _tf.mkdtemp()
+Path(_d, "gh").write_text("#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n"); _os.chmod(Path(_d, "gh"), 0o755)
+_old_path = _os.environ["PATH"]; _os.environ["PATH"] = f"{_d}:{_old_path}"
+try:
+    for _args, _want in ((["repos/o/r/pulls/26"], "gh api GET repos/o/r/pulls/26 failed (exit 1): gh: Not Found (HTTP 404)"),
+                         (["graphql", "-f", "query=secretish", "-F", "n=1"], "gh api POST graphql failed (exit 1)"),
+                         (["-X", "PATCH", "repos/o/r/check-runs/5", "-f", "a=b"], "gh api PATCH repos/o/r/check-runs/5 failed")):
+        try:
+            g.run_gh(_args)
+            raise AssertionError("run_gh did not raise")
+        except RuntimeError as _e:
+            assert str(_e).startswith(_want), str(_e)
+            assert "secretish" not in str(_e)
+finally:
+    _os.environ["PATH"] = _old_path
 print("ok")

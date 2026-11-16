@@ -60,6 +60,26 @@ def gh_subprocess_env(env: dict[str, str] | None) -> Iterator[None]:
         _GH_SUBPROCESS_ENV.reset(token)
 
 
+def _describe_call(args: list[str]) -> str:
+    """'<METHOD> <endpoint>' for an error message; field values (queries, bodies) are left out.
+    Like gh, the method defaults to POST when fields are passed and no -X/--method is given."""
+    method, endpoint, fields, i = None, "", False, 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-X", "--method"):
+            method = args[i + 1] if i + 1 < len(args) else None
+            i += 2
+        elif a in ("-f", "-F", "--field", "--raw-field"):
+            fields, i = True, i + 2
+        elif a in ("-H", "--header", "--jq", "-q", "--hostname", "-R"):
+            i += 2
+        else:
+            if not a.startswith("-") and not endpoint:
+                endpoint = a
+            i += 1
+    return f"{method or ('POST' if fields else 'GET')} {endpoint or '?'}"
+
+
 def run_gh(
     args: list[str],
     repo: str | None = None,
@@ -76,7 +96,8 @@ def run_gh(
         cmd, capture_output=True, text=True, env=_GH_SUBPROCESS_ENV.get()
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "gh api failed")
+        detail = proc.stderr.strip() or proc.stdout.strip() or "no output"
+        raise RuntimeError(f"gh api {_describe_call(args)} failed (exit {proc.returncode}): {detail}")
     if not proc.stdout.strip():
         return None
     return json.loads(proc.stdout)

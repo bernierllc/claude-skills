@@ -71,43 +71,57 @@ jobs:
           # red or green API run stays standing beside the job. Two PRs can share a head sha: other-PR
           # or unmarked runs, and same-named Actions jobs (.../actions/runs/<n>/job/<m>), are never touched.
           external_id="review-gate-pr-$PR_NUMBER"
+          # Every API call goes through api(): a failure names the method and endpoint in the log and
+          # returns gh's status. Any API error fails this job, which IS the check, so the result is a
+          # terminal failure even when the Checks API itself is down (nevar-auth #26: a bare
+          # "gh: Not Found (HTTP 404)" from 3.2.7 left its POSTed run queued with no endpoint named).
+          api() {
+            local method="$1" endpoint="$2" rc
+            shift 2
+            if gh api -X "$method" "$endpoint" "$@"; then return 0; else rc=$?; fi
+            echo "::error::review-gate: gh api $method $endpoint failed (exit $rc)" >&2
+            return "$rc"
+          }
           list_runs() {
-            gh api "repos/$REPO/commits/$SHA/check-runs?check_name=Review%20Gate&filter=all&per_page=100" --paginate \
+            api GET "repos/$REPO/commits/$SHA/check-runs?check_name=Review%20Gate&filter=all&per_page=100" --paginate \
               | jq -r --arg ext "$external_id" '.check_runs[]
                        | select(.name == "Review Gate" and .app.slug == "github-actions" and .external_id == $ext)
                        | select((.details_url // "") | test("/actions/runs/[0-9]+/job/") | not)
                        | .id'
           }
+          # Completes this PR's legacy runs with the given result. Returns non-zero when they cannot be
+          # listed or completed; the caller then fails the job. Cleanup itself is best effort: with the
+          # API down, a legacy run keeps its old state, and the failed job is what blocks the merge.
           complete_check() {
             local conclusion="$1" title="$2" summary="$3" listed id
             if ! listed=$(list_runs); then
-              echo "::warning::could not list legacy Review Gate check runs on $SHA; none completed"
-              return 0
+              echo "::error::review-gate: could not list legacy Review Gate check runs on $SHA" >&2
+              return 1
             fi
             for id in $listed; do
-              gh api -X PATCH "repos/$REPO/check-runs/$id" \
+              api PATCH "repos/$REPO/check-runs/$id" \
                 -f status="completed" \
                 -f conclusion="$conclusion" \
                 -f "output[title]=$title" \
-                -f "output[summary]=$summary" >/dev/null
+                -f "output[summary]=$summary" >/dev/null || return 1
             done
           }
           # Invalidate any prior same-head legacy API success before reevaluation: red until completed below.
-          complete_check failure "review-gate running" "Reevaluating review gate…"
+          complete_check failure "review-gate running" "Reevaluating review gate…" || exit 1
           # Only the default branch is trusted for the checker binary. A PR can
           # target any same-repo branch; that base SHA is not necessarily protected.
           ref="$DEFAULT_BRANCH"
           load_trusted() {
             local name="$1" meta msg
-            if meta=$(gh api "repos/$REPO/contents/scripts/$name?ref=$ref" 2>/dev/null); then
+            if meta=$(api GET "repos/$REPO/contents/scripts/$name?ref=$ref"); then
               printf '%s' "$meta" | jq -r '.content' | base64 -d > "/tmp/$name"
               echo "Loaded trusted $name from ref=$ref"
             else
               msg=$(printf '%s\n%s' \
-                "Missing trusted scripts/$name on default branch $DEFAULT_BRANCH." \
-                "Run install-workflow.py and merge it to the default branch.")
+                "Could not load trusted scripts/$name from default branch $DEFAULT_BRANCH (see the API error above)." \
+                "If it is missing, run install-workflow.py and merge it to the default branch.")
               printf '%s\n' "$msg"
-              complete_check failure "review-gate failed" "$msg"
+              complete_check failure "review-gate failed" "$msg" || true  # the job fails either way
               exit 1
             fi
           }
@@ -119,7 +133,7 @@ jobs:
           rc=$?
           # pipefail (set above) keeps a failed or truncated listing from reaching
           # the detector as empty input. Any non-zero result fails the gate.
-          forged=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate \
+          forged=$(api GET "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate \
             | REPO="$REPO" python3 /tmp/check-forged-review-gate.py 2>&1)
           frc=$?
           set -e
@@ -129,9 +143,9 @@ jobs:
           fi
           printf '%s\n' "$out"
           summary=${out:0:60000}  # no pipe: head closing early SIGPIPEs under pipefail
-          if [ "$rc" -eq 0 ]; then
-            complete_check success "review-gate ok" "$summary"
-          else
-            complete_check failure "review-gate failed" "$summary"
+          if [ "$rc" -eq 0 ]; then conclusion=success; title="review-gate ok"; else conclusion=failure; title="review-gate failed"; fi
+          if ! complete_check "$conclusion" "$title" "$summary"; then
+            echo "::error::review-gate: legacy Review Gate runs on $SHA were not all completed; failing closed" >&2
+            rc=1
           fi
           exit "$rc"
