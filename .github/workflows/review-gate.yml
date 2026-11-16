@@ -20,6 +20,7 @@
 # Required-check context is the Checks API check run named "Review Gate"
 # published on pull_request.head.sha (Actions job alone attaches to the base).
 name: Review Gate
+run-name: "Review Gate - PR #${{ github.event.pull_request.number }}"
 
 on:
   pull_request_target:
