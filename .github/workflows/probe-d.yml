@@ -1,5 +1,5 @@
-name: Probe b
-run-name: "Probe B - PR ${{ github.event.pull_request.number }}"
+name: Probe d
+run-name: "Probe D - PR #${{ github.event.repository.id }}"
 on:
   push:
     branches: [scratch/runname-probe]

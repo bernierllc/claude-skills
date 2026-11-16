@@ -1,5 +1,5 @@
 name: Probe c
-run-name: "Probe C - PR #${{ github.ref_name }}"
+run-name: "Probe C - PR #${{ github.run_number }}"
 on:
   push:
     branches: [scratch/runname-probe]
