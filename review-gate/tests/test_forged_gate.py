@@ -425,7 +425,7 @@ class InstalledCopies(unittest.TestCase):
         root = next((d for d in SKILL.parents if (d / ".github/workflows/review-gate.yml").is_file()), None)
         if root is None:
             self.skipTest("review-gate is not installed into a repo above this skill")
-        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py"):
+        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py", "check-review-gate.py"):
             self.assertEqual((root / "scripts" / name).read_bytes(), (SCRIPTS / name).read_bytes(), name)
         self.assertEqual((root / ".github/workflows/review-gate.yml").read_bytes(), TEMPLATE.read_bytes())
 

@@ -274,6 +274,22 @@ try:
     good = f"Intro\r\n\r\n{R}\r\n\r\n{attestation}\r\n"
     mg.gate.pr_payload = lambda *a, **k: pr(body=good, headRefOid=head, reviews={"nodes": []})
     assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") is None
+    # a command the guard cannot resolve is blocked with its own reason, before any payload is read
+    _err = mg.check_one("GH_CONFIG_DIR=~/e gh -R o/t pr merge 42", cwd="/tmp")
+    assert _err and "dynamic GH_CONFIG_DIR" in _err, _err
+    # Codex review on the head, the review:high label and P2 roots decide the merge too
+    for kw, allowed in (({"reviews": {"nodes": [{"state": "COMMENTED", "body": "ok", "commit": {"oid": head},
+                                                  "author": {"login": "chatgpt-codex-connector"}}]}}, True),
+                        ({"reviews": {"nodes": []}}, False),
+                        ({"baseRefName": "main", "labels": {"nodes": [{"name": "review:high"}]}}, True),
+                        ({"baseRefName": "main"}, False),
+                        ({"reviewThreads": {"nodes": [{"comments": {"nodes": [{"body": "_P2_ x"}]}}]}}, False)):
+        payload = {"body": f"{R}\n\nCodex reviewed.\n", "headRefOid": head,
+                   "reviews": {"nodes": [{"state": "COMMENTED", "body": "ok", "commit": {"oid": head},
+                                          "author": {"login": "chatgpt-codex-connector"}}]}, **kw}
+        mg.gate.pr_payload = lambda *a, _p=payload, **k: pr(**_p)
+        blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
+        assert (blocked is None) == allowed, (kw, blocked)
     # P2 closure decides the merge too
     for reply, assoc, allowed in (("fixed in deadbeef", "MEMBER", True), ("fixed in deadbeef", "NONE", False),
                                   ("Thanks.\nfixed in deadbeef", "OWNER", False), ("fixed in deadbeef\n===", "OWNER", False),
@@ -405,6 +421,30 @@ for root in ("xp2 note", "P20 note", "mp2y"):
 t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": "thanks", "authorAssociation": "OWNER"},
                                                         {"body": "fixed in deadbeef", "authorAssociation": "MEMBER"}]}}]})
 assert g.evaluate(t) == []
+for root in ("_P2_ x", "P2_x", "see p2."):
+    t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root}]}}]})
+    assert any("P2" in r for r in g.evaluate(t)), root
+assert not g.closes("https://notion.so/ is not where this is tracked")
+# Codex completion: only a completed, non-pending review or clean marker by the exact bot on the exact head
+_cx = lambda **kw: {"state": "COMMENTED", "body": "findings", "commit": {"oid": head},
+                    "author": {"login": "chatgpt-codex-connector"}, **kw}
+assert g.codex_done_on_head(pr(headRefOid=head, reviews={"nodes": [_cx()]}))
+for rev in (_cx(state="PENDING"), _cx(state="pending"), _cx(state="DISMISSED"), _cx(body="Running review"),
+            _cx(body="Running " + "x" * 391), _cx(commit={"oid": head[:12]}), _cx(commit=None),
+            _cx(author={"login": "chatgpt-codex-connectorx"}), _cx(author={"login": "xchatgpt-codex-connector"})):
+    assert not g.codex_done_on_head(pr(headRefOid=head, reviews={"nodes": [rev]})), rev
+assert g.codex_done_on_head(pr(headRefOid=head, reviews={"nodes": [_cx(body="Running " + "x" * 392)]}))
+assert g.codex_done_on_head(pr(headRefOid=head, reviews={"nodes": [_cx(author={"login": "ChatGPT-Codex-Connector"})]}))
+def _marker(**kw):
+    review = {"commit_sha": head, "status": "completed", "has_unresolved_findings": False, **kw}
+    return {"author": {"login": "chatgpt-codex-connector"},
+            "body": "<!-- codex-review-state:v1 " + __import__("json").dumps({"code_review": review}) + " -->"}
+assert g.codex_clean_comment_on_head(pr(headRefOid=head, comments={"nodes": [_marker()]}))
+for c in (_marker(status="queued"), _marker(status="Completed"), _marker(has_unresolved_findings=None),
+          _marker(has_unresolved_findings=0), _marker(commit_sha=head[:12]), _marker(commit_sha=head.upper())):
+    assert not g.codex_clean_comment_on_head(pr(headRefOid=head, comments={"nodes": [c]})), c
+for login in ("chatgpt-codex-connectorx", "chatgpt-codex-connector[bot]", "chatgpt-codex", ""):
+    assert not g.is_codex_author(login), login
 # a non-matching first marker must not hide a valid later one in the same comment
 _two = codex_comment("deadbeef" + head[8:])
 _two["body"] += "\n" + codex_comment(head)["body"]
@@ -2076,14 +2116,80 @@ assert not _doctor.ruleset_requires_conversation_resolution(
     {"rules": [{"type": "pull_request", "parameters": {}}]}
 )
 
-# Codex summary comment is fetched across every page, not only the newest 100
-_cc_src = inspect.getsource(g._codex_comments)
-assert "comments(first: 100, after: $cursor)" in _cc_src and "hasNextPage" in _cc_src
-
-# Thread pagination embeds the first comments page (avoid N+1 gh api calls)
-_paginate_src = inspect.getsource(g._paginate_threads)
-assert "comments(first: 50)" in _paginate_src
-assert "_paginate_thread_comments" in _paginate_src
+# pr_payload reads every page of every connection, and fails closed on a missing one; main() exits
+# 0/1/2 (pass/fail/error) through the real script (Sonnet b on 035394a, P1 1-2). A fake gh serves GraphQL.
+_FAKE_GQL = r"""#!/usr/bin/env python3
+import json, os, re, sys
+fx = json.load(open(os.environ["FAKE_GQL"]))
+args = sys.argv[1:]
+q = next(a[6:] for a in args if a.startswith("query="))
+var = dict(a.split("=", 1) for a in args[args.index("graphql"):] if "=" in a and not a.startswith("query="))
+i = int(var.get("cursor", "0"))
+def page(pages, i):
+    return {"pageInfo": {"hasNextPage": i + 1 < len(pages), "endCursor": str(i + 1)}, "nodes": pages[i]}
+if "node(id" in q:
+    pages = fx["thread_pages"][var["id"]]
+    print(json.dumps({"data": {"node": {"comments": page(pages, i)}}})); sys.exit(0)
+m = re.search(r"pullRequest\(number:\$number\) \{\s*(\w+)\(first", q)
+if not m:
+    print(json.dumps({"data": {"repository": {"pullRequest": fx["pr"]}}})); sys.exit(0)
+field = m.group(1)
+if field in fx.get("missing", ()):
+    print(json.dumps({"data": {"repository": {"pullRequest": {}}}})); sys.exit(0)
+print(json.dumps({"data": {"repository": {"pullRequest": {field: page(fx[field], i)}}}}))
+"""
+import json as _json, subprocess as _sp, sys as _sys, tempfile as _tf2
+_gd = _tf2.mkdtemp()
+Path(_gd, "gh").write_text(_FAKE_GQL); os.chmod(Path(_gd, "gh"), 0o755)
+_SCRIPT = Path(__file__).parent.parent / "scripts" / "check-review-gate.py"
+_p2_root = {"body": "P2: x"}
+_closer = {"body": "fixed in deadbeef", "authorAssociation": "MEMBER"}
+def _thread(tid, comments, more=False):
+    return {"id": tid, "comments": {"pageInfo": {"hasNextPage": more, "endCursor": "1"}, "nodes": comments}}
+def _fixture(**over):
+    fx = {"pr": {"number": 7, "body": f"{R}\n\n{attestation}\n", "baseRefName": "main", "headRefOid": head},
+          "labels": [[{"name": "x"}], [{"name": "review:high"}]],
+          "reviews": [[], []], "comments": [[], []],
+          "reviewThreads": [[], [_thread("T2", [_p2_root, _closer])]], "thread_pages": {}}
+    fx.update(over)
+    return fx
+def _run(fx):
+    path = Path(_gd, "fx.json"); path.write_text(_json.dumps(fx))
+    env = dict(os.environ, PATH=f"{_gd}:{os.environ['PATH']}", FAKE_GQL=str(path))
+    old = os.environ.copy(); os.environ.update(env)
+    try:
+        try:
+            reasons = g.evaluate(g.pr_payload("o", "r", 7))
+        except RuntimeError as e:
+            reasons = e
+    finally:
+        os.environ.clear(); os.environ.update(old)
+    proc = _sp.run([_sys.executable, str(_SCRIPT), "--pr", "7", "--repo", "o/r"], env=env, capture_output=True, text=True)
+    return reasons, proc.returncode, proc.stdout + proc.stderr
+# label and closed thread on page 2 only: pass
+assert _run(_fixture())[:2] == ([], 0)
+# an open P2 thread on page 2 of threads fails
+_r, _rc, _out = _run(_fixture(reviewThreads=[[], [_thread("T2", [_p2_root])]]))
+assert _rc == 1 and any("P2" in x for x in _r), _out
+# a closing reply on the second page of one thread's comments counts; an open P2 there fails
+_fx = _fixture(reviewThreads=[[_thread("T1", [_p2_root], more=True)]],
+               thread_pages={"T1": [[], [{"body": "thanks", "authorAssociation": "OWNER"}, _closer]]})
+assert _run(_fx)[:2] == ([], 0)
+_fx["thread_pages"]["T1"] = [[], [{"body": "thanks", "authorAssociation": "OWNER"}]]
+assert _run(_fx)[1] == 1
+# the review:high label only on page 2 is still found; without it main fails
+assert _run(_fixture(labels=[[{"name": "x"}], [{"name": "y"}]]))[1] == 1
+# Codex review / clean comment on a later page satisfies the gate without an attestation
+_noatt = {"number": 7, "body": f"{R}\n\nCodex reviewed.\n", "baseRefName": "staging", "headRefOid": head}
+assert _run(_fixture(pr=_noatt))[1] == 1
+assert _run(_fixture(pr=_noatt, reviews=[[], [{"state": "COMMENTED", "body": "ok", "commit": {"oid": head},
+                                               "author": {"login": "chatgpt-codex-connector"}}]]))[:2] == ([], 0)
+assert _run(_fixture(pr=_noatt, comments=[[], [codex_comment(head)]]))[:2] == ([], 0)
+# a missing connection fails closed (exit 2), never reads as an empty list
+for field in ("labels", "reviews", "comments", "reviewThreads"):
+    _r, _rc, _out = _run(_fixture(missing=[field]))
+    assert isinstance(_r, RuntimeError) and _rc == 2, (field, _r, _out)
+    assert f"pullRequest.{field}" in _out, _out
 
 
 # An API failure names the method and endpoint (never field values such as the GraphQL query).

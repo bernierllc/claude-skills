@@ -19,7 +19,7 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
     "review_gate_gh_env", default=None
 )
 
-P2_ROOT = re.compile(r"\bp2\b", re.I)
+P2_ROOT = re.compile(r"(?<![A-Za-z0-9])p2(?![A-Za-z0-9])", re.I | re.A)  # _P2_ and P2_x count
 # A P2 thread closes on a reply whose FIRST line starts, at column 0, with a closing token and is the
 # whole first paragraph: the reply ends there or the next line is blank (only spaces/tabs, as in
 # CommonMark). Nothing precedes that line, so no fence, quote, list, comment or HTML block can enclose
@@ -27,7 +27,7 @@ P2_ROOT = re.compile(r"\bp2\b", re.I)
 # needs link text starting with a letter or digit. Anything else does not close. No Markdown is parsed.
 _CLOSING_TOKEN = re.compile(
     r"(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[A-Za-z0-9][^\[\]<>\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*[A-Za-z0-9])",
+    r"(?:(?:\[[A-Za-z0-9][^\[\]<>\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/[A-Za-z0-9]|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*[A-Za-z0-9])",
     re.I | re.A,
 )
 
@@ -201,315 +201,74 @@ def _graphql(
     for key, value in variables.items():
         args.extend(["-F", f"{key}={value}"])
     data = run_gh(args, hostname=hostname)
-    return (data or {}).get("data") or {}
+    return (data or {}).get("data") or {}  # an empty result fails closed in _all_nodes / pr_payload
 
 
-def _paginate_thread_comments(
-    thread_id: str,
-    hostname: str | None,
-    first_page: dict[str, Any] | None = None,
+_COMMENT_FIELDS = "pageInfo { hasNextPage endCursor } nodes { body author { login } authorAssociation }"
+_PR_CONNECTION_Q = """
+query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      %s(first: 50, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { %s } }
+    }
+  }
+}
+"""
+_THREAD_COMMENTS_Q = """
+query($id:ID!, $cursor:String) {
+  node(id: $id) { ... on PullRequestReviewThread { comments(first: 50, after: $cursor) { %s } } }
+}
+""" % _COMMENT_FIELDS
+
+
+def _all_nodes(conn: Any, what: str, next_page: Any) -> list[dict[str, Any]]:
+    """Every node of a GraphQL connection, fetching later pages with next_page(cursor).
+
+    Fails closed: a missing connection, or a next page with no cursor, raises instead of
+    reading as an empty (passing) list."""
+    nodes: list[dict[str, Any]] = []
+    while True:
+        if not isinstance(conn, dict):
+            raise RuntimeError(f"GraphQL returned no {what}")
+        nodes.extend(conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return nodes
+        if not page.get("endCursor"):
+            raise RuntimeError(f"GraphQL {what}: next page without a cursor")
+        conn = next_page(page["endCursor"])
+
+
+def _pr_connection(
+    owner: str, name: str, number: int, field: str, fields: str, hostname: str | None = None
 ) -> list[dict[str, Any]]:
-    """Return all comments for a thread, starting from an optional embedded page."""
-    comments: list[dict[str, Any]] = []
-    c_conn = first_page or {}
-    if first_page is not None:
-        comments.extend(first_page.get("nodes") or [])
-        page = first_page.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            return comments
-        c_cursor = page.get("endCursor")
-        if not c_cursor:
-            return comments
-    else:
-        c_cursor = None
+    """Every node of pullRequest.<field> (reviews, labels, comments, reviewThreads)."""
+    q = _PR_CONNECTION_Q % (field, fields)
 
-    comment_q = """
-    query($id:ID!, $cursor:String) {
-      node(id: $id) {
-        ... on PullRequestReviewThread {
-          comments(first: 50, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { body author { login } authorAssociation }
-          }
-        }
-      }
-    }
-    """
-    comment_first = """
-    query($id:ID!) {
-      node(id: $id) {
-        ... on PullRequestReviewThread {
-          comments(first: 50) {
-            pageInfo { hasNextPage endCursor }
-            nodes { body author { login } authorAssociation }
-          }
-        }
-      }
-    }
-    """
-    while True:
-        if c_cursor is None:
-            c_conn = (
-                _graphql(comment_first, hostname=hostname, id=thread_id).get("node") or {}
-            ).get("comments") or {}
-            comments.extend(c_conn.get("nodes") or [])
-        else:
-            c_conn = (
-                _graphql(
-                    comment_q, hostname=hostname, id=thread_id, cursor=c_cursor
-                ).get("node")
-                or {}
-            ).get("comments") or {}
-            comments.extend(c_conn.get("nodes") or [])
-        page = c_conn.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            break
-        c_cursor = page.get("endCursor")
-        if not c_cursor:
-            break
-    return comments
-
-
-def _paginate_threads(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
-    """Fetch every review thread with comments embedded in the thread query.
-
-    Most threads fit in the first comments page (50), so one GraphQL call covers
-    up to 50 threads. Extra comment pages are fetched only when ``hasNextPage``.
-    """
-    threads: list[dict[str, Any]] = []
-    cursor: str | None = None
-    thread_q = """
-    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
-      repository(owner:$owner, name:$name) {
-        pullRequest(number:$number) {
-          reviewThreads(first: 50, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              comments(first: 50) {
-                pageInfo { hasNextPage endCursor }
-                nodes { body author { login } authorAssociation }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-    while True:
-        if cursor is None:
-            first_q = """
-            query($owner:String!, $name:String!, $number:Int!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$number) {
-                  reviewThreads(first: 50) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      id
-                      comments(first: 50) {
-                        pageInfo { hasNextPage endCursor }
-                        nodes { body author { login } authorAssociation }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            """
-            conn = (
-                _graphql(first_q, hostname=hostname, owner=owner, name=name, number=number)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("reviewThreads")
-                or {}
-            )
-        else:
-            conn = (
-                _graphql(
-                    thread_q,
-                    hostname=hostname,
-                    owner=owner,
-                    name=name,
-                    number=number,
-                    cursor=cursor,
-                )
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("reviewThreads")
-                or {}
-            )
-        for node in conn.get("nodes") or []:
-            thread_id = node.get("id")
-            if not thread_id:
-                continue
-            embedded = node.get("comments") or {}
-            comments = _paginate_thread_comments(
-                thread_id, hostname, first_page=embedded
-            )
-            threads.append({"comments": {"nodes": comments}})
-        page = conn.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            break
-        cursor = page.get("endCursor")
-        if not cursor:
-            break
-    return threads
-
-
-def _paginate_reviews(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
-    """Fetch every submitted review (not just the last 40)."""
-    reviews: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        if cursor is None:
-            q = """
-            query($owner:String!, $name:String!, $number:Int!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$number) {
-                  reviews(first: 50) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      state
-                      body
-                      commit { oid }
-                      author { login }
-                    }
-                  }
-                }
-              }
-            }
-            """
-            conn = (
-                _graphql(q, hostname=hostname, owner=owner, name=name, number=number)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("reviews")
-                or {}
-            )
-        else:
-            q = """
-            query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$number) {
-                  reviews(first: 50, after: $cursor) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      state
-                      body
-                      commit { oid }
-                      author { login }
-                    }
-                  }
-                }
-              }
-            }
-            """
-            conn = (
-                _graphql(q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("reviews")
-                or {}
-            )
-        reviews.extend(conn.get("nodes") or [])
-        page = conn.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            break
-        cursor = page.get("endCursor")
-        if not cursor:
-            break
-    return reviews
-
-
-def _paginate_labels(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
-    """Fetch every label on the PR."""
-    labels: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        if cursor is None:
-            q = """
-            query($owner:String!, $name:String!, $number:Int!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$number) {
-                  labels(first: 50) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes { name }
-                  }
-                }
-              }
-            }
-            """
-            conn = (
-                _graphql(q, hostname=hostname, owner=owner, name=name, number=number)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("labels")
-                or {}
-            )
-        else:
-            q = """
-            query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
-              repository(owner:$owner, name:$name) {
-                pullRequest(number:$number) {
-                  labels(first: 50, after: $cursor) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes { name }
-                  }
-                }
-              }
-            }
-            """
-            conn = (
-                _graphql(q, hostname=hostname, owner=owner, name=name, number=number, cursor=cursor)
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("labels")
-                or {}
-            )
-        labels.extend(conn.get("nodes") or [])
-        page = conn.get("pageInfo") or {}
-        if not page.get("hasNextPage"):
-            break
-        cursor = page.get("endCursor")
-        if not cursor:
-            break
-    return labels
-
-
-def _codex_comments(
-    owner: str, name: str, number: int, hostname: str | None = None
-) -> list[dict[str, Any]]:
-    """Every PR conversation comment (Codex keeps one summary comment updated)."""
-    out: list[dict[str, Any]] = []
-    cursor: str | None = None
-    q = """
-    query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
-      repository(owner:$owner, name:$name) {
-        pullRequest(number:$number) {
-          comments(first: 100, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { author { login } body }
-          }
-        }
-      }
-    }
-    """
-    while True:
+    def fetch(cursor: str | None) -> Any:
         variables: dict[str, Any] = {"owner": owner, "name": name, "number": number}
         if cursor:
             variables["cursor"] = cursor
-        conn = (
-            _graphql(q, hostname=hostname, **variables)
-            .get("repository", {})
-            .get("pullRequest", {})
-            .get("comments")
-            or {}
-        )
-        out.extend(conn.get("nodes") or [])
-        page = conn.get("pageInfo") or {}
-        cursor = page.get("endCursor")
-        if not page.get("hasNextPage") or not cursor:
-            return out
+        data = _graphql(q, hostname=hostname, **variables)
+        return ((data.get("repository") or {}).get("pullRequest") or {}).get(field)
+
+    return _all_nodes(fetch(None), f"pullRequest.{field} for {owner}/{name}#{number}", fetch)
+
+
+def _review_threads(owner: str, name: str, number: int, hostname: str | None = None) -> list[dict[str, Any]]:
+    """Every review thread with every comment; comments past the first 50 are fetched per thread."""
+    threads = []
+    for node in _pr_connection(owner, name, number, "reviewThreads",
+                               f"id comments(first: 50) {{ {_COMMENT_FIELDS} }}", hostname):
+        thread_id = node.get("id")
+
+        def more(cursor: str, _id: Any = thread_id) -> Any:
+            data = _graphql(_THREAD_COMMENTS_Q, hostname=hostname, id=_id, cursor=cursor)
+            return (data.get("node") or {}).get("comments")
+
+        comments = _all_nodes(node.get("comments"), f"comments of review thread {thread_id}", more)
+        threads.append({"comments": {"nodes": comments}})
+    return threads
 
 
 def codex_clean_comment_on_head(pr: dict[str, Any]) -> bool:
@@ -555,12 +314,12 @@ def pr_payload(
     pr = (data.get("repository") or {}).get("pullRequest")
     if not pr:
         raise RuntimeError(f"PR #{number} not found in {owner}/{name}")
-    pr["labels"] = {"nodes": _paginate_labels(owner, name, number, hostname=hostname)}
-    pr["reviews"] = {"nodes": _paginate_reviews(owner, name, number, hostname=hostname)}
-    pr["comments"] = {"nodes": _codex_comments(owner, name, number, hostname=hostname)}
-    pr["reviewThreads"] = {
-        "nodes": _paginate_threads(owner, name, number, hostname=hostname)
-    }
+    pr["labels"] = {"nodes": _pr_connection(owner, name, number, "labels", "name", hostname)}
+    pr["reviews"] = {"nodes": _pr_connection(owner, name, number, "reviews",
+                                             "state body commit { oid } author { login }", hostname)}
+    # Codex keeps one summary comment updated: every PR conversation comment is read.
+    pr["comments"] = {"nodes": _pr_connection(owner, name, number, "comments", "author { login } body", hostname)}
+    pr["reviewThreads"] = {"nodes": _review_threads(owner, name, number, hostname)}
     return pr
 
 
@@ -670,7 +429,7 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         root = comments[0].get("body") or ""
         if not P2_ROOT.search(root):
             continue
-        # Only someone with write access closes: on a public repo anyone can reply to a thread.
+        # Only an owner, org member or collaborator closes: on a public repo anyone can reply to a thread.
         replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS]
         if any(closes(c.get("body") or "") for c in replies):
             continue
