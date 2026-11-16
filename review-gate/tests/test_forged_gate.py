@@ -60,7 +60,11 @@ if "/check-runs" in path and "/commits/" in path:
     if fixture.get("listing_fails"):
         sys.exit(1)
     runs = fixture["check_runs"] + created + fixture.get("own_jobs", [])
-    print(json.dumps({"total_count": len(runs), "check_runs": runs})); sys.exit(0)
+    page2 = fixture.get("page2", [])  # served only to --paginate, as a second concatenated page
+    print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": runs}))
+    if page2 and "--paginate" in args:
+        print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": page2}))
+    sys.exit(0)
 if "/actions/runs/" in path and ".display_title" in args:  # the wrapper's run-title provenance lookup
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture.get("titles", {}):
@@ -273,6 +277,37 @@ class ForgedGateWorkflow(unittest.TestCase):
         self.assertIn("::error::review-gate: gh api GET repos/o/r/commits/" + "a" * 40
                       + "/check-runs?per_page=100&filter=all failed", out)
         self.assertEqual(self.final(), {"41": "failure"})
+
+    # Sonnet b on ea4fb8b, P1 1: both listings must read every page, not only the first 100 runs.
+    def test_forged_job_on_a_later_page_fails_the_gate(self):
+        rc, out = self.gate([], runs={"500": ".github/workflows/forge.yml\tpull_request"},
+                            fixture={"page2": [job("Review Gate", 500)]})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("forged check 'Review Gate'", out)
+
+    def test_legacy_run_on_a_later_page_is_completed(self):
+        rc, out = self.gate([], fixture={"page2": [api_check("Review Gate", 41, pr=7)]})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.final(), {"41": "success"})
+
+    # Sonnet b on ea4fb8b, P1 2-3: the trigger, token scope and step inputs are the security boundary.
+    def test_trigger_permissions_and_inputs_are_pinned(self):
+        wf = yaml.safe_load(TEMPLATE.read_text())
+        self.assertEqual(wf[True], {"pull_request_target": {"types": [
+            "opened", "reopened", "ready_for_review", "synchronize", "edited", "labeled", "unlabeled"]}})
+        self.assertEqual(wf["permissions"], {"contents": "read", "pull-requests": "read", "checks": "write",
+                                             "actions": "read"})
+        self.assertEqual(wf["concurrency"], {"group": "review-gate-${{ github.event.pull_request.number || github.ref }}",
+                                             "cancel-in-progress": True})
+        self.assertEqual(list(wf["jobs"]), ["gate"])
+        (step,) = wf["jobs"]["gate"]["steps"]
+        self.assertEqual(step["env"], {
+            "GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+            "PR_NUMBER": "${{ github.event.pull_request.number }}",
+            "REPO": "${{ github.repository }}",
+            "SHA": "${{ github.event.pull_request.head.sha }}",
+            "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}"})
+        self.assertNotIn("uses", step)  # no checkout: PR-head code never runs
 
     # 3.2.7 P1: an unquoted run-name lost " #<n>" to a YAML comment. Parse the real template, as GitHub does.
     def test_run_name_keeps_the_pr_number(self):

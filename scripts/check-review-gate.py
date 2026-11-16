@@ -600,7 +600,6 @@ _RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<(?:pre|script|style|textarea)(?![
 REVIEW_HEADING = "## Review"
 _PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()*_~$]*")
 _ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
-_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*[A-Za-z0-9][^`<>|\[\]()*_~$]*)", re.I | re.A)
 
 
 def review_region(body: str) -> tuple[list[str], list[str]]:
@@ -608,9 +607,9 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
 
     Whole body: no ``` or ~~~ line, no `<!--`, no `<details`, no blank-surviving raw HTML block opener. Exactly one
     line equal to `## Review`, after a blank line or at the top. The region runs to the next line
-    starting `## ` or the end. Every non-blank region line is an exact attestation, an exact closing
-    line, or plain prose: starts with a letter or digit, no ordered-list marker, and none of
-    ` < > | [ ] ( ) * _ ~ $. Blank means only spaces and tabs. Any other line fails the check.
+    starting `## ` or the end. Every non-blank region line is plain prose: starts with a letter or
+    digit, no ordered-list marker, and none of ` < > | [ ] ( ) * _ ~ $ (an attestation or closing line
+    is such prose). Blank means only spaces and tabs. Any other line fails the check.
     """
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     problems: list[str] = []
@@ -635,13 +634,11 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
         if line.startswith("## "):
             break
         region.append(line)
-        if _is_blank(line) or FALLBACK_ATTESTATION.fullmatch(line) or _CLOSING_LINE.fullmatch(line):
-            continue
-        if _PROSE_LINE.fullmatch(line) and not _ORDERED_MARKER.match(line):
+        if _is_blank(line) or (_PROSE_LINE.fullmatch(line) and not _ORDERED_MARKER.match(line)):
             continue
         problems.append(
             f"PR body line {n}: in ## Review every line must be plain prose (starting with a letter or "
-            "digit, no list marker, no ` < > | [ ] ( ) characters) or an exact attestation line"
+            "digit, no list marker, none of ` < > | [ ] ( ) * _ ~ $)"
         )
     return region, problems
 

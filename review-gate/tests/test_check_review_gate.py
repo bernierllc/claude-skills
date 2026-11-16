@@ -189,6 +189,29 @@ for line in ("x ~~y", "x *y", "x _y", "x $y", "z~~", "z*"):
     body = f"{R}\n{line}\n{attestation}\n"
     assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
     assert not g.review_section_names_fallback(body, head), body
+# each banned prose character, mid-line (Sonnet b on ea4fb8b, P1 4)
+_NR = {"nodes": []}
+for ch in "`<>|[]()*_~$":
+    body = f"{R}\n\nnote {ch} here\n\n{attestation}\n"
+    assert g.evaluate(pr(body=body, headRefOid=head, reviews=_NR)), body
+    assert not g.review_section_names_fallback(body, head), body
+for line in ("note: plain, words; 'quoted' - fine!", "1.5 seconds later", "1234567890. not a list marker"):
+    assert g.evaluate(pr(body=f"{R}\n\n{line}\n\n{attestation}\n", headRefOid=head, reviews=_NR)) == [], line
+for line in ("1.", "123456789. note", "1)"):
+    assert g.evaluate(pr(body=f"{R}\n\n{line}\n\n{attestation}\n", headRefOid=head, reviews=_NR)), line
+# CR and CRLF bodies read like LF ones, for passing and failing bodies alike
+for nl in ("\r\n", "\r"):
+    assert g.evaluate(pr(body=f"Intro{nl}{nl}{R}{nl}{nl}{attestation}{nl}", headRefOid=head, reviews=_NR)) == [], repr(nl)
+    assert g.evaluate(pr(body=f"{R}{nl}{nl}```{nl}{nl}{attestation}{nl}", headRefOid=head, reviews=_NR)), repr(nl)
+    assert g.evaluate(pr(body=f"Intro{nl}{R}{nl}{attestation}{nl}", headRefOid=head, reviews=_NR)), repr(nl)
+# a tab-indented fence, raw-HTML openers behind tab/list/ordered prefixes, and trailing space on the heading
+assert any("fences" in r for r in g.evaluate(pr(body=f"{R}\n\n\t```\n\n{attestation}\n", headRefOid=head, reviews=_NR)))
+for opener in ("\t<pre>", "1. <pre>", "1) <script>", "* <style>", "+ <textarea>"):
+    assert any("raw HTML" in r for r in g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews=_NR))), opener
+assert g.evaluate(pr(body=f"{R}  \n\n{attestation}\n", headRefOid=head, reviews=_NR)) == []
+# the head prefix must be at least 7 characters and match the head
+assert g.review_section_names_fallback(f"{R}\n{attestation}", head[:7]) is False  # head shorter than the SHA
+assert g.review_section_names_fallback(f"{R}\n\nFallback review: agy on 89cda06 — verdict: clean\n", head)
 # <details> anywhere: an unclosed one collapses the section that follows
 for line in ("<details>", "<DETAILS open>", "text <details>", "<details><summary>x</summary>"):
     body = f"{line}\n\n{R}\n\n{attestation}\n"
@@ -233,6 +256,33 @@ try:
         mg.gate.pr_payload = lambda *a, _b=body, **k: pr(body=_b, headRefOid=head, reviews={"nodes": []})
         blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
         assert (blocked is None) == allowed, (body, blocked)
+    # one body per rule, each violating only that rule (Sonnet b on ea4fb8b, P1 5)
+    single_rule = [f"{R}\n\nnote {ch} here\n\n{attestation}\n" for ch in "`<>|[]()*_~$"] + [
+        f"{attestation}\n",  # no heading
+        f"{R}\n\n{attestation}\n\n{R}\n",  # two headings
+        f"Intro\n{R}\n\n{attestation}\n",  # heading not after a blank line
+        f"{R}\n\n1. note\n\n{attestation}\n",  # ordered marker
+        f"{R}\n\n~~~\n\n{attestation}\n",  # tilde fence
+        f"{R}\n\n{attestation}\n\nx <!-- y\n",  # comment after the region
+        f"<script>\n\n{R}\n\n{attestation}\n",  # raw HTML
+        f"x <details>\n\n{R}\n\n{attestation}\n",  # details mid-line
+        f"{R}\n\nFallback review: agy on 89cda06f — verdict: clean\n",  # stale SHA
+    ]
+    for body in single_rule:
+        mg.gate.pr_payload = lambda *a, _b=body, **k: pr(body=_b, headRefOid=head, reviews={"nodes": []})
+        assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp"), body
+    good = f"Intro\r\n\r\n{R}\r\n\r\n{attestation}\r\n"
+    mg.gate.pr_payload = lambda *a, **k: pr(body=good, headRefOid=head, reviews={"nodes": []})
+    assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") is None
+    # P2 closure decides the merge too
+    for reply, assoc, allowed in (("fixed in deadbeef", "MEMBER", True), ("fixed in deadbeef", "NONE", False),
+                                  ("Thanks.\nfixed in deadbeef", "OWNER", False), ("fixed in deadbeef\n===", "OWNER", False),
+                                  ("[Row](https://app.notion.com/p/abc)", "COLLABORATOR", True)):
+        threads = {"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": reply, "authorAssociation": assoc}]}}]}
+        mg.gate.pr_payload = lambda *a, _t=threads, **k: pr(body=f"{R}\n\n{attestation}\n", headRefOid=head,
+                                                             reviews={"nodes": []}, reviewThreads=_t)
+        blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
+        assert (blocked is None) == allowed, (reply, assoc, blocked)
 finally:
     mg.gate.parse_repo_with_host, mg.gate.pr_payload = _orig_parse, _orig_payload
 
@@ -337,6 +387,24 @@ for bad in ("Thanks.\nfixed in deadbeef", " fixed in deadbeef", "\tfixed in dead
             "not-a-finding: <!-- -->", "not-a-finding: &nbsp;", "not-a-finding: \u200b", "not-a-finding: \u2800",
             "not-a-finding: _", "fixed in \u017f0123456"):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
+for ok in ("<https://notion.so/x>", "Tracked: <https://www.notion.so/x>", "tracked https://notion.com/x",
+           "FIXED IN DEADBEEF", "fixed in 0123456", "fixed in commit `0123456789abcdef0123456789abcdef01234567`"):
+    assert g.closes(ok), ok
+for bad in ("https://notion.so.evil.com/x", "https://notion.sox/x", "fixed in 012345", "not-a-finding:",
+            "not-a-finding:   ", "fixed in 0123456\r\nmore"):
+    assert not g.closes(bad), bad
+# the root is P2 by word, any case; any one closing reply closes; the root cannot close itself
+for root in ("P2: x", "p2 x", "nit (P2)"):
+    t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root, "authorAssociation": "OWNER"}]}}]})
+    assert any("P2" in r for r in g.evaluate(t)), root
+t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: fixed in deadbeef", "authorAssociation": "OWNER"}]}}]})
+assert any("P2" in r for r in g.evaluate(t))
+for root in ("xp2 note", "P20 note", "mp2y"):
+    t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root}]}}]})
+    assert g.evaluate(t) == [], root
+t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": "thanks", "authorAssociation": "OWNER"},
+                                                        {"body": "fixed in deadbeef", "authorAssociation": "MEMBER"}]}}]})
+assert g.evaluate(t) == []
 # a non-matching first marker must not hide a valid later one in the same comment
 _two = codex_comment("deadbeef" + head[8:])
 _two["body"] += "\n" + codex_comment(head)["body"]
