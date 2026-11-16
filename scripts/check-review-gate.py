@@ -20,23 +20,39 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 )
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
-# A closing reply must *say* it: the token starts a rendered line (optionally a
+# A closing reply must *say* it: the token starts a rendered line (optionally after a
 # list marker), so "still open; later reply `fixed in abc1234`", a quote, or a
-# fenced example does not close the thread. Ordered markers follow CommonMark: only
-# a list starting at 1 may interrupt a paragraph, so `2. fixed in …` counts only at the
-# start of a block (text start, after a blank line) or right after another list item.
-_CLOSING_TOKEN = (
-    r"(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)"
+# fenced example does not close the thread. Ordered markers follow CommonMark: only a
+# list starting at 1 may interrupt a paragraph, so `2. fixed in …` counts only at a block
+# start or inside a list, which lazy continuation lines keep open (#105 Codex P2s).
+_CLOSING_TOKEN = re.compile(
+    r"[ \t]*(?:tracked:?[ \t]+)?"
+    r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
+    re.I,
 )
-CLOSING = re.compile(r"(?m)^[ \t]*(?:(?:[-*+]|0{0,8}1[.)])[ \t]+)?" + _CLOSING_TOKEN, re.I)
-CLOSING_ORDERED = re.compile(
-    r"(?:\A|\n[ \t]*\n|(?:\A|\n)[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t][^\n]*\n)[ \t]*[0-9]{1,9}[.)][ \t]+"
-    + _CLOSING_TOKEN, re.I)
+_ORDERED_ITEM = re.compile(r"[ \t]*([0-9]{1,9})[.)][ \t]+")
+_BULLET_ITEM = re.compile(r"[ \t]*[-*+][ \t]+")
 
 
 def _closes(prose: str) -> bool:
-    return bool(CLOSING.search(prose) or CLOSING_ORDERED.search(prose))
+    """True when a rendered line (or list item) of the reply starts with a closing token."""
+    in_list = in_para = after_blank = False
+    for line in prose.split("\n"):
+        if not line.strip():
+            in_para, after_blank = False, True
+            continue
+        rest = line
+        ordered, bullet = _ORDERED_ITEM.match(line), _BULLET_ITEM.match(line)
+        if ordered and (int(ordered.group(1)) == 1 or in_list or not in_para):
+            in_list, rest = True, line[ordered.end():]
+        elif bullet and not ordered:
+            in_list, rest = True, line[bullet.end():]
+        elif after_blank and not line[:1].isspace():
+            in_list = False  # an unindented paragraph after a blank line ends the list
+        in_para, after_blank = True, False
+        if _CLOSING_TOKEN.match(rest):
+            return True
+    return False
 
 
 FALLBACK_ATTESTATION = re.compile(

@@ -49,6 +49,8 @@ def _detector_compatible(path: Path) -> bool:
         args = funcs.get(name)
         if args is None:
             return False
+        if any(d is None for d in args.kw_defaults):
+            return False  # a required keyword-only arg the wrapper never passes
         positional = args.posonlyargs + args.args
         required = len(positional) - len(args.defaults)
         if not (required <= used <= len(positional) or (args.vararg and required <= used)):

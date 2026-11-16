@@ -296,6 +296,8 @@ for ok in (
     "Replies:\n\n1. fixed in deadbeef\n2) https://notion.so/abc",
     "1. done\n2. fixed in deadbeef",  # inside an established list
     "Replies:\n\n3. fixed in deadbeef",  # a list starting at 3 after a blank line
+    "1. Addressed:\nexplanation continues here\n2. fixed in deadbeef",  # lazy continuation keeps the list
+    "Text\n\n1. a\n\n2. fixed in deadbeef",  # loose list
 ):
     assert g.evaluate(_p2(ok)) == [], ok
 for bad in (
@@ -306,6 +308,8 @@ for bad in (
     "a) fixed in deadbeef",
     "Do not close this thread by saying\n2. fixed in deadbeef",  # #105 Codex P2: only 1 interrupts a paragraph
     "Example:\n10) not-a-finding: maybe",
+    "Do not close this thread by saying\n2. example\n3. fixed in deadbeef",  # #105 Codex P2: no list was started
+    "1. a\n\nThen a paragraph\n2. fixed in deadbeef",  # the paragraph ended the list
     "```\nfixed in deadbeef\n```",
     "<!-- fixed in deadbeef -->",
     "will be not-a-finding: maybe",

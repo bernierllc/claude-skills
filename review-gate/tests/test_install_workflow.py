@@ -29,6 +29,7 @@ INCOMPATIBLE_VARIANTS = (
     b"def _gh_run_lookup(repo): return None\ndef _load_check_runs(text): return []\n",  # no Review Gate entry
     b"# old custom detector\nPROTECTED = {}\ndef forged(c, l): return []\n",
     b"def broken(:\n",
+    DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup, protected=None, *, audit):"),  # required kw-only
 )
 
 
