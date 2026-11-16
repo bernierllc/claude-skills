@@ -294,6 +294,8 @@ for ok in (
     "123456789. not-a-finding: intentional",
     "1. Addressed:\n    fixed in deadbeef",
     "Replies:\n\n1. fixed in deadbeef\n2) https://notion.so/abc",
+    "1. done\n2. fixed in deadbeef",  # inside an established list
+    "Replies:\n\n3. fixed in deadbeef",  # a list starting at 3 after a blank line
 ):
     assert g.evaluate(_p2(ok)) == [], ok
 for bad in (
@@ -302,6 +304,8 @@ for bad in (
     "1234567890. fixed in deadbeef",  # 10 digits is not a list marker
     "1.fixed in deadbeef",  # marker needs a space
     "a) fixed in deadbeef",
+    "Do not close this thread by saying\n2. fixed in deadbeef",  # #105 Codex P2: only 1 interrupts a paragraph
+    "Example:\n10) not-a-finding: maybe",
     "```\nfixed in deadbeef\n```",
     "<!-- fixed in deadbeef -->",
     "will be not-a-finding: maybe",

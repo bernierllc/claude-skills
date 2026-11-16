@@ -21,13 +21,24 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
 # A closing reply must *say* it: the token starts a rendered line (optionally a
-# list marker: bullet, or CommonMark ordered `1.`/`1)` with 1-9 digits), so "still open; later reply `fixed in abc1234`", a quote, or a
-# fenced example does not close the thread.
-CLOSING = re.compile(
-    r"(?m)^[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
-    re.I,
+# list marker), so "still open; later reply `fixed in abc1234`", a quote, or a
+# fenced example does not close the thread. Ordered markers follow CommonMark: only
+# a list starting at 1 may interrupt a paragraph, so `2. fixed in …` counts only at the
+# start of a block (text start, after a blank line) or right after another list item.
+_CLOSING_TOKEN = (
+    r"(?:tracked:?[ \t]+)?"
+    r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)"
 )
+CLOSING = re.compile(r"(?m)^[ \t]*(?:(?:[-*+]|0{0,8}1[.)])[ \t]+)?" + _CLOSING_TOKEN, re.I)
+CLOSING_ORDERED = re.compile(
+    r"(?:\A|\n[ \t]*\n|(?:\A|\n)[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t][^\n]*\n)[ \t]*[0-9]{1,9}[.)][ \t]+"
+    + _CLOSING_TOKEN, re.I)
+
+
+def _closes(prose: str) -> bool:
+    return bool(CLOSING.search(prose) or CLOSING_ORDERED.search(prose))
+
+
 FALLBACK_ATTESTATION = re.compile(
     r"Fallback review: (codex|agy|antigravity|superpowers|claude-sonnet) on "
     r"([0-9a-f]{7,40}) — verdict: (clean|findings fixed)",
@@ -731,7 +742,7 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         if not P2_ROOT.search(root):
             continue
         replies = comments[1:]
-        if any(CLOSING.search(_prose(c.get("body") or "")) for c in replies):
+        if any(_closes(_prose(c.get("body") or "")) for c in replies):
             continue
         failures.append(
             f"P2 thread #{i} has no closing reply (Notion link / fixed in <sha> / not-a-finding:)"

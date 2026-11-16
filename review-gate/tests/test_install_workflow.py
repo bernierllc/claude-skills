@@ -43,10 +43,24 @@ class VendoredDetector(unittest.TestCase):
                     dest.write_bytes(variant)
                     proc = install(repo)
                     self.assertEqual(proc.returncode, 1, proc.stderr)
-                    self.assertIn("fails against", proc.stderr)
+                    self.assertIn("cannot run against", proc.stderr)
                     self.assertEqual(dest.read_bytes(), variant)
                     self.assertFalse((Path(repo) / "scripts" / "check-forged-review-gate.py").exists())
                     self.assertFalse((Path(repo) / ".github").exists())
+
+    def test_the_installer_never_executes_the_repo_detector(self):
+        # #105 Codex P1: compatibility is decided by parsing; repo code never runs on install
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as side:
+            marker = Path(side) / "ran"
+            dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
+            dest.parent.mkdir()
+            for body in (b"open(%r, 'w').close()\nraise SystemExit(0)\n" % str(marker).encode(),
+                         COMPATIBLE + b"\nopen(%r, 'w').close()\n" % str(marker).encode()):
+                with self.subTest(body=body[:30]):
+                    dest.write_bytes(body)
+                    install(repo)
+                    install(repo, "--force")
+                    self.assertFalse(marker.exists())
 
     def test_incompatible_custom_detector_is_backed_up_and_replaced_with_force(self):
         with tempfile.TemporaryDirectory() as repo:
