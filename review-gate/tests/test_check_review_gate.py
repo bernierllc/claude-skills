@@ -132,77 +132,82 @@ for line in invalid_lines:
     ), line
 
 attestation = "Fallback review: agy on 89cda061 — verdict: clean"
-# Examples that GitHub does not render as prose must not count.
-hidden = (
-    f"<!-- example only\n{attestation}\n-->",
-    f"<!-- example only\n{attestation}",  # unclosed comment
-    f"```\n{attestation}\n```",
-    f"~~~\n{attestation}\n~~~",
-    f"````\n```\n{attestation}\n````",
-    f"    {attestation}",
-    f"\t{attestation}",
-    f"<pre>\n{attestation}\n</pre>",
-    f"<PRE>{attestation}</PRE>",
-    f"```\n{attestation}",  # unclosed fence
+# Strict PR-body grammar (Program 19:10, #105): no Markdown parsing, a physical-line allow-list.
+R = "## Review"
+ok_bodies = (
+    f"{R}\n\n{attestation}\n",
+    f"{R}\n{attestation}",
+    f"Summary text.\n\n- a bullet\n\n{R}\n\nCodex high ran twice.\n\n{attestation}\n\n## Notes\n\n- `code` and [links](https://x) here\n",
+    f"{R}\n\nRound 2 fixed in deadbeef.\n{attestation}\nfixed in deadbeef\nnot-a-finding: by design\n",
 )
-for block in hidden:
-    assert g.evaluate(pr(
-        body=f"## Review\n\nPending\n\n{block}\n", headRefOid=head, reviews={"nodes": []}
-    )), block
-# A heading hidden in a comment is not a Review section.
-assert g.evaluate(pr(
-    body=f"<!--\n## Review\n{attestation}\n-->", headRefOid=head, reviews={"nodes": []}
-))
-# U+2028 must not split a line into a bare attestation.
-assert g.evaluate(pr(
-    body=f"## Review\n\nnote\u2028{attestation}\n", headRefOid=head, reviews={"nodes": []}
-))
-# A real attestation after a closed comment/fence still passes.
-assert not g.evaluate(pr(
-    body=f"## Review\n\n<!-- c -->\n```\nx\n```\n{attestation}\n",
-    headRefOid=head, reviews={"nodes": []},
-))
-assert g.evaluate(pr(
-    body=f"## Review\n\n{attestation}\n",
-    headRefOid="dddddddfffffffffff",
-    reviews={"nodes": []},
-)), "new push must invalidate the previous attestation"
-for body in (attestation, f"## Review\nPending\n## Other\n{attestation}"):
-    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
-# a quoted example (lazy continuation) or a code span is not an attestation
-for hidden in (f"> Example only:\n{attestation}", f"`example\n{attestation}`"):
-    assert g.evaluate(pr(body=f"## Review\n\n{hidden}\n", headRefOid=head, reviews={"nodes": []})), hidden
-# nevar-fund #25 Codex P2 (r4582082329): a heading ends a quote's lazy continuation, so
-# quote -> `## Review` -> attestation passes; so do other paragraph-interrupting lines.
-for after_quote in ("## Review", "- note", "1. note", "---", "***"):
-    body = f"## Review\n> a quoted note\n{after_quote}\n{attestation}\n" if after_quote[0] != "#" else \
-        f"> a quoted note\n{after_quote}\n{attestation}\n"
-    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})) == [], after_quote
-# ...while a real lazy continuation line is still part of the quote.
-assert g.evaluate(pr(body=f"## Review\n> a quoted note\n{attestation}\n", headRefOid=head, reviews={"nodes": []}))
-# 3.2.5 (nevar-content b14ad4d Codex P1; claude-skills empty-marker and fence rows): only what
-# CommonMark lets interrupt a paragraph ends a lazy continuation. An ordered item not starting at 1,
-# an empty list marker, or a ``` line that is not a fence stays inside the quote.
-for lazy in ("2. note", "2) note", "10. note", "-", "- ", "*", "1.", "1. ", "```x`y", "~~~x", "    ```"):
-    body = f"## Review\n> Example only:\n{lazy}\n{attestation}\n"
-    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), lazy
-assert not g.review_section_names_fallback(
-    "## Review\n> Example only:\n2. note\nFallback review: agy on 89cda061 \u2014 verdict: clean", "89cda061" + "0" * 32)
-# ...while a non-empty item starting at 1, a bullet item and a real fence still end the quote.
-for interrupt in ("1. x", "1) x", "01. x", "- x", "+ x", "```\ncode\n```", "```py\ncode\n```", "~~~\ncode\n~~~"):
-    body = f"## Review\n> Example only:\n{interrupt}\n{attestation}\n"
-    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})) == [], interrupt
-# nevar-fund #24 Codex P2: an empty `##` heading followed by a `Review` paragraph is not a Review section.
-for split in ("##\nReview\n", "##\r\nReview\n", "## \nReview\n"):
-    assert g.evaluate(pr(body=f"{split}{attestation}\n", headRefOid=head, reviews={"nodes": []})), repr(split)
-assert g.evaluate(pr(body=f"##\tReview\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
-# nevar-fund #25 Codex P2: `## Review-notes` / `## Reviewers` / `## Review_x` are other sections.
-for other in ("## Review-notes", "## Reviewers", "## Review_x"):
-    assert g.evaluate(pr(body=f"{other}\n{attestation}\n", headRefOid=head, reviews={"nodes": []})), other
-for ok_heading in ("## Review (round 2)", "## Review:", "## Review"):
-    assert g.evaluate(pr(body=f"{ok_heading}\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == [], ok_heading
+for body in ok_bodies:
+    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})) == [], body
+# blank-surrounded exact attestation inside a fence or comment, the Program counterexample
+for body in (f"{R}\n\n```text\n\n{attestation}\n\n```\n", f"{R}\n\n~~~\n\n{attestation}\n\n~~~\n",
+             f"{R}\n\n<!--\n\n{attestation}\n\n-->\n", f"<!--\n\n{R}\n\n{attestation}\n\n-->\n",
+             f"```\n\n{R}\n\n{attestation}\n\n```\n", f"{R}\n\n{attestation}\n\n   ```\n",
+             f"x <!-- note -->\n\n{R}\n\n{attestation}\n"):
+    reasons = g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
+    assert any("fences" in r or "HTML comments" in r for r in reasons), body
+# raw HTML blocks that survive blank lines, anywhere in the body
+for opener in ("<pre>", "<PRE class=x>", "<script>", "<style>", "<textarea>", "<?x", "<!DOCTYPE x", "<![CDATA[", "- <pre>", "> <pre>"):
+    reasons = g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []}))
+    assert any("raw HTML" in r for r in reasons), opener
+assert g.evaluate(pr(body=f"<presentation> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
+# the heading: exactly one exact line, after a blank line or at the top
+for body in (f"{attestation}\n", f"{R}\n\n{attestation}\n\n{R}\n", f"## Review notes\n\n{attestation}\n",
+             f"##\tReview\n\n{attestation}\n", f" {R}\n\n{attestation}\n", f"### Review\n\n{attestation}\n",
+             f"[x]: /u '\n{R}\n{attestation}\n## x '\n"):
+    assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
+# every non-blank region line: exact attestation, exact closing line, or plain prose
+for line in (f"    {attestation}", f"\t{attestation}", f" {attestation}", f"- {attestation}", f"* {attestation}",
+             f"1. {attestation}", f"1) {attestation}", f"> {attestation}", f"| {attestation} |", f"# {attestation}",
+             f"### {attestation}", "===", "---", "***", "<div>", "<span>x</span>", "[x]: https://example.org", "[x](u)",
+             "`code`", "text with `code`", "text (paren)", "text | pipe", "a > b", "| a | b |", "- note", "+ note",
+             "2. note", "10) note", "<!-- -->", "\\- escaped", "&amp; entity first", "_emphasis_", "**bold**"):
+    for body in (f"{R}\n\n{line}\n\n{attestation}\n", f"{R}\n\n{attestation}\n\n{line}\n", f"{R}\n{attestation}\n{line}\n"):
+        reasons = g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
+        assert reasons, body
+        assert not g.review_section_names_fallback(body, head), body
+# generic prose never authorises a non-exact attestation
+for line in (f"{attestation} and more", f"Note {attestation}", f"{attestation} ", attestation.replace("—", "-"),
+             f"{attestation}.", "Pending: " + attestation):
+    assert not g.review_section_names_fallback(f"{R}\n\n{line}\n", head), line
+# the region ends at the next `## ` line: an attestation after it does not count
+assert not g.review_section_names_fallback(f"{R}\n\nPending\n\n## Other\n\n{attestation}\n", head)
+# the Claude Code footer belongs outside ## Review
+assert g.evaluate(pr(body=f"{R}\n\n{attestation}\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+                     headRefOid=head, reviews={"nodes": []}))
+assert g.evaluate(pr(body=f"{R}\n\n{attestation}\n\n## Footer\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+                     headRefOid=head, reviews={"nodes": []})) == []
+# a well-formed region is required even when Codex reviewed the head on GitHub
+assert g.evaluate(pr(body=f"{R}\n\n- bullet\n", headRefOid=head, reviews=no_reviews,
+                     comments={"nodes": [codex_comment(head)]}))
+# U+2028 stays inside one physical line
+assert not g.review_section_names_fallback(f"{R}\n\nnote {attestation}\n", head)
+assert g.evaluate(pr(body=f"{R}\n\n{attestation}\n", headRefOid="dddddddfffffffffff", reviews={"nodes": []}))
 for missing_head in (None, "", "89cda0"):
-    assert not g.review_section_names_fallback(f"## Review\n{attestation}", missing_head)
+    assert not g.review_section_names_fallback(f"{R}\n{attestation}", missing_head)
+
+# merge guard: the same grammar decides `gh pr merge` (it calls gate.evaluate on the live payload)
+_orig_parse, _orig_payload = mg.gate.parse_repo_with_host, mg.gate.pr_payload
+mg.gate.parse_repo_with_host = lambda repo, cwd=None, env=None: (None, "owner", "target")
+try:
+    for body, allowed in ((f"{R}\n\n{attestation}\n", True),
+                          (f"{R}\n\n```text\n\n{attestation}\n\n```\n", False),
+                          (f"{R}\n\n<!--\n\n{attestation}\n\n-->\n", False),
+                          (f"{R}\n\n- {attestation}\n", False),
+                          (f"{R}\n\n> {attestation}\n", False),
+                          (f"{R}\n\n    {attestation}\n", False),
+                          (f"{R}\n\n| {attestation} |\n", False),
+                          (f"{R}\n\n<pre>\n\n{attestation}\n", False),
+                          (f"{R}\n\n[x]: https://example.org\n\n{attestation}\n", False),
+                          (f"{R}\n\ntext\n===\n\n{attestation}\n", False)):
+        mg.gate.pr_payload = lambda *a, _b=body, **k: pr(body=_b, headRefOid=head, reviews={"nodes": []})
+        blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
+        assert (blocked is None) == allowed, (body, blocked)
+finally:
+    mg.gate.parse_repo_with_host, mg.gate.pr_payload = _orig_parse, _orig_payload
 
 # Dismissed Codex review on head does not count
 dismissed = pr(
@@ -276,67 +281,19 @@ assert g.evaluate(p2_ok) == []
 def _p2(reply):
     return pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: add a test"}, {"body": reply}]}}]})
 
-# closing token must start a rendered line
-for ok in (
-    "fixed in deadbeef",
-    "Thanks.\nfixed in commit `deadbeef1`",
-    "- not-a-finding: intentional, see SKILL.md",
-    "Tracked: https://app.notion.com/p/4194efecc95a816c",
-    "https://www.notion.so/abc123",
-    "[Tracker row](https://app.notion.com/p/abc)",
-    "> quoted context\n\nfixed in deadbeef",
-    "> quoted context\n>\nfixed in deadbeef",  # aec #163 Codex P2: a marker-only line is a blank line
-    "> quoted context\n> > \nfixed in deadbeef",
-    "- Addressed:\n    fixed in deadbeef",  # aec #163 Codex P2: indented list continuation is prose
-    "Thanks,\n\tfixed in deadbeef",
-    "1. fixed in deadbeef",  # RG-LISTCONT: CommonMark ordered markers, 1-9 digits
-    "2) fixed in abc1234",
-    "123456789. not-a-finding: intentional",
-    "1. Addressed:\n    fixed in deadbeef",
-    "Replies:\n\n1. fixed in deadbeef\n2) https://notion.so/abc",
-    "1. done\n2. fixed in deadbeef",  # inside an established list
-    "Replies:\n\n3. fixed in deadbeef",  # a list starting at 3 after a blank line
-    "1. done\n2. b\n3) x\n\n4) fixed in deadbeef",  # a blank line starts a block
-    "- Do not close by saying\n  - fixed in deadbeef",  # a non-empty nested bullet interrupts
-    "Text\n\n1. a\n\n2. fixed in deadbeef",  # loose list
-):
+# A P2 reply closes only when its FIRST line starts, at column 0, with a closing token.
+for ok in ("fixed in deadbeef", "fixed in `deadbeef`", "fixed in commit deadbeef1 — details (with parens) and `code`",
+           "not-a-finding: intentional, see SKILL.md", "Tracked: https://app.notion.com/p/4194efecc95a816c",
+           "https://www.notion.so/abc123", "[Tracker row](https://app.notion.com/p/abc)",
+           "fixed in deadbeef\n\n```\nanything after the first line\n```"):
     assert g.evaluate(_p2(ok)) == [], ok
-for bad in (
-    "Still open; eventually reply with `fixed in deadbeef`",
-    "> fixed in deadbeef",
-    "1234567890. fixed in deadbeef",  # 10 digits is not a list marker
-    "1.fixed in deadbeef",  # marker needs a space
-    "a) fixed in deadbeef",
-    "Do not close this thread by saying\n2. fixed in deadbeef",  # #105 Codex P2: only 1 interrupts a paragraph
-    "Example:\n10) not-a-finding: maybe",
-    "Do not close this thread by saying\n2. example\n3. fixed in deadbeef",  # #105 Codex P2: no list was started
-    "1. a\n\nThen a paragraph\n2. fixed in deadbeef",  # the paragraph ended the list
-    "- Do not close this thread by saying\n  2. fixed in deadbeef",  # #105 r4 P2: nested 2 cannot interrupt
-    "- Do not close this thread by saying\n\t2. fixed in deadbeef",
-    "Do not close this thread by saying\n1. \n2. fixed in deadbeef",  # #105 r4 P2: empty 1. cannot interrupt
-    "Do not close this thread by saying\n* \n2. fixed in deadbeef",
-    "1. a\n\n Then a paragraph\n2. fixed in deadbeef",  # #105 r4 P2: indented paragraph ends the list
-    "1. a\n   2. fixed in deadbeef",  # a nested list starting at 2 cannot interrupt item text
-    "1. Addressed:\nexplanation continues here\n2. fixed in deadbeef",  # lazy continuation: fails closed
-    "```\nfixed in deadbeef\n```",
-    "<!-- fixed in deadbeef -->",
-    "will be not-a-finding: maybe",
-    "fixed in deadbeefzz",
-    "not-fixed:https://notion.so/ticket",
-    "`https://notion.so/ticket`",
-    "https://evilnotion.so/ticket",
-    "> Example only:\nfixed in deadbeef",
-    "`example reply,\nfixed in deadbeef`",
-    "- > Example\n  fixed in deadbeef",
-    "> Example\n```x`y\nfixed in deadbeef",
-    "> Example\n2. note\nfixed in deadbeef",
-    "> Example\n-\nfixed in deadbeef",
-    "> Example\n>more\nfixed in deadbeef",
-    "Example:\n\n    fixed in deadbeef",  # indented code after a blank line stays code
-):
+    assert g.closes(ok), ok
+for bad in ("Thanks.\nfixed in deadbeef", " fixed in deadbeef", "\tfixed in deadbeef", "- fixed in deadbeef",
+            "1. fixed in deadbeef", "> fixed in deadbeef", "```\nfixed in deadbeef\n```", "<!-- fixed in deadbeef -->",
+            "`fixed in deadbeef`", "Still open; eventually reply with `fixed in deadbeef`", "will be not-a-finding: maybe",
+            "fixed in deadbeefzz", "not-fixed:https://notion.so/ticket", "`https://notion.so/ticket`",
+            "https://evilnotion.so/ticket", "\nfixed in deadbeef", "    fixed in deadbeef"):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
-assert g.evaluate(_p2("not-a-finding: `retry` is idempotent")) == []
-
 # a non-matching first marker must not hide a valid later one in the same comment
 _two = codex_comment("deadbeef" + head[8:])
 _two["body"] += "\n" + codex_comment(head)["body"]
@@ -2008,30 +1965,6 @@ assert not _doctor.ruleset_requires_conversation_resolution(
     {"rules": [{"type": "pull_request", "parameters": {}}]}
 )
 
-# `## Review` only inside an HTML comment or fence is not a visible section
-for hidden in ("<!--\n## Review\n-->\n", "```\n## Review\n```\n",
-               "```\n```not-a-closing-fence\n## Review\n```\n",  # info-string line does not close
-               "<table>\n## Review\n</table>\n",
-               "<address>\n## Review\n</address>\n", "<fieldset>\n## Review\n</fieldset>\n",
-               "<pre>\n</script>\n## Review\n</pre>\n", "# t\n<mark>\n## Review\n",
-               "<pre>\n## Review\n</pre>\n", "<?xml\n## Review\n?>\n", "<!DOCTYPE x\n## Review\n>\n",
-               "<![CDATA[\n## Review\n]]>\n",
-               '<a title="x>y">\n## Review\n</a>\n', "text <!-- x\n## Review\n--> y\n"):  # raw HTML block, not a heading
-    assert any("## Review" in r for r in g.evaluate(pr(body=hidden)))
-
-# a fenced html example must not swallow the closing fence and hide a real section
-assert not any("## Review" in r for r in g.evaluate(pr(body="```\n<table>\n\n```\n\n## Review\nFallback review: agy on abc1234 — verdict: clean\n")))
-
-_real_vis = "## Review\nFallback review: agy on abc1234 — verdict: clean\n"
-# visible headings after inline html or an invalid fence opener still render
-for vis in ("<span>note</span>\n", "text\n<mark>\n", "```python`x\n"):
-    assert not any("## Review" in r for r in g.evaluate(pr(body=vis + _real_vis))), vis
-
-# fenced html/comment markers are code: they must not hide a real section after the fence
-_real = "\n## Review\nFallback review: agy on abc1234 — verdict: clean\n"
-for ex in ("```\n<!-- never closed\n```\n", "```\n<pre>\n```\n", "```\n<div>\n```\n"):
-    assert not any("## Review" in r for r in g.evaluate(pr(body=ex + _real)))
-
 # Codex summary comment is fetched across every page, not only the newest 100
 _cc_src = inspect.getsource(g._codex_comments)
 assert "comments(first: 100, after: $cursor)" in _cc_src and "hasNextPage" in _cc_src
@@ -2042,91 +1975,3 @@ assert "comments(first: 50)" in _paginate_src
 assert "_paginate_thread_comments" in _paginate_src
 
 print("ok")
-
-# AEC #163 Codex P1 (db2355a): a fence nested in a list item is code. An example attestation or
-# closing reply inside it must not count, for backtick and tilde fences at list indents 2-4,
-# including a "closer" at another column, which CommonMark does not accept as the closer.
-for run in ("```", "````", "~~~", "~~~~"):
-    for marker, pad in (("- ", "  "), ("* ", "  "), ("1. ", "   "), ("10. ", "    "), ("1) ", "   ")):
-        fenced = f"{marker}{run}\n{pad}{{inner}}\n{pad}{run}\n"
-        body = "## Review\n" + fenced.format(inner=attestation)
-        assert g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []})), body
-        assert not g._closes(g._prose(fenced.format(inner="fixed in deadbeef"))), fenced
-        # an indented fence under a list item (blank line, then the fence at the item's indent)
-        under = f"{marker}example:\n\n{pad}{run}\n{pad}{{inner}}\n{pad}{run}\n"
-        assert g.evaluate(pr(body="## Review\n" + under.format(inner=attestation), headRefOid=head,
-                             reviews={"nodes": []})), under
-        assert not g._closes(g._prose(under.format(inner="fixed in deadbeef"))), under
-    # a less-indented "closer" ends the list item and opens a new fence: what follows is still code
-    for body in (f"- {run}\n  x\n{run}\n{{inner}}\n", f"- a\n\n  {run}\n  x\n {run}\n{{inner}}\n"):
-        assert g.evaluate(pr(body="## Review\n" + body.format(inner=attestation), headRefOid=head,
-                             reviews={"nodes": []})), body
-        assert not g._closes(g._prose(body.format(inner="fixed in deadbeef"))), body
-    # without a list-container parser, what follows a nested fence fails closed even after a
-    # correct closer (the documented cost); what precedes it still reads
-    after = f"- {run}\n  example\n  {run}\n\n{{inner}}\n"
-    assert g.evaluate(pr(body="## Review\n" + after.format(inner=attestation), headRefOid=head,
-                         reviews={"nodes": []})), after
-    assert not g._closes(g._prose(after.format(inner="fixed in deadbeef"))), after
-    before = f"## Review\n{attestation}\n\n## Test plan\n- {run}\n  example\n  {run}\n"
-    assert g.evaluate(pr(body=before, headRefOid=head, reviews={"nodes": []})) == [], before
-    assert g._closes(g._prose(f"fixed in deadbeef\n\n- {run}\n  x\n  {run}\n"))
-    # a top-level fence at column 0 still closes normally (CommonMark), so prose after it reads
-    top = f"{run}\nexample\n{run}\n\n{{inner}}\n"
-    assert g.evaluate(pr(body="## Review\n" + top.format(inner=attestation), headRefOid=head,
-                         reviews={"nodes": []})) == [], top
-# Program acceptance: indents 4+ (wide ordered markers, extra spaces after a marker, nested lists)
-for run in ("```", "~~~"):
-    for marker, pad in (("100. ", "     "), ("-    ", "     "), ("1.   ", "     "), ("  - ", "    "), ("   1. ", "      ")):
-        for shape in (f"{marker}{run}\n{pad}{{inner}}\n{pad}{run}\n", f"{marker}x\n\n{pad}{run}\n{pad}{{inner}}\n{pad}{run}\n"):
-            assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
-                                 reviews={"nodes": []})), shape
-            assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
-# valid list continuation prose still closes
-for ok in ("1. Addressed:\n    fixed in deadbeef", "- Addressed:\n  fixed in deadbeef", "1. done\n2. fixed in deadbeef"):
-    assert g._closes(g._prose(ok)), ok
-
-# #105 Codex r6 P1: a list item opening with indented code (marker + 5 spaces), or a marker-only
-# quote line, holds no paragraph, so the indented line after it is code, never a continuation.
-for code_first in ("-     example\n      {inner}", "1.      example\n        {inner}",
-                   "> example\n>\n    {inner}", "- > example\n- >\n      {inner}"):
-    assert g.evaluate(pr(body="## Review\n" + code_first.format(inner=attestation), headRefOid=head,
-                         reviews={"nodes": []})), code_first
-    assert not g._closes(g._prose(code_first.format(inner="fixed in deadbeef"))), code_first
-# #105 Codex r7 P1s: mixed space/tab indent, code on a list item's opening line, nested markers,
-# setext and list-nested headings, list-nested raw HTML. All render as code or non-paragraph
-# blocks, so neither an attestation nor a closing token in them may count (the _plain_lines allow-list).
-for shape in (" \t{inner}", "-     {inner}", "1.     {inner}", "-  -     example\n         {inner}",
-              "title\n===\n    {inner}", "- # heading\n      {inner}", "- <pre>\n  {inner}\n  </pre>",
-              "- ---\n      {inner}", "* \t{inner}",
-              # quoted list items: lazy lines after them still belong to the quote
-              "- > ex\n    code\n{inner}", "1) a\n- > ex\n\tcode\n{inner}",
-              # a paragraph the strict test rejects, then a raw block opener: the block runs on
-              "    code\n`span\n</pre>\n<pre>\n\n{inner}", "`x\n</b>\n```\n\n{inner}\n```",
-              # a raw block inside an html block: the html block resumes after it
-              "<div>\n<pre>\n</pre>\n`span\n{inner}",
-              # #105 Codex r8: attribute or link-title text across lines, setext heading text
-              "<span title=\"\n{inner}\n\">x</span>", "[x](https://example.org/ \"\n{inner}\n\")",
-              "{inner}\n===", "{inner}\n---", "a\n{inner}\n  ---",
-              # #105 Codex r9: quoted `>`, processing instructions and CDATA in html; parenthesised
-              # and quoted link titles; multi-line reference labels; list-relative setext underlines
-              "text <span title=\">\n{inner}\n\">x</span>", "text <?x >\n{inner}\n?>",
-              "text <![CDATA[>\n{inner}\n]]>", "[x](https://example.org/ (\n{inner}\n))",
-              "[x](https://example.org/ \")\n{inner}\n\")", "[multi\n{inner}\nline]: /url",
-              "- item\n    {inner}\n    ===", "1. item\n    {inner}\n    ---", "- item\n\t{inner}\n\t===",
-              "![x](u '\n{inner}\n')", "[x](u) [y](\n{inner}\n)",
-              # one-line exemptions never cover an opener the line leaves unclosed
-              "a `x` <b title='\n{inner}\n'>", "\\`<b `title='\n{inner}\n'>", "a [b] [c\n{inner}\n]: /u",
-              "x <b>\n{inner}\n</b>", "[a][b\n{inner}\n]", "<b>\n{inner}", "- <b>\n  {inner}"):
-    assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
-                         reviews={"nodes": []})), shape
-    assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
-# ...while a list item holding prose keeps its indented continuation
-for prose in ("-    Addressed:\n     fixed in deadbeef", "- Addressed:\n    fixed in deadbeef",
-              "1. Addressed:\n    fixed in deadbeef",
-              # real closing replies: tags, brackets and code spans that close on their own line
-              "fixed in deadbeef: titled `Review Gate - PR #<this PR>`, flag `[-R o/r]`.",
-              "fixed in deadbeef: split on whitespace ([ \\t\\r\\n]) only.",
-              "fixed in deadbeef: an older hash is \"older content at <version>\".",
-              "fixed in deadbeef, see <https://example.org/x> and [docs](https://example.org/d)."):
-    assert g._closes(g._prose(prose)), prose

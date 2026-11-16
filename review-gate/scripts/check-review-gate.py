@@ -20,41 +20,19 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 )
 
 P2_ROOT = re.compile(r"\bp2\b", re.I)
-# A closing reply must *say* it: the token starts a rendered line (optionally after a
-# list marker), so "still open; later reply `fixed in abc1234`", a quote, or a
-# fenced example does not close the thread. Ordered markers follow CommonMark, which only
-# lets a NON-EMPTY item numbered 1 interrupt a paragraph (the same goes for an empty bullet).
-# Without a full CommonMark parser (the runner has stdlib only), a marker numbered other
-# than 1 counts only at a block start or as the next line of the same list (same indent
-# and delimiter); every other case, lazy continuation included, fails closed (#105 Codex P2s).
+# A P2 thread closes on a reply whose FIRST line starts, at column 0, with a closing token. Nothing
+# precedes that line, so no fence, quote, list, comment or HTML block can enclose it; anything else
+# (a token later in the reply, indented or after a marker) does not close. No Markdown is parsed.
 _CLOSING_TOKEN = re.compile(
-    r"[ \t]*(?:tracked:?[ \t]+)?"
+    r"(?:tracked:?[ \t]+)?"
     r"(?:(?:\[[^\]\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*\S)",
     re.I,
 )
-_ORDERED_ITEM = re.compile(r"([ \t]*)([0-9]{1,9})([.)])(?:[ \t]+|$)")
-_BULLET_ITEM = re.compile(r"[ \t]*[-*+](?:[ \t]+|$)")
 
 
-def _closes(prose: str) -> bool:
-    """True when a rendered line (or list item) of the reply starts with a closing token."""
-    block_start, prev_item = True, None  # prev_item: (indent, delimiter) of the line above
-    for line in prose.split("\n"):
-        if not line.strip():
-            block_start, prev_item = True, None
-            continue
-        rest, item = line, None
-        ordered, bullet = _ORDERED_ITEM.match(line), _BULLET_ITEM.match(line)
-        if ordered:
-            content, key = line[ordered.end():], (ordered.group(1), ordered.group(3))
-            if block_start or prev_item == key or (int(ordered.group(2)) == 1 and content.strip()):
-                rest, item = content, key
-        elif bullet and (block_start or line[bullet.end():].strip()):
-            rest = line[bullet.end():]
-        block_start, prev_item = False, item
-        if _CLOSING_TOKEN.match(rest):
-            return True
-    return False
+def closes(reply: str) -> bool:
+    """True when the reply's first physical line starts with a closing token at column 0."""
+    return bool(_CLOSING_TOKEN.match(reply.split("\n", 1)[0]))
 
 
 FALLBACK_ATTESTATION = re.compile(
@@ -62,8 +40,6 @@ FALLBACK_ATTESTATION = re.compile(
     r"([0-9a-f]{7,40}) — verdict: (clean|findings fixed)",
     re.I,
 )
-INCOMPLETE_REVIEW = re.compile(r"\b(pending|running|todo)\b", re.I)
-REVIEW_SECTION = re.compile(r"(?m)^##[ \t]+Review(?![\w-])")
 MAIN_REVIEW_LABELS = {"review:high"}
 # Exact bot logins only — substring matches like "codex-helper" must not pass the gate.
 CODEX_AUTHORS = frozenset({"chatgpt-codex-connector"})
@@ -580,305 +556,75 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
     return False
 
 
-_BLOCK_TAGS = (
-    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|"
-    "dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|"
-    "iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|"
-    "summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
-)
-# CommonMark html block type 6 (named block tags) ...
-_HTML_BLOCK6 = re.compile(rf" {{0,3}}</?(?:{_BLOCK_TAGS})(?:[\s/>]|$)", re.I)
-# ... and type 7 (one complete tag alone on its line; cannot interrupt a paragraph; quoted attrs may hold <>)
-_HTML_BLOCK7 = re.compile(
-    r" {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+(?:[^<>\"']|\"[^\"]*\"|'[^']*')*)?/?>"
-    r"|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$")
-# types 1, 3, 4, 5: (start, end marker); the block runs to the line holding the end marker
-_RAW_BLOCKS = (
-    (re.compile(r" {0,3}<(pre|script|style|textarea)\b", re.I), None),  # closes on its own </tag>
-    (re.compile(r" {0,3}<\?"), re.compile(r"\?>")),
-    (re.compile(r" {0,3}<![A-Za-z]"), re.compile(r">")),
-    (re.compile(r" {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-)
-# a backtick fence's info string cannot contain a backtick (CommonMark), or it is not a fence
-_FENCE_OPEN = re.compile(r" {0,3}(?:(`{3,})[^`]*$|(~{3,}))")
-# Any other fence-like line: indented, or after list markers (`- ````, `1. ~~~`, `  ```` under an
-# item). Whether it is code, and where it ends, depends on the list container it sits in, which
-# needs a full CommonMark parser (the runner has stdlib only). So everything from such a line to
-# the end of the body is treated as code: an example attestation or closing reply in a list-nested
-# fence can never count (AEC #163 Codex P1), at the cost that one placed after it fails closed.
-_LOOSE_FENCE = re.compile(r"[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)*[ \t]*(?:`{3,}(?=[^`]*$)|~{3,})")
+# PR-body grammar (Program 19:10 directive, #105): a strict allow-list over physical lines, with no
+# Markdown parsing and no recovery. Anything outside it fails the whole check with a reason naming the
+# line, so the author rewrites the body instead of the gate guessing what GitHub renders.
+_FENCE_LINE = re.compile(r"[ \t]*(?:`{3}|~{3})")
+# HTML blocks that run through blank lines (CommonMark types 1-5); a comment is banned anywhere
+_RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<(?:pre|script|style|textarea)(?![A-Za-z0-9-])|[ \t>*+\-0-9.)]*<[?!]", re.I)
+REVIEW_HEADING = "## Review"
+_PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()]*")
+_ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
+_CLOSING_LINE = re.compile(r"(?:fixed in (?:commit )?[0-9a-f]{7,40}|not-a-finding:[ \t]*\S[^`<>|\[\]()]*)", re.I)
 
 
-def _rendered_markdown(body: str) -> str:
-    """Keep only what GitHub renders as prose, in one pass over the lines.
+def review_region(body: str) -> tuple[list[str], list[str]]:
+    """Return (region lines, problems) for the PR body's single `## Review` section.
 
-    Dropped: fenced and indented code, HTML comments, raw HTML blocks (a block
-    opened by any tag at line start runs to the next blank line; pre/script/
-    style/textarea run to their closing tag). One state machine, so an example
-    inside a fence can never open a comment or block, and nothing opened is
-    silently closed early. Unclosed constructs run to the end of the body, as
-    GitHub renders them, so this only ever removes more, never less.
+    Whole body: no ``` or ~~~ line, no `<!--`, no blank-surviving raw HTML block opener. Exactly one
+    line equal to `## Review`, after a blank line or at the top. The region runs to the next line
+    starting `## ` or the end. Every non-blank region line is an exact attestation, an exact closing
+    line, or plain prose: starts with a letter or digit, no ordered-list marker, and none of
+    ` < > | [ ] ( ). Any other line fails the check.
     """
-    kept: list[str] = []
-    fence: str | None = None
-    in_comment = False
-    raw_close: re.Pattern[str] | None = None  # end marker of an open <pre>-style block
-    in_html = False  # inside a blank-line-terminated html block
-    para = False  # previous line was paragraph text (type-7 blocks cannot interrupt it)
-    in_def = False  # inside a possible link reference definition
-    for line in body.replace("\r\n", "\n").split("\n"):
-        was_para, para = para, False
-        if fence is not None:
-            marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
-            # a closing fence is the marker plus optional whitespace only (CommonMark)
-            if (marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence)
-                    and not line[marker.end():].strip()):
-                fence = None
-                kept.append("")  # like the opener: a block boundary (_plain_lines splits runs here)
-                continue
-            kept.append(_REJECTED if line.strip() else "")
+    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    problems: list[str] = []
+    for n, line in enumerate(lines, 1):
+        if _FENCE_LINE.match(line):
+            problems.append(f"PR body line {n}: code fences (``` or ~~~) are not allowed in a gated PR body")
+        if "<!--" in line:
+            problems.append(f"PR body line {n}: HTML comments (<!--) are not allowed in a gated PR body")
+        elif _RAW_HTML_LINE.match(line):
+            problems.append(f"PR body line {n}: raw HTML blocks (<pre>, <script>, <style>, <textarea>, <?, <!) are not allowed in a gated PR body")
+    headings = [i for i, line in enumerate(lines) if line.rstrip() == REVIEW_HEADING]
+    if len(headings) != 1:
+        problems.append(f"PR body must have exactly one line '{REVIEW_HEADING}' (found {len(headings)})")
+        return [], problems
+    start = headings[0]
+    if start and lines[start - 1].strip():
+        problems.append(f"PR body line {start + 1}: '{REVIEW_HEADING}' must follow a blank line")
+    region: list[str] = []
+    for n, line in enumerate(lines[start + 1 :], start + 2):
+        if line.startswith("## "):
+            break
+        region.append(line)
+        if not line.strip() or FALLBACK_ATTESTATION.fullmatch(line) or _CLOSING_LINE.fullmatch(line):
             continue
-        if raw_close is not None:
-            if raw_close.search(line):
-                raw_close = None
-            kept.append(_REJECTED if line.strip() else "")
+        if _PROSE_LINE.fullmatch(line) and not _ORDERED_MARKER.match(line):
             continue
-        if in_html:
-            if line.strip():
-                kept.append(_REJECTED)
-                # the strict paragraph test may have taken a paragraph continuation for an html
-                # block, so a fence or raw block opener inside it still opens; the html block
-                # resumes after the raw one closes (both drop: fails closed)
-                if _LOOSE_FENCE.match(line):
-                    break
-                raw = next(((m, c) for st, c in _RAW_BLOCKS if (m := st.match(line))), None)
-                if raw and not (raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)).search(line[raw[0].end():]):
-                    raw_close = raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)
-                continue
-            in_html = False
-        if not in_comment:
-            opener = _FENCE_OPEN.match(line)
-            if opener and line[:1] in " \t":
-                break  # an indented fence: the rest of the body is unreadable as prose (see _LOOSE_FENCE)
-            if not opener and _LOOSE_FENCE.match(line):
-                break
-            if opener:
-                fence = opener.group(1) or opener.group(2)
-                kept.append("")  # the dropped fence still ends a paragraph (and a quote's lazy continuation)
-                continue
-            # indented code cannot interrupt a paragraph (CommonMark): after prose it is a continuation
-            # 4+ columns of indent, tabs to 4-column stops (` \t` is 4 columns: #105 Codex r7 P1)
-            if line.strip() and len(line) - len(line.lstrip(" \t")) and \
-                    len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip()) >= 4 and not was_para:
-                kept.append(_REJECTED if line.strip() else "")
-                continue
-            raw = next(((m, c) for st, c in _RAW_BLOCKS if (m := st.match(line))), None)
-            if raw:
-                raw_close = raw[1] or re.compile(rf"</{raw[0].group(1)}\s*>", re.I)
-                if raw_close.search(line[raw[0].end():]):
-                    raw_close = None
-                kept.append(_REJECTED if line.strip() else "")
-                continue
-            if _HTML_BLOCK6.match(line) or (not was_para and _HTML_BLOCK7.match(line)):
-                in_html = True
-                kept.append(_REJECTED if line.strip() else "")
-                continue
-        # strip HTML comment spans, which may open or close mid-line
-        out = ""
-        rest = line
-        while rest:
-            if in_comment:
-                end = rest.find("-->")
-                if end < 0:
-                    rest = ""
-                else:
-                    in_comment, rest = False, rest[end + 3 :]
-            else:
-                start = rest.find("<!--")
-                if start < 0:
-                    out += rest
-                    rest = ""
-                else:
-                    out += rest[:start]
-                    in_comment, rest = True, rest[start + 4 :]
-        # paragraph state from the same strict shape test as _plain_lines: anything else (headings,
-        # list items holding code, HTML, headings or nested markers, link definitions) is no paragraph
-        para, in_def = _plain(line, was_para, in_def)
-        para = para and bool(out.strip())
-        kept.append(out if out.strip() else _REJECTED if line.strip() else "")
-    return "\n".join(kept)
+        problems.append(
+            f"PR body line {n}: in ## Review every line must be plain prose (starting with a letter or "
+            "digit, no list marker, no ` < > | [ ] ( ) characters) or an exact attestation line"
+        )
+    return region, problems
 
 
 def review_section_names_fallback(body: str, head: str | None = None) -> bool:
-    """Require one explicit completed-review line bound to the current head.
+    """True when the well-formed ## Review region holds an exact attestation for the current head.
 
-    Full-line matching excludes incidental prose, URLs and generated footers.
-    Compare the entire captured SHA prefix so a stale longer SHA cannot pass
-    merely because its first seven characters match.
+    The whole line must equal the attestation (no extra text), and the full captured SHA prefix must
+    match the head, so a stale longer SHA cannot pass on its first seven characters.
     """
     if not head or len(head) < 7:
         return False
-    body = _prose(body)
-    m = REVIEW_SECTION.search(body)
-    if not m:
+    region, problems = review_region(body)
+    if problems:
         return False
-    rest = body[m.end() :]
-    next_h = re.search(r"(?m)^##\s+", rest)
-    section = rest[: next_h.start()] if next_h else rest
-    # \n only: str.splitlines() also splits on U+2028 and friends.
-    for line in section.split("\n"):
-        if INCOMPLETE_REVIEW.search(line):
-            continue
-        attestation = FALLBACK_ATTESTATION.fullmatch(line.strip())
+    for line in region:
+        attestation = FALLBACK_ATTESTATION.fullmatch(line)
         if attestation and head.lower().startswith(attestation.group(2).lower()):
             return True
     return False
-
-
-# What may interrupt a paragraph (CommonMark), so a lazy continuation ends: an ATX heading, a
-# thematic break, a NON-EMPTY list item (ordered ones only when starting at 1), or a real fence
-# (left to _FENCE_OPEN: a ``` line whose info string holds a backtick is not a fence). Anything
-# else, such as `2. note` or an empty `-`, is lazy continuation text and stays inside the quote.
-_INTERRUPTS = re.compile(
-    r" {0,3}(?:#{1,6}(?:[ \t]|$)|([-*_])(?:[ \t]*\1){2,}[ \t]*$|(?:[-*+]|0{0,8}1[.)])[ \t]+\S)")
-
-
-def _unquoted(text: str) -> str:
-    """Drop blockquotes, including lazy continuation lines (a non-blank line
-    after a `>` line stays inside the quote until a blank line or a line that
-    interrupts a paragraph) and quotes nested in list items (`- > example`)."""
-    kept: list[str] = []
-    in_quote = False
-    for line in text.split("\n"):
-        marker = re.match(r"[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*>", line)
-        if marker:
-            # A marker-only line (`>`, `> >`) is a blank line inside the quote: it ends the quoted
-            # paragraph, so no lazy continuation follows it (aec #163 Codex P2).
-            in_quote = bool(line[marker.end():].strip(" \t>"))
-            kept.append("")
-            continue
-        # A lazy continuation is paragraph text only: a line that interrupts a paragraph
-        # (ATX heading, fence, thematic break, list item) ends the quote and is kept.
-        if in_quote and line.strip() and not (_INTERRUPTS.match(line) or _FENCE_OPEN.match(line)):
-            kept.append("")
-            continue
-        in_quote = False
-        kept.append(line)
-    return "\n".join(kept)
-
-
-# a code span: a backtick run closed by a run of the same length, never across a blank line
-_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n).)+?)(?<!`)\1(?!`)", re.S)
-
-
-def _prose(body: str) -> str:
-    """Rendered prose only: no code blocks, comments or HTML blocks, no quotes,
-    and every inline code span collapsed to the word `code`, so an example
-    span (even one wrapping onto its own line) cannot start a line. A span that
-    is only a commit SHA keeps its text, so `fixed in `abc1234`` still reads."""
-    def span(m: re.Match[str]) -> str:
-        inner = m.group(2).strip()
-        if re.fullmatch(r"[0-9a-f]{7,40}", inner, re.I):
-            return inner
-        return "\n".join(["code"] * (m.group(0).count("\n") + 1))  # one line per source line
-    source = (body or "").replace("\r\n", "\n").split("\n")
-    rendered = _CODE_SPAN.sub(span, _unquoted(_rendered_markdown(body or ""))).split("\n")
-    return "\n".join(_plain_lines(source, rendered))
-
-
-# Where an attestation or a closing token may start: a letter, a markdown link, or an autolink.
-_PLAIN_START = re.compile(r"[A-Za-z\[]|<https?://", re.I)
-# One list marker followed by 1-4 spaces: the item's content is a paragraph, never indented code.
-_LIST_LEAD = re.compile(r"(?:[-*+]|[0-9]{1,9}[.)]) {1,4}")
-_REJECTED = "\x00"
-
-
-def _plain(src: str, after_para: bool, in_def: bool) -> tuple[bool, bool]:
-    """(is `src` paragraph text by the strict shape below, still inside a link definition)."""
-    if not src.strip():
-        return False, False
-    lead = len(src) - len(src.lstrip(" \t"))
-    text = src[lead:]
-    item = _LIST_LEAD.match(text)
-    content = text[item.end():] if item else text
-    # a link definition (`[x]:`, also after a list marker) can run over the next lines as its
-    # destination and title, which are not paragraph text: no paragraph until a blank line
-    in_def = in_def or bool(re.match(r"\[[^\]]*\]:", content))
-    if content.startswith(">") and content.strip(" \t>") and len(src[:lead].expandtabs(4)) < 4:
-        return True, in_def  # a quoted paragraph: its lazy lines are the quote's (_unquoted drops them)
-    return (not lead or after_para) and not in_def and bool(_PLAIN_START.match(content)), in_def
-
-
-def _plain_lines(source: list[str], rendered: list[str]) -> list[str]:
-    """Allow-list on top of the block parser above (#105 Codex r4-r7: four rounds of CommonMark
-    container cases). That parser keeps line i of the body as line i. A rendered line survives only
-    when its SOURCE line has a shape that can only be paragraph text:
-      - column 0, optionally one list marker plus 1-4 spaces, then a letter, `[` or `<http`; or
-      - indented (spaces or tabs), directly after a surviving paragraph line, then the same start
-        (a paragraph continuation: an indented line after paragraph text is never code).
-    Anything else (an indented line after a heading, blank or non-paragraph line, 5+ spaces after a marker, nested or marker-only containers, headings,
-    setext underlines, HTML or fence openers inside list items) becomes _REJECTED, failing closed:
-    a non-blank line holding no token, so it still separates nothing that a real line would not.
-    Column-0 `#` lines are kept so `## Review` and section ends still read."""
-    out: list[str] = []
-    cont = in_def = False
-    for src, line in zip(source, rendered):
-        if src.startswith("#"):
-            out.append(line)
-            cont = False
-            continue
-        ok, in_def = _plain(src, cont, in_def)
-        ok = ok and bool(line.strip())
-        out.append(line if ok or not line.strip() else _REJECTED)
-        cont = ok
-    # Whole-block pass (#105 Codex r8, r9): a run of non-blank source lines is rejected entirely when
-    # any line holds `<`, `[` or `]` outside a one-line `[label](url)`, since inline HTML (tags, attributes, comments, processing
-    # instructions, CDATA), links, images, titles and reference labels can all span lines and hide
-    # text; and the lines above any underline-shaped line (any indent: list items shift columns) are
-    # rejected, as they may be a setext heading. Deliberately coarser than CommonMark: an attestation
-    # or closing reply that shares a block with a link or tag fails closed (put it in its own block).
-    # An underline ends the block: lines after it start a new run. `out` may be shorter than the
-    # body (an indented fence drops the rest), so only its lines are judged.
-    source, rendered = source[: len(out)], rendered[: len(out)]
-    start = 0
-    for i in range(len(source) + 1):
-        underline = 0 < i - start and i < len(source) and bool(_SETEXT.match(source[i]))
-        if i < len(source) and source[i].strip() and rendered[i] != "" and not underline:
-            continue
-        run = range(start, i + underline)
-        if underline or any(_RISKY.search(_one_line_safe(source[k])) for k in run):
-            for k in run:
-                if not source[k].startswith("#"):
-                    out[k] = _REJECTED
-        start = i + 1
-    return out
-
-
-_SETEXT = re.compile(r"[ \t>]*(?:=+|-+)[ \t]*$")
-_RISKY = re.compile(r"[<\[\]]")
-# a link or image closed on its line, plain destination, no title: visible label, cannot span lines
-# (a link label holds no unescaped bracket, so whatever stays around it is still caught by _RISKY)
-_SIMPLE_LINK = re.compile(r"!?\[[^\[\]\\]*\]\([^\s()<>\"'\\]+\)")
-# constructs that open and close on one line and so cannot hide the lines around them: a code span
-# (opener not escaped), a plain tag with bare attributes or an autolink after other text (first on
-# the line, past indent and list or quote markers, a tag can open an html block), and a bracket pair
-# that is not a link, image or definition
-_CODE_SPAN_LINE = re.compile(r"(?<![`\\])(`+)(?!`)[^`\n]+?(?<!`)\1(?!`)")
-_INLINE_TAG = re.compile(
-    r"(?<=.)(?:</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][\w.:-]*)*[ \t]*/?>"
-    r"|<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>`\\]*>)"
-)
-_LINE_LEAD = re.compile(r"(?:[ \t>]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$))*[ \t>]*")
-_PLAIN_BRACKETS = re.compile(r"(?<![\]\\!])\[(?:[^\[\]\\]|\\[^\[\]])*\](?![(\[:])")
-
-
-def _one_line_safe(line: str) -> str:
-    line = _SIMPLE_LINK.sub("", _CODE_SPAN_LINE.sub("", line))
-    lead = _LINE_LEAD.match(line).end()
-    line = line[:lead] + _INLINE_TAG.sub("", line[lead:])
-    while (stripped := _PLAIN_BRACKETS.sub("", line)) != line:
-        line = stripped
-    return line
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
@@ -891,7 +637,7 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         if not P2_ROOT.search(root):
             continue
         replies = comments[1:]
-        if any(_closes(_prose(c.get("body") or "")) for c in replies):
+        if any(closes(c.get("body") or "") for c in replies):
             continue
         failures.append(
             f"P2 thread #{i} has no closing reply (Notion link / fixed in <sha> / not-a-finding:)"
@@ -903,9 +649,7 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     body = pr.get("body") or ""
     head = pr.get("headRefOid") or ""
-    # Rendered view: a heading inside a comment or fence is not visible.
-    if not REVIEW_SECTION.search(_rendered_markdown(body)):
-        reasons.append("PR body missing ## Review section")
+    reasons.extend(review_region(body)[1])
     if not (
         codex_done_on_head(pr)
         or codex_clean_comment_on_head(pr)
