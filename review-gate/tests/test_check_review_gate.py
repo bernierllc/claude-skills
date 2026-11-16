@@ -2107,11 +2107,26 @@ for shape in (" \t{inner}", "-     {inner}", "1.     {inner}", "-  -     example
               "<div>\n<pre>\n</pre>\n`span\n{inner}",
               # #105 Codex r8: attribute or link-title text across lines, setext heading text
               "<span title=\"\n{inner}\n\">x</span>", "[x](https://example.org/ \"\n{inner}\n\")",
-              "{inner}\n===", "{inner}\n---", "a\n{inner}\n  ---"):
+              "{inner}\n===", "{inner}\n---", "a\n{inner}\n  ---",
+              # #105 Codex r9: quoted `>`, processing instructions and CDATA in html; parenthesised
+              # and quoted link titles; multi-line reference labels; list-relative setext underlines
+              "text <span title=\">\n{inner}\n\">x</span>", "text <?x >\n{inner}\n?>",
+              "text <![CDATA[>\n{inner}\n]]>", "[x](https://example.org/ (\n{inner}\n))",
+              "[x](https://example.org/ \")\n{inner}\n\")", "[multi\n{inner}\nline]: /url",
+              "- item\n    {inner}\n    ===", "1. item\n    {inner}\n    ---", "- item\n\t{inner}\n\t===",
+              "![x](u '\n{inner}\n')", "[x](u) [y](\n{inner}\n)",
+              # one-line exemptions never cover an opener the line leaves unclosed
+              "a `x` <b title='\n{inner}\n'>", "\\`<b `title='\n{inner}\n'>", "a [b] [c\n{inner}\n]: /u",
+              "x <b>\n{inner}\n</b>", "[a][b\n{inner}\n]", "<b>\n{inner}", "- <b>\n  {inner}"):
     assert g.evaluate(pr(body="## Review\n" + shape.format(inner=attestation), headRefOid=head,
                          reviews={"nodes": []})), shape
     assert not g._closes(g._prose(shape.format(inner="fixed in deadbeef"))), shape
 # ...while a list item holding prose keeps its indented continuation
 for prose in ("-    Addressed:\n     fixed in deadbeef", "- Addressed:\n    fixed in deadbeef",
-              "1. Addressed:\n    fixed in deadbeef"):
+              "1. Addressed:\n    fixed in deadbeef",
+              # real closing replies: tags, brackets and code spans that close on their own line
+              "fixed in deadbeef: titled `Review Gate - PR #<this PR>`, flag `[-R o/r]`.",
+              "fixed in deadbeef: split on whitespace ([ \\t\\r\\n]) only.",
+              "fixed in deadbeef: an older hash is \"older content at <version>\".",
+              "fixed in deadbeef, see <https://example.org/x> and [docs](https://example.org/d)."):
     assert g._closes(g._prose(prose)), prose

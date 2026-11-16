@@ -634,6 +634,8 @@ def _rendered_markdown(body: str) -> str:
             if (marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence)
                     and not line[marker.end():].strip()):
                 fence = None
+                kept.append("")  # like the opener: a block boundary (_plain_lines splits runs here)
+                continue
             kept.append(_REJECTED if line.strip() else "")
             continue
         if raw_close is not None:
@@ -829,20 +831,22 @@ def _plain_lines(source: list[str], rendered: list[str]) -> list[str]:
         ok = ok and bool(line.strip())
         out.append(line if ok or not line.strip() else _REJECTED)
         cont = ok
-    # Whole-block pass (#105 Codex r8): a run of non-blank source lines is rejected entirely when it
-    # may hold an inline construct spanning lines (an HTML tag or a link destination/title left open
-    # on a line, whose following lines are attribute or title text) or a setext underline (the run
-    # above it is a heading, not a paragraph). Coarser than CommonMark on purpose: fails closed.
+    # Whole-block pass (#105 Codex r8, r9): a run of non-blank source lines is rejected entirely when
+    # any line holds `<`, `[` or `]` outside a one-line `[label](url)`, since inline HTML (tags, attributes, comments, processing
+    # instructions, CDATA), links, images, titles and reference labels can all span lines and hide
+    # text; and the lines above any underline-shaped line (any indent: list items shift columns) are
+    # rejected, as they may be a setext heading. Deliberately coarser than CommonMark: an attestation
+    # or closing reply that shares a block with a link or tag fails closed (put it in its own block).
     # An underline ends the block: lines after it start a new run. `out` may be shorter than the
     # body (an indented fence drops the rest), so only its lines are judged.
-    source = source[: len(out)]
+    source, rendered = source[: len(out)], rendered[: len(out)]
     start = 0
     for i in range(len(source) + 1):
         underline = 0 < i - start and i < len(source) and bool(_SETEXT.match(source[i]))
-        if i < len(source) and source[i].strip() and not underline:
+        if i < len(source) and source[i].strip() and rendered[i] != "" and not underline:
             continue
         run = range(start, i + underline)
-        if underline or any(_OPEN_INLINE.search(source[k]) for k in run):
+        if underline or any(_RISKY.search(_one_line_safe(source[k])) for k in run):
             for k in run:
                 if not source[k].startswith("#"):
                     out[k] = _REJECTED
@@ -850,9 +854,31 @@ def _plain_lines(source: list[str], rendered: list[str]) -> list[str]:
     return out
 
 
-_SETEXT = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
-# a tag opened and not closed on its line, or a link `](` whose `)` is not on its line
-_OPEN_INLINE = re.compile(r"<[A-Za-z/!?][^>]*$|\]\((?:[^()]|\([^()]*\))*$")
+_SETEXT = re.compile(r"[ \t>]*(?:=+|-+)[ \t]*$")
+_RISKY = re.compile(r"[<\[\]]")
+# a link or image closed on its line, plain destination, no title: visible label, cannot span lines
+# (a link label holds no unescaped bracket, so whatever stays around it is still caught by _RISKY)
+_SIMPLE_LINK = re.compile(r"!?\[[^\[\]\\]*\]\([^\s()<>\"'\\]+\)")
+# constructs that open and close on one line and so cannot hide the lines around them: a code span
+# (opener not escaped), a plain tag with bare attributes or an autolink after other text (first on
+# the line, past indent and list or quote markers, a tag can open an html block), and a bracket pair
+# that is not a link, image or definition
+_CODE_SPAN_LINE = re.compile(r"(?<![`\\])(`+)(?!`)[^`\n]+?(?<!`)\1(?!`)")
+_INLINE_TAG = re.compile(
+    r"(?<=.)(?:</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][\w.:-]*)*[ \t]*/?>"
+    r"|<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>`\\]*>)"
+)
+_LINE_LEAD = re.compile(r"(?:[ \t>]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$))*[ \t>]*")
+_PLAIN_BRACKETS = re.compile(r"(?<![\]\\!])\[(?:[^\[\]\\]|\\[^\[\]])*\](?![(\[:])")
+
+
+def _one_line_safe(line: str) -> str:
+    line = _SIMPLE_LINK.sub("", _CODE_SPAN_LINE.sub("", line))
+    lead = _LINE_LEAD.match(line).end()
+    line = line[:lead] + _INLINE_TAG.sub("", line[lead:])
+    while (stripped := _PLAIN_BRACKETS.sub("", line)) != line:
+        line = stripped
+    return line
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
