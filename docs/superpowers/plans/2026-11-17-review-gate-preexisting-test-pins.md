@@ -10,19 +10,18 @@ Tracker: https://app.notion.com/p/review-gate-P2-findings-from-105-Sonnet-pass-a
 
 ## Status
 
-Not started. Proposed priority: P1. Land it after #105.
+Gaps 1 and 2 were pinned in #105 (merged as d876413): the empty-head test in review-gate/tests/test_check_review_gate.py asserts both Codex checks fail. Gap 3 and the P2 survivors are not started. Proposed priority: P1.
 
 ## Gaps
 
-1. `codex_done_on_head` returns False when `headRefOid` is empty. If that flips to True, the gate passes with no Codex review at all.
-2. `codex_clean_comment_on_head` has the same no-head guard and the same risk.
+1. Done in #105: `codex_done_on_head` returns False when `headRefOid` is empty. Its `if not head` guard is redundant with the commit check below it, so the test pins the behaviour, not that line (re-check on 9af68ae).
+2. Done in #105: `codex_clean_comment_on_head` has the same no-head guard; a mutant flipping it is killed.
 3. `run_gh` adds `--hostname <host>` for Enterprise repos. If that argument is dropped, the gate reads the default host's PR with the same number.
 
 ## Correct fix (tests only)
 
-1. Add an `evaluate()` case with `headRefOid: ""` and `baseRefName: "staging"`. Give it a Codex review on some commit and a clean comment. Assert that it fails and names the missing Codex review.
-2. Point a fake `gh` on PATH that records its argv. Call `run_gh([...], hostname="ghe.example.com")`. Assert that `--hostname ghe.example.com` comes before the endpoint. Then call without a hostname and assert there is no `--hostname`.
-3. For each gap, re-run the mutant (the guard returning True, the `--hostname` argument dropped) and show that the suite now fails.
+1. Point a fake `gh` on PATH that records its argv. Call `run_gh([...], hostname="ghe.example.com")`. Assert that `--hostname ghe.example.com` comes before the endpoint. Then call without a hostname and assert there is no `--hostname`.
+2. Re-run the mutant (the `--hostname` argument dropped) and show that the suite now fails.
 
 Also add the P2 survivors from the same pass, each as a one-line assert:
 
