@@ -2207,6 +2207,17 @@ for field in ("labels", "reviews", "comments", "reviewThreads"):
     assert f"pullRequest.{field}" in _out, _out
 
 
+# a next page with no cursor fails closed instead of returning page 1
+try:
+    g._all_nodes({"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}, "reviewThreads", lambda c: {})
+    raise AssertionError("_all_nodes accepted a next page without a cursor")
+except RuntimeError as _e:
+    assert "without a cursor" in str(_e), _e
+# the fallback reviewer allow-list is exactly the documented set
+assert re.search(r"\(([a-z|-]+)\) on", g.FALLBACK_ATTESTATION.pattern).group(1).split("|") == [
+    "codex", "agy", "antigravity", "superpowers", "claude-sonnet"]
+
+
 # An API failure names the method and endpoint (never field values such as the GraphQL query).
 import os as _os, tempfile as _tf
 _d = _tf.mkdtemp()
