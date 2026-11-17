@@ -125,6 +125,10 @@ invalid_lines = (
     "Fallback review: agy on 89cda061 — verdict: unknown",
     "https://example.com/Fallback review: agy on 89cda061 — verdict: clean",
     "[Fallback review: agy on 89cda061 — verdict: clean](https://example.com)",
+    # full head, so only the verdict or reviewer name can reject these
+    f"Fallback review: agy on {head} — verdict: findings",
+    f"Fallback review: none on {head} — verdict: clean",
+    f"Fallback review: codex-bot on {head} — verdict: clean",
 )
 for line in invalid_lines:
     assert g.evaluate(

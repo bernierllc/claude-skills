@@ -31,6 +31,12 @@ class AnyShellToolName(unittest.TestCase):
         self.assertEqual(hook("", raw="not json")[0], 2)
         self.assertEqual(hook("", raw="[1]")[0], 2)
 
+    def test_input_and_cmd_aliases_are_checked(self):
+        for payload in ({"input": {"command": "gh pr merge 5 --squash"}},
+                        {"tool_input": {"cmd": "gh pr merge 5 --squash"}}):
+            with self.subTest(payload=payload):
+                self.assertEqual(hook("", raw=json.dumps({**payload, "cwd": tempfile.gettempdir()}))[0], 2)
+
 
 class HyphenatedMentions(unittest.TestCase):
     def test_mention_only_commands_pass(self):
