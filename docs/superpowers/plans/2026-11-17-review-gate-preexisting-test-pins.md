@@ -10,7 +10,7 @@ Tracker: https://app.notion.com/p/review-gate-P2-findings-from-105-Sonnet-pass-a
 
 ## Status
 
-Gaps 1 and 2 were pinned in #105 (merged as d876413): the empty-head test in review-gate/tests/test_check_review_gate.py asserts both Codex checks fail. Gap 3 and the P2 survivors are not started. Proposed priority: P1.
+Gaps 1 and 2 were pinned in #105 (merged as d876413): the empty-head loop over `("", None)` in review-gate/tests/test_check_review_gate.py (around line 349) asserts both Codex checks return False. Gap 3 and the P2 survivors are not started. Proposed priority: P1.
 
 ## Gaps
 
@@ -23,10 +23,9 @@ Gaps 1 and 2 were pinned in #105 (merged as d876413): the empty-head test in rev
 1. Point a fake `gh` on PATH that records its argv. Call `run_gh([...], hostname="ghe.example.com")`. Assert that `--hostname ghe.example.com` comes before the endpoint. Then call without a hostname and assert there is no `--hostname`.
 2. Re-run the mutant (the `--hostname` argument dropped) and show that the suite now fails.
 
-Also add the P2 survivors from the same pass, each as a one-line assert:
+Also add the P2 survivors from the same pass, each as a one-line assert. Extend the subprocess `_run` harness in test_check_review_gate.py for the argv and env cases, and call `parse_repo_with_host` directly for the repo-normalisation cases:
 
-- CRLF in `closes()`
-- `CODEX_STATE` with `re.S`
+- `CODEX_STATE` with `re.S` (a multi-line Codex state marker)
 - usage errors exit 2
 - a second positional PR number is rejected
 - `PR_NUMBER` env fallback
@@ -36,3 +35,5 @@ Also add the P2 survivors from the same pass, each as a one-line assert:
 ## Out of scope
 
 Server-side merge enforcement is covered by 2026-11-17-api-merge-guard.md.
+
+Not added: CRLF in `closes()`. It is already tested (CRLF, lone CR and `\r\nmore` cases), and the surviving mutant (dropping the CRLF replace) is equivalent.
