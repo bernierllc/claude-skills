@@ -23,6 +23,7 @@ spec2.loader.exec_module(mg)
 def pr(**kwargs):
     base = {
         "body": "## Review\n\nCodex round 1\n",
+        "author": {"login": "pr-author"},
         "baseRefName": "staging",
         "headRefOid": "abc1234",
         "labels": {"nodes": []},
@@ -83,9 +84,8 @@ for reviewer in ("codex", "agy", "antigravity", "superpowers", "claude-sonnet"):
                 f"## Review\n\nFallback review: {reviewer} on {sha} "
                 f"— verdict: {verdict}\n"
             )
-            assert g.evaluate(
-                pr(body=body, headRefOid=head, reviews={"nodes": []})
-            ) == []
+            result = g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
+            assert (result == []) == (sha == head), (sha, result)
 
 # Clean Codex runs post no review, only a state marker in the summary PR comment.
 def codex_comment(sha, status="completed", unresolved=False, login="chatgpt-codex-connector"):
@@ -131,7 +131,7 @@ for line in invalid_lines:
         pr(body=f"## Review\n\n{line}\n", headRefOid=head, reviews={"nodes": []})
     ), line
 
-attestation = "Fallback review: agy on 89cda061 — verdict: clean"
+attestation = f"Fallback review: agy on {head} — verdict: clean"
 # Strict PR-body grammar (Program 19:10, #105): no Markdown parsing, a physical-line allow-list.
 R = "## Review"
 ok_bodies = (
@@ -213,17 +213,20 @@ assert any("fences" in r for r in g.evaluate(pr(body=f"{R}\n\n\t```\n\n{attestat
 for opener in ("\t<pre>", "1. <pre>", "1) <script>", "* <style>", "+ <textarea>"):
     assert any("raw HTML" in r for r in g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews=_NR))), opener
 assert g.evaluate(pr(body=f"{R}  \n\n{attestation}\n", headRefOid=head, reviews=_NR)) == []
-# the head prefix must be at least 7 characters and match the head
-assert g.review_section_names_fallback(f"{R}\n{attestation}", head[:7]) is False  # head shorter than the SHA
-assert g.review_section_names_fallback(f"{R}\n\nFallback review: agy on 89cda06 — verdict: clean\n", head)
+# the attestation names the full 40-hex head: any prefix (grindable) or a different head fails
+assert g.review_section_names_fallback(f"{R}\n{attestation}", head[:7]) is False
+for short in (head[:7], head[:12], head[:39]):
+    assert not g.review_section_names_fallback(f"{R}\n\nFallback review: agy on {short} — verdict: clean\n", head), short
+assert g.review_section_names_fallback(f"{R}\n\nFallback review: agy on {head.upper()} — verdict: clean\n", head)
+assert g.review_section_names_fallback(f"{R}\n\n{attestation}\n", head)
 # <details> anywhere: an unclosed one collapses the section that follows
 for line in ("<details>", "<DETAILS open>", "text <details>", "<details><summary>x</summary>"):
     body = f"{line}\n\n{R}\n\n{attestation}\n"
     assert any("<details>" in r for r in g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))), body
 assert g.evaluate(pr(body=f"text <detailsx> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
 # ASCII-only matching: re.I would otherwise fold U+017F to s
-assert g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-sonnet on 89cda061 — verdict: clean")
-assert not g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-\u017fonnet on 89cda061 — verdict: clean")
+assert g.FALLBACK_ATTESTATION.fullmatch(f"Fallback review: claude-sonnet on {head} — verdict: clean")
+assert not g.FALLBACK_ATTESTATION.fullmatch(f"Fallback review: claude-\u017fonnet on {head} — verdict: clean")
 # the region ends at the next `## ` line: an attestation after it does not count
 assert not g.review_section_names_fallback(f"{R}\n\nPending\n\n## Other\n\n{attestation}\n", head)
 # the Claude Code footer belongs outside ## Review
@@ -298,7 +301,7 @@ try:
     for reply, assoc, allowed in (("fixed in deadbeef", "MEMBER", True), ("fixed in deadbeef", "NONE", False),
                                   ("Thanks.\nfixed in deadbeef", "OWNER", False), ("fixed in deadbeef\n===", "OWNER", False),
                                   ("[Row](https://app.notion.com/p/abc)", "COLLABORATOR", True)):
-        threads = {"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": reply, "authorAssociation": assoc}]}}]}
+        threads = {"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": reply, "author": {"login": "reviewer"}, "authorAssociation": assoc}]}}]}
         mg.gate.pr_payload = lambda *a, _t=threads, **k: pr(body=f"{R}\n\n{attestation}\n", headRefOid=head,
                                                              reviews={"nodes": []}, reviewThreads=_t)
         blocked = mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp")
@@ -360,7 +363,7 @@ assert any("P2" in r for r in g.evaluate(p2))
 
 def _p2(reply, assoc="MEMBER"):
     return pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: add a test"},
-                                                               {"body": reply, "authorAssociation": assoc}]}}]})
+                                                               {"body": reply, "author": {"login": "reviewer"}, "authorAssociation": assoc}]}}]})
 
 # Closed P2
 p2_ok = pr(
@@ -370,7 +373,7 @@ p2_ok = pr(
                 "comments": {
                     "nodes": [
                         {"body": "P2: add a test"},
-                        {"body": "fixed in `deadbeef`", "authorAssociation": "MEMBER"},
+                        {"body": "fixed in `deadbeef`", "author": {"login": "reviewer"}, "authorAssociation": "MEMBER"},
                     ]
                 }
             }
@@ -386,7 +389,7 @@ for assoc in (None, "NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIME
 
 
 # A P2 reply closes only when its FIRST line starts, at column 0, with a closing token.
-for ok in ("fixed in deadbeef", "fixed in `deadbeef`", "fixed in commit deadbeef1 — details (with parens) and `code`",
+for ok in ("fixed in deadbeef", "fixed in `deadbeef`", "fixed in commit deadbeef1.", "fixed in deadbeef  ",
            "not-a-finding: intentional, see SKILL.md", "Tracked: https://app.notion.com/p/4194efecc95a816c",
            "https://www.notion.so/abc123", "[Tracker row](https://app.notion.com/p/abc)",
            "fixed in deadbeef\n\n```\nanything after the first line\n```", "fixed in deadbeef\n \t\nmore",
@@ -405,7 +408,11 @@ for bad in ("Thanks.\nfixed in deadbeef", " fixed in deadbeef", "\tfixed in dead
             "[](https://notion.so/x)", "[\u200b](https://notion.so/x)", "[![](https://notion.so/x)",
             "[ ](https://notion.so/x)", "[a<!--](https://notion.so/x)-->", "[a>b](https://notion.so/x)",
             "not-a-finding: <!-- -->", "not-a-finding: &nbsp;", "not-a-finding: \u200b", "not-a-finding: \u2800",
-            "not-a-finding: _", "fixed in \u017f0123456"):
+            "not-a-finding: _", "fixed in \u017f0123456",
+            # nothing may follow the SHA or the link on the first line
+            "fixed in 0000000 — not actually fixed, ignore", "fixed in commit deadbeef1 — details", "fixed in `deadbeef",
+            "fixed in deadbeef`", "[x](https://notion.so/a", "[x](https://notion.so/a) not tracked", "<https://notion.so/x",
+            "https://notion.so/x is not where this is tracked"):
     assert any("P2" in r for r in g.evaluate(_p2(bad))), bad
 for ok in ("<https://notion.so/x>", "Tracked: <https://www.notion.so/x>", "tracked https://notion.com/x",
            "FIXED IN DEADBEEF", "fixed in 0123456", "fixed in commit `0123456789abcdef0123456789abcdef01234567`"):
@@ -415,15 +422,15 @@ for bad in ("https://notion.so.evil.com/x", "https://notion.sox/x", "fixed in 01
     assert not g.closes(bad), bad
 # the root is P2 by word, any case; any one closing reply closes; the root cannot close itself
 for root in ("P2: x", "p2 x", "nit (P2)"):
-    t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root, "authorAssociation": "OWNER"}]}}]})
+    t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root, "author": {"login": "reviewer"}, "authorAssociation": "OWNER"}]}}]})
     assert any("P2" in r for r in g.evaluate(t)), root
-t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: fixed in deadbeef", "authorAssociation": "OWNER"}]}}]})
+t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: fixed in deadbeef", "author": {"login": "reviewer"}, "authorAssociation": "OWNER"}]}}]})
 assert any("P2" in r for r in g.evaluate(t))
 for root in ("xp2 note", "P20 note", "mp2y"):
     t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root}]}}]})
     assert g.evaluate(t) == [], root
-t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": "thanks", "authorAssociation": "OWNER"},
-                                                        {"body": "fixed in deadbeef", "authorAssociation": "MEMBER"}]}}]})
+t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, {"body": "thanks", "author": {"login": "reviewer"}, "authorAssociation": "OWNER"},
+                                                        {"body": "fixed in deadbeef", "author": {"login": "reviewer"}, "authorAssociation": "MEMBER"}]}}]})
 assert g.evaluate(t) == []
 for root in ("_P2_ x", "P2_x", "see p2."):
     t = pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": root}]}}]})
@@ -2147,11 +2154,11 @@ _gd = _tf2.mkdtemp()
 Path(_gd, "gh").write_text(_FAKE_GQL); os.chmod(Path(_gd, "gh"), 0o755)
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "check-review-gate.py"
 _p2_root = {"body": "P2: x"}
-_closer = {"body": "fixed in deadbeef", "authorAssociation": "MEMBER"}
+_closer = {"body": "fixed in deadbeef", "author": {"login": "reviewer"}, "authorAssociation": "MEMBER"}
 def _thread(tid, comments, more=False):
     return {"id": tid, "comments": {"pageInfo": {"hasNextPage": more, "endCursor": "1"}, "nodes": comments}}
 def _fixture(**over):
-    fx = {"pr": {"number": 7, "body": f"{R}\n\n{attestation}\n", "baseRefName": "main", "headRefOid": head},
+    fx = {"pr": {"number": 7, "body": f"{R}\n\n{attestation}\n", "author": {"login": "pr-author"}, "baseRefName": "main", "headRefOid": head},
           "labels": [[{"name": "x"}], [{"name": "review:high"}]],
           "reviews": [[], []], "comments": [[], []],
           "reviewThreads": [[], [_thread("T2", [_p2_root, _closer])]], "thread_pages": {}}
@@ -2177,14 +2184,14 @@ _r, _rc, _out = _run(_fixture(reviewThreads=[[], [_thread("T2", [_p2_root])]]))
 assert _rc == 1 and any("P2" in x for x in _r), _out
 # a closing reply on the second page of one thread's comments counts; an open P2 there fails
 _fx = _fixture(reviewThreads=[[_thread("T1", [_p2_root], more=True)]],
-               thread_pages={"T1": [[], [{"body": "thanks", "authorAssociation": "OWNER"}, _closer]]})
+               thread_pages={"T1": [[], [{"body": "thanks", "author": {"login": "reviewer"}, "authorAssociation": "OWNER"}, _closer]]})
 assert _run(_fx)[:2] == ([], 0)
-_fx["thread_pages"]["T1"] = [[], [{"body": "thanks", "authorAssociation": "OWNER"}]]
+_fx["thread_pages"]["T1"] = [[], [{"body": "thanks", "author": {"login": "reviewer"}, "authorAssociation": "OWNER"}]]
 assert _run(_fx)[1] == 1
 # the review:high label only on page 2 is still found; without it main fails
 assert _run(_fixture(labels=[[{"name": "x"}], [{"name": "y"}]]))[1] == 1
 # Codex review / clean comment on a later page satisfies the gate without an attestation
-_noatt = {"number": 7, "body": f"{R}\n\nCodex reviewed.\n", "baseRefName": "staging", "headRefOid": head}
+_noatt = {"number": 7, "body": f"{R}\n\nCodex reviewed.\n", "author": {"login": "pr-author"}, "baseRefName": "staging", "headRefOid": head}
 assert _run(_fixture(pr=_noatt))[1] == 1
 assert _run(_fixture(pr=_noatt, reviews=[[], [{"state": "COMMENTED", "body": "ok", "commit": {"oid": head},
                                                "author": {"login": "chatgpt-codex-connector"}}]]))[:2] == ([], 0)
@@ -2214,3 +2221,24 @@ try:
 finally:
     _os.environ["PATH"] = _old_path
 print("ok")
+
+# the PR author never closes a P2 on their own PR, whatever their association; unknown logins fail closed
+def _p2_by(login, pr_login="pr-author", assoc="COLLABORATOR"):
+    reply = {"body": "not-a-finding: mine", "authorAssociation": assoc}
+    if login is not None:
+        reply["author"] = {"login": login}
+    base = {"reviewThreads": {"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, reply]}}]}}
+    base["author"] = {"login": pr_login} if pr_login is not None else None
+    return pr(**base)
+assert g.evaluate(_p2_by("reviewer")) == []
+for login, pr_login in (("pr-author", "pr-author"), ("PR-Author", "pr-author"), (None, "pr-author"), ("", "pr-author"),
+                        ("reviewer", None), ("reviewer", "")):
+    assert any("P2" in r for r in g.evaluate(_p2_by(login, pr_login))), (login, pr_login)
+for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+    assert any("P2" in r for r in g.evaluate(_p2_by("pr-author", assoc=assoc))), assoc
+# the payload asks GitHub for the PR author
+import inspect as _inspect
+assert "author { login }" in _inspect.getsource(g.pr_payload).split("baseRefName")[0]
+# end to end through gh: the author's own closing reply leaves the P2 open
+_own = {"body": "fixed in deadbeef", "author": {"login": "pr-author"}, "authorAssociation": "OWNER"}
+assert _run(_fixture(reviewThreads=[[], [_thread("T2", [_p2_root, _own])]]))[1] == 1

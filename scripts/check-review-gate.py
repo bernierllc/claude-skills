@@ -20,14 +20,17 @@ _GH_SUBPROCESS_ENV: ContextVar[dict[str, str] | None] = ContextVar(
 )
 
 P2_ROOT = re.compile(r"(?<![A-Za-z0-9])p2(?![A-Za-z0-9])", re.I | re.A)  # _P2_ and P2_x count
-# A P2 thread closes on a reply whose FIRST line starts, at column 0, with a closing token and is the
-# whole first paragraph: the reply ends there or the next line is blank (only spaces/tabs, as in
-# CommonMark). Nothing precedes that line, so no fence, quote, list, comment or HTML block can enclose
-# it, and nothing directly after it can turn it into a setext heading or a table header. A Notion link
-# needs link text starting with a letter or digit. Anything else does not close. No Markdown is parsed.
+# A P2 thread closes on a reply whose FIRST line is, from column 0 to its end, exactly one closing token
+# and is the whole first paragraph: the reply ends there or the next line is blank (only spaces/tabs, as
+# in CommonMark). Nothing precedes that line, so no fence, quote, list, comment or HTML block can enclose
+# it, and nothing directly after it can turn it into a setext heading or a table header. Nothing may
+# follow a SHA or a Notion link on that line ("fixed in 0123456 - not really" does not close). A Notion
+# link needs link text starting with a letter or digit. Anything else does not close. No Markdown is parsed.
+_NOTION_URL = r"https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/[A-Za-z0-9][^\s<>()\[\]`]*"
 _CLOSING_TOKEN = re.compile(
     r"(?:tracked:?[ \t]+)?"
-    r"(?:(?:\[[A-Za-z0-9][^\[\]<>\n]*\]\()?<?https?://(?:[a-z0-9-]+\.)?notion\.(?:so|com)/[A-Za-z0-9]|fixed in (?:commit )?`?[0-9a-f]{7,40}\b`?|not-a-finding:[ \t]*[A-Za-z0-9])",
+    rf"(?:\[[A-Za-z0-9][^\[\]<>\n]*\]\({_NOTION_URL}\)|<{_NOTION_URL}>|{_NOTION_URL}"
+    r"|fixed in (?:commit )?(`?)[0-9a-f]{7,40}\1|not-a-finding:[ \t]*[A-Za-z0-9].*)[ \t.]*",
     re.I | re.A,
 )
 
@@ -36,11 +39,11 @@ CLOSER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 def closes(reply: str) -> bool:
-    """True when the reply's first line starts with a closing token at column 0 and stands alone."""
+    """True when the reply's first line is exactly one closing token and stands alone."""
     lines = reply.replace("\r\n", "\n").replace("\r", "\n").split("\n", 2)
     if len(lines) > 1 and not _is_blank(lines[1]):
         return False
-    return bool(_CLOSING_TOKEN.match(lines[0]))
+    return bool(_CLOSING_TOKEN.fullmatch(lines[0]))
 
 
 def _is_blank(line: str) -> bool:
@@ -50,7 +53,7 @@ def _is_blank(line: str) -> bool:
 
 FALLBACK_ATTESTATION = re.compile(
     r"Fallback review: (codex|agy|antigravity|superpowers|claude-sonnet) on "
-    r"([0-9a-f]{7,40}) — verdict: (clean|findings fixed)",
+    r"([0-9a-f]{40}) — verdict: (clean|findings fixed)",
     re.I | re.A,
 )
 MAIN_REVIEW_LABELS = {"review:high"}
@@ -304,6 +307,7 @@ def pr_payload(
         pullRequest(number:$number) {
           number
           body
+          author { login }
           baseRefName
           headRefOid
         }
@@ -408,23 +412,25 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
 def review_section_names_fallback(body: str, head: str | None = None) -> bool:
     """True when the well-formed ## Review region holds an exact attestation for the current head.
 
-    The whole line must equal the attestation (no extra text), and the full captured SHA prefix must
-    match the head, so a stale longer SHA cannot pass on its first seven characters.
+    The whole line must equal the attestation (no extra text) and name the full 40-hex head OID: a short
+    prefix could be ground onto an unreviewed commit.
     """
-    if not head or len(head) < 7:
+    if not head:
         return False
     region, problems = review_region(body)
     if problems:
         return False
     for line in region:
         attestation = FALLBACK_ATTESTATION.fullmatch(line)
-        if attestation and head.lower().startswith(attestation.group(2).lower()):
+        if attestation and head.lower() == attestation.group(2).lower():
             return True
     return False
 
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
     failures: list[str] = []
+    # The PR author never closes a P2 on their own PR; an unknown author (deleted account) fails closed.
+    pr_author = ((pr.get("author") or {}).get("login") or "").lower()
     for i, thread in enumerate(pr.get("reviewThreads", {}).get("nodes") or [], 1):
         comments = thread.get("comments", {}).get("nodes") or []
         if not comments:
@@ -433,11 +439,12 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         if not P2_ROOT.search(root):
             continue
         # Only an owner, org member or collaborator closes: on a public repo anyone can reply to a thread.
-        replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS]
+        replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS
+                   and pr_author and ((c.get("author") or {}).get("login") or "").lower() not in ("", pr_author)]
         if any(closes(c.get("body") or "") for c in replies):
             continue
         failures.append(
-            f"P2 thread #{i} has no closing reply from a repo owner, member or collaborator "
+            f"P2 thread #{i} has no closing reply from a repo owner, member or collaborator other than the PR author "
             "(Notion link / fixed in <sha> / not-a-finding:)"
         )
     return failures

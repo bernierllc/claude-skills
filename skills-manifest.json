@@ -1,9 +1,9 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-11-16T17:27:21.817406+00:00",
+  "generatedAt": "2026-11-17T00:55:41.232465+00:00",
   "skills": {
     "adversarial-review": {
-      "version": "2.1.0",
+      "version": "2.1.1",
       "description": "Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.",
       "author": "Bernier LLC"
     },
