@@ -114,12 +114,13 @@ jobs:
           ref="$DEFAULT_BRANCH"
           load_trusted() {
             local name="$1" meta msg
-            if meta=$(api GET "repos/$REPO/contents/scripts/$name?ref=$ref"); then
-              printf '%s' "$meta" | jq -r '.content' | base64 -d > "/tmp/$name"
+            # An empty or absent .content (a file over 1 MB) would run an empty script that exits 0: fail closed.
+            if meta=$(api GET "repos/$REPO/contents/scripts/$name?ref=$ref") \
+              && printf '%s' "$meta" | jq -r '.content // empty' | base64 -d > "/tmp/$name" && [ -s "/tmp/$name" ]; then
               echo "Loaded trusted $name from ref=$ref"
             else
               msg=$(printf '%s\n%s' \
-                "Could not load trusted scripts/$name from default branch $DEFAULT_BRANCH (see the API error above)." \
+                "Could not load trusted scripts/$name from default branch $DEFAULT_BRANCH (see the API error above, or it was empty)." \
                 "If it is missing, run install-workflow.py and merge it to the default branch.")
               printf '%s\n' "$msg"
               complete_check failure "review-gate failed" "$msg" || true  # the job fails either way

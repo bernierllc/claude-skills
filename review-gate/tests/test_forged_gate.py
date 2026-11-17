@@ -112,7 +112,7 @@ RG_PATH = ".github/workflows/review-gate.yml"
 
 
 class ForgedGateWorkflow(unittest.TestCase):
-    def gate(self, check_runs, runs=None, listing_fails=False, missing=(), evaluations=1, prs=None, fixture=None):
+    def gate(self, check_runs, runs=None, listing_fails=False, missing=(), evaluations=1, prs=None, fixture=None, empty=()):
         """prs: [(pr_number, checker_rc)] evaluations on the same head sha (default PR 7 passing).
 
         Each evaluation's own job (`Review Gate`, run 600 + n) is on the head, as GitHub lists it.
@@ -129,6 +129,9 @@ class ForgedGateWorkflow(unittest.TestCase):
                        "check-forged-review-gate.py": str(SCRIPTS / "check-forged-review-gate.py")}
             for name in missing:
                 scripts.pop(name)
+            for name in empty:
+                (tmp / f"empty-{name}").write_text("")
+                scripts[name] = str(tmp / f"empty-{name}")
             own_ids = [str(600 + n) for n, _ in enumerate(prs)]
             (tmp / "fixture.json").write_text(json.dumps(
                 {"scripts": scripts, "check_runs": check_runs, "listing_fails": listing_fails,
@@ -232,6 +235,13 @@ class ForgedGateWorkflow(unittest.TestCase):
         rc, out = self.gate([job("Review Gate", 504)])
         self.assertEqual(rc, 1, out)
         self.assertIn("forged-check step failed (exit 2)", out)
+
+    def test_empty_trusted_script_fails_closed(self):
+        for name in ("check-review-gate.py", "check-forged-review-gate.py"):
+            with self.subTest(name=name):
+                rc, out = self.gate([], empty=(name,))
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"Could not load trusted scripts/{name}", out)
 
     def test_missing_detector_on_default_branch_fails_closed(self):
         rc, out = self.gate([], missing=("check-forged-gate-names.py",))
