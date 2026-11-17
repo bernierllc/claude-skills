@@ -1,6 +1,6 @@
 # Roadmap
 
-Tracked plan files in `docs/superpowers/plans/` (root `plans/` is gitignored). Each entry has a Notion Tracker row; the PM assigns tier and priority there.
+This index covers the review-gate plans in `docs/superpowers/plans/`. Plans in the root `plans/` directory have their own index, [plans/ROADMAP.md](../../../plans/ROADMAP.md). Each entry here has a Notion Tracker row; the PM assigns tier and priority there.
 
 | Plan | Area | Status | Tracker |
 |---|---|---|---|
