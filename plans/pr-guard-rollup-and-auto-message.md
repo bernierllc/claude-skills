@@ -17,7 +17,7 @@ Status: planned. review-gate 3.2.8 (PR #105, d876413) has shipped. **No code unt
 
 (A) is the 3.2.x POSTed-check shape meeting a deliberately fail-closed guard, plus possibly the same stale-vendored-copy problem as (B). It is not a missing collapse algorithm. Verify against the nevar-secrets PR's rollup (head sha, entries, `detailsUrl`, `startedAt`, `completedAt`) before changing code.
 
-## Correct fix (after 3.2.8 ships)
+## Correct fix (3.2.8 has shipped)
 
 1. Reproduce (A) from the real rollup JSON as a fixture. Decide from it whether the stuck entry is an API-posted check (then 3.2.8 plus re-vendoring fixes it and no guard change is needed) or an Actions job the collapse misses (then fix that case and name why).
 2. **Do not** loosen the guard by name. Collapsing non-Actions entries "latest by name" lets a superseded failure, or a forged same-named check, mask a real one. If any non-Actions collapse is wanted, it needs an identity that cannot be spoofed (check run app id / `integration_id` from the Checks API; the Review Gate doctor satisfiability check that would prove the same identity is a 3.2.8 follow-up with no plan file yet, and `doctor-review-gate.py` has no such check today). That is a security change and gets the security review below.
