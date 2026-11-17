@@ -35,6 +35,18 @@ The review must confirm a superseded failure cannot mask a real one, for each ca
 - Ties on timestamp: all count (fail closed).
 - Tests: `[FAILURE older, SUCCESS newer]` passes; `[SUCCESS older, FAILURE newer]` blocks; each case above has a failing-then-passing test.
 
+## Vendored guard drift (added 2026-11-17, Program Cop 03:25Z)
+
+Remembering to refresh vendored guards is the failure mode: a stale copy kept a guard that recommended `--auto`. Measured by REST on each default branch (Program Cop): pr-merge-flow **nevar-secrets 1.3.0** (guard still has `--auto`), **nevar-contacts 1.1.0**, nevar-fund 1.4.6, nevar-logs 1.4.6 (main is 1.4.7); nevar-api, nevar-auth, nevar-app, nevar-plan, nevar-notify, nevar-admin showed no version line at the path tried (layout may differ, not concluded). The secrets and contacts cops were asked to refresh that skill by hand; that is the stopgap, not the fix.
+
+Fix, in order of preference (Do it for us, Flag it):
+
+1. **Do it for us:** `aec update` refreshes vendored guard skills (`pr-merge-flow`, `review-gate`) in a repo whenever the skill version moves, replacing only the skill's own files and never touching `LICENSE` or other repo files. Incumbent to check first: `aec` already installs a skill's whole directory and upgrades on the version (claude-skills `CLAUDE.md`); find out why these repos did not move (not enrolled, pinned, vendored by hand, different path) before adding anything.
+2. **Flag it:** a doctor check (`review-gate/scripts/doctor-review-gate.py` and/or `aec doctor`) that fails loudly, naming the fix (`aec update`), when a repo's vendored `pr-merge-flow` or `review-gate` version is behind `main`. It must find the skill at every layout the installers use (the six repos with no version line show the lookup path cannot be assumed) and fail, not pass, when it cannot find the version.
+3. Tests: a behaviour test with a vendored copy at an older version (doctor fails, names `aec update`), at the current version (passes), and at an unknown layout (fails closed). An `aec update` test proves LICENSE and unrelated files are untouched.
+
+Done when every repo carrying either skill reports the current version, and a repo that falls behind fails doctor instead of staying quiet.
+
 ## Affected surfaces
 
 `pr-merge-flow/scripts/pr-guard.py`, `pr-merge-flow/tests/test_pr_guard.py`, `pr-merge-flow/SKILL.md` (version), `skills-manifest.json`, and the vendored copies in repos that carry the guard (nevar-secrets first). Related: `review-gate/scripts/merge-guard.py` (#105's merge-guard changes are separate and do not cover this).
