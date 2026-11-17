@@ -307,7 +307,6 @@ def pr_payload(
         pullRequest(number:$number) {
           number
           body
-          author { login }
           baseRefName
           headRefOid
         }
@@ -429,8 +428,6 @@ def review_section_names_fallback(body: str, head: str | None = None) -> bool:
 
 def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    # The PR author never closes a P2 on their own PR; an unknown author (deleted account) fails closed.
-    pr_author = ((pr.get("author") or {}).get("login") or "").lower()
     for i, thread in enumerate(pr.get("reviewThreads", {}).get("nodes") or [], 1):
         comments = thread.get("comments", {}).get("nodes") or []
         if not comments:
@@ -439,12 +436,14 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         if not P2_ROOT.search(root):
             continue
         # Only an owner, org member or collaborator closes: on a public repo anyone can reply to a thread.
-        replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS
-                   and pr_author and ((c.get("author") or {}).get("login") or "").lower() not in ("", pr_author)]
+        # The PR author may close: every agent and reviewer here shares one gh login with the author
+        # (claude-skills #105: all 15 human replies are the author's), so barring the author would leave
+        # every P2 unclosable. Binding closers to a separate reviewer identity is plan PR #113.
+        replies = [c for c in comments[1:] if c.get("authorAssociation") in CLOSER_ASSOCIATIONS]
         if any(closes(c.get("body") or "") for c in replies):
             continue
         failures.append(
-            f"P2 thread #{i} has no closing reply from a repo owner, member or collaborator other than the PR author "
+            f"P2 thread #{i} has no closing reply from a repo owner, member or collaborator "
             "(Notion link / fixed in <sha> / not-a-finding:)"
         )
     return failures

@@ -13,11 +13,23 @@ from pathlib import Path
 GUARD = Path(__file__).resolve().parents[1] / "scripts" / "merge-guard.py"
 
 
-def hook(cmd):
-    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": tempfile.gettempdir()}
-    proc = subprocess.run([sys.executable, str(GUARD)], input=json.dumps(payload),
+def hook(cmd, tool="Bash", raw=None):
+    payload = {"tool_name": tool, "tool_input": {"command": cmd}, "cwd": tempfile.gettempdir()}
+    proc = subprocess.run([sys.executable, str(GUARD)], input=raw if raw is not None else json.dumps(payload),
                           capture_output=True, text=True, timeout=60)
     return proc.returncode, proc.stderr
+
+
+class AnyShellToolName(unittest.TestCase):
+    def test_merge_blocks_under_any_tool_name(self):
+        for tool in ("Bash", "mcp__skin_target__garment_Bash", "run_shell_command", "BashTool", ""):
+            with self.subTest(tool=tool):
+                self.assertEqual(hook("gh pr merge 5 --squash", tool=tool)[0], 2)
+
+    def test_no_command_passes_and_unreadable_input_blocks(self):
+        self.assertEqual(hook("", tool="Edit")[0], 0)
+        self.assertEqual(hook("", raw="not json")[0], 2)
+        self.assertEqual(hook("", raw="[1]")[0], 2)
 
 
 class HyphenatedMentions(unittest.TestCase):

@@ -2222,23 +2222,9 @@ finally:
     _os.environ["PATH"] = _old_path
 print("ok")
 
-# the PR author never closes a P2 on their own PR, whatever their association; unknown logins fail closed
-def _p2_by(login, pr_login="pr-author", assoc="COLLABORATOR"):
-    reply = {"body": "not-a-finding: mine", "authorAssociation": assoc}
-    if login is not None:
-        reply["author"] = {"login": login}
-    base = {"reviewThreads": {"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, reply]}}]}}
-    base["author"] = {"login": pr_login} if pr_login is not None else None
-    return pr(**base)
-assert g.evaluate(_p2_by("reviewer")) == []
-for login, pr_login in (("pr-author", "pr-author"), ("PR-Author", "pr-author"), (None, "pr-author"), ("", "pr-author"),
-                        ("reviewer", None), ("reviewer", "")):
-    assert any("P2" in r for r in g.evaluate(_p2_by(login, pr_login))), (login, pr_login)
-for assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
-    assert any("P2" in r for r in g.evaluate(_p2_by("pr-author", assoc=assoc))), assoc
-# the payload asks GitHub for the PR author
-import inspect as _inspect
-assert "author { login }" in _inspect.getsource(g.pr_payload).split("baseRefName")[0]
-# end to end through gh: the author's own closing reply leaves the P2 open
+# the PR author may close (shared gh identity, see p2_threads_closed); a non-member reply still does not
+_own_reply = {"body": "not-a-finding: mine", "author": {"login": "pr-author"}, "authorAssociation": "OWNER"}
+assert g.evaluate(pr(reviewThreads={"nodes": [{"comments": {"nodes": [{"body": "P2: x"}, _own_reply]}}]})) == []
+# end to end through gh: the author's own closing reply closes the P2
 _own = {"body": "fixed in deadbeef", "author": {"login": "pr-author"}, "authorAssociation": "OWNER"}
-assert _run(_fixture(reviewThreads=[[], [_thread("T2", [_p2_root, _own])]]))[1] == 1
+assert _run(_fixture(reviewThreads=[[], [_thread("T2", [_p2_root, _own])]]))[:2] == ([], 0)

@@ -3942,20 +3942,17 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
 
 
 def main() -> int:
+    # Any tool the hook matcher routes here is checked when it carries a command, whatever the harness
+    # names it (`Bash`, `mcp__…__Bash`, `run_shell_command`): an allow-list of tool names failed open.
+    # Unreadable input blocks: a guard that cannot see the command must not let it through.
     try:
         payload = json.load(sys.stdin)
-    except Exception:
-        return 0
-    if (payload.get("tool_name") or payload.get("toolName") or "") not in (
-        "Bash",
-        "bash",
-        "Shell",
-        "shell",
-    ):
-        return 0
-    inp = payload.get("tool_input") or payload.get("input") or {}
-    cmd = inp.get("command") or inp.get("cmd") or ""
-    if not cmd:
+        inp = payload.get("tool_input") or payload.get("input") or {}
+        cmd = inp.get("command") or inp.get("cmd") or ""
+    except (ValueError, AttributeError) as exc:
+        print(f"review-gate merge guard: unreadable hook input ({type(exc).__name__}); blocked", file=sys.stderr)
+        return 2
+    if not isinstance(cmd, str) or not cmd:
         return 0
     cwd = payload_cwd(payload, inp)
     err = check_command(cmd, cwd)
