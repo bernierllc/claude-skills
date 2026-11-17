@@ -1,6 +1,6 @@
 # Review Gate: add a `cursor` reviewer token
 
-Status: planned. **Do not start until PR #105 (review-gate 3.2.8) has merged.** #105 rewrites the attestation grammar this plan extends; building on the pre-#105 checker would collide with it.
+Status: planned, ready to start. PR #105 (review-gate 3.2.8) has merged (d876413), so the attestation grammar this plan extends is the one on main. Build on 3.2.8 or later, never on a pre-3.2.8 checker.
 
 ## Why
 

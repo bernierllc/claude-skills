@@ -1,6 +1,6 @@
 # pr-guard: superseded-check handling and the `--auto` block message
 
-Status: planned. **No code until review-gate 3.2.8 (PR #105) has shipped and Matt or the Program Cop says go.** Reported by the nevar-secrets cop after it merged a promotion with `--auto` (Program Cop relay, 2026-11-17 03:17Z).
+Status: planned. review-gate 3.2.8 (PR #105, d876413) has shipped. **No code until Matt or the Program Cop says go.** Reported by the nevar-secrets cop after it merged a promotion with `--auto` (Program Cop relay, 2026-11-17 03:17Z).
 
 ## What was reported
 
@@ -20,7 +20,7 @@ Status: planned. **No code until review-gate 3.2.8 (PR #105) has shipped and Mat
 ## Correct fix (after 3.2.8 ships)
 
 1. Reproduce (A) from the real rollup JSON as a fixture. Decide from it whether the stuck entry is an API-posted check (then 3.2.8 plus re-vendoring fixes it and no guard change is needed) or an Actions job the collapse misses (then fix that case and name why).
-2. **Do not** loosen the guard by name. Collapsing non-Actions entries "latest by name" lets a superseded failure, or a forged same-named check, mask a real one. If any non-Actions collapse is wanted, it needs an identity that cannot be spoofed (check run app id / `integration_id` from the Checks API, the same identity the doctor check in the Review Gate plan proves). That is a security change and gets the security review below.
+2. **Do not** loosen the guard by name. Collapsing non-Actions entries "latest by name" lets a superseded failure, or a forged same-named check, mask a real one. If any non-Actions collapse is wanted, it needs an identity that cannot be spoofed (check run app id / `integration_id` from the Checks API; the Review Gate doctor satisfiability check that would prove the same identity is a 3.2.8 follow-up with no plan file yet, and `doctor-review-gate.py` has no such check today). That is a security change and gets the security review below.
 3. (B): add a test that no block message the guard can emit contains `--auto` or `--admin` as advice (enumerate every message path), so the contradiction cannot return. Add a drift check so a vendored guard older than the skill's version is reported by `doctor` / `aec update` instead of silently kept.
 4. Version bump for `pr-merge-flow`, `python3 scripts/generate-manifest.py`, tests in `pr-merge-flow/tests/test_pr_guard.py`.
 
@@ -57,7 +57,7 @@ Done when every repo carrying either skill reports the current version, and a re
 
 ## Out of scope
 
-The Review Gate doctor satisfiability check (a separate item on the 3.2.8 follow-up) and the `cursor` reviewer token (`review-gate-cursor-reviewer-token.md`).
+The Review Gate doctor satisfiability check (a separate item on the 3.2.8 follow-up; no plan file yet) and the `cursor` reviewer token (`review-gate-cursor-reviewer-token.md`).
 
 ## Priority
 
