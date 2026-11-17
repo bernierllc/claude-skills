@@ -149,11 +149,15 @@ for body in (f"{R}\n\n```text\n\n{attestation}\n\n```\n", f"{R}\n\n~~~\n\n{attes
              f"x <!-- note -->\n\n{R}\n\n{attestation}\n"):
     reasons = g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
     assert any("fences" in r or "HTML comments" in r for r in reasons), body
-# raw HTML blocks that survive blank lines, anywhere in the body
-for opener in ("<pre>", "<PRE class=x>", "<script>", "<style>", "<textarea>", "<?x", "<!DOCTYPE x", "<![CDATA[", "- <pre>", "> <pre>"):
+# a line opening with `<` (after quote/list markers), anywhere in the body: raw HTML blocks survive blank
+# lines, and an unterminated attribute (`<div title='`, Sonnet ef23aa3 P1) hides everything after it on GitHub
+for opener in ("<pre>", "<PRE class=x>", "<script>", "<style>", "<textarea>", "<?x", "<!DOCTYPE x", "<![CDATA[", "- <pre>", "> <pre>",
+               "<div title='", "<p title=\"", "<table x='", "<presentation> ok", "1. <div title='", "   <div title='", "<"):
     reasons = g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []}))
-    assert any("raw HTML" in r for r in reasons), opener
-assert g.evaluate(pr(body=f"<presentation> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
+    assert any("starting with <" in r for r in reasons), opener
+# `<` later in a line or escaped does not open a block (GitHub renderer, 2026-11-16): still allowed
+for line in ("a <div title='", "- [ ] <div title='", "\\<div title='", "&lt;div title='", "Uses `<PR_NUMBER>` here"):
+    assert g.evaluate(pr(body=f"{line}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == [], line
 # the heading: exactly one exact line, after a blank line or at the top
 for body in (f"{attestation}\n", f"{R}\n\n{attestation}\n\n{R}\n", f"## Review notes\n\n{attestation}\n",
              f"##\tReview\n\n{attestation}\n", f" {R}\n\n{attestation}\n", f"### Review\n\n{attestation}\n",
@@ -216,7 +220,7 @@ assert g.review_section_names_fallback(f"{R}\n\nFallback review: agy on 89cda06 
 for line in ("<details>", "<DETAILS open>", "text <details>", "<details><summary>x</summary>"):
     body = f"{line}\n\n{R}\n\n{attestation}\n"
     assert any("<details>" in r for r in g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))), body
-assert g.evaluate(pr(body=f"<detailsx> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
+assert g.evaluate(pr(body=f"text <detailsx> ok\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == []
 # ASCII-only matching: re.I would otherwise fold U+017F to s
 assert g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-sonnet on 89cda061 — verdict: clean")
 assert not g.FALLBACK_ATTESTATION.fullmatch("Fallback review: claude-\u017fonnet on 89cda061 — verdict: clean")

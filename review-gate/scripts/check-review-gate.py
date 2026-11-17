@@ -353,9 +353,12 @@ def codex_done_on_head(pr: dict[str, Any]) -> bool:
 # Markdown parsing and no recovery. Anything outside it fails the whole check with a reason naming the
 # line, so the author rewrites the body instead of the gate guessing what GitHub renders.
 _FENCE_LINE = re.compile(r"[ \t]*(?:`{3}|~{3})")
-# HTML blocks that run through blank lines (CommonMark types 1-5); a comment is banned anywhere
+# A line whose first character after quote/list markers is `<` can open an HTML block, and an unterminated
+# attribute (`<div title='`) or a type 1-5 block (`<pre>`, `<!`, `<?`) swallows the lines after it,
+# `## Review` included, so every such line is banned. A comment is banned anywhere; `<details` too, since
+# an unclosed one collapses what follows even mid-line.
 _DETAILS_TAG = re.compile(r"<details(?![A-Za-z0-9-])", re.I)
-_RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<(?:pre|script|style|textarea)(?![A-Za-z0-9-])|[ \t>*+\-0-9.)]*<[?!]", re.I)
+_RAW_HTML_LINE = re.compile(r"[ \t>*+\-0-9.)]*<")
 REVIEW_HEADING = "## Review"
 _PROSE_LINE = re.compile(r"[A-Za-z0-9][^`<>|\[\]()*_~$]*")
 _ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
@@ -364,7 +367,7 @@ _ORDERED_MARKER = re.compile(r"[0-9]{1,9}[.)](?:[ \t]|$)")
 def review_region(body: str) -> tuple[list[str], list[str]]:
     """Return (region lines, problems) for the PR body's single `## Review` section.
 
-    Whole body: no ``` or ~~~ line, no `<!--`, no `<details`, no blank-surviving raw HTML block opener. Exactly one
+    Whole body: no ``` or ~~~ line, no `<!--`, no `<details`, no line whose first character after quote/list markers is `<`. Exactly one
     line equal to `## Review`, after a blank line or at the top. The region runs to the next line
     starting `## ` or the end. Every non-blank region line is plain prose: starts with a letter or
     digit, no ordered-list marker, and none of ` < > | [ ] ( ) * _ ~ $ (an attestation or closing line
@@ -378,7 +381,7 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
         if "<!--" in line:
             problems.append(f"PR body line {n}: HTML comments (<!--) are not allowed in a gated PR body")
         elif _RAW_HTML_LINE.match(line):
-            problems.append(f"PR body line {n}: raw HTML blocks (<pre>, <script>, <style>, <textarea>, <?, <!) are not allowed in a gated PR body")
+            problems.append(f"PR body line {n}: a line starting with < (raw HTML) is not allowed in a gated PR body")
         if _DETAILS_TAG.search(line):
             problems.append(f"PR body line {n}: <details> is not allowed in a gated PR body (an unclosed one collapses ## Review)")
     headings = [i for i, line in enumerate(lines) if line.rstrip() == REVIEW_HEADING]

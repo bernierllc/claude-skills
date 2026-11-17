@@ -3,7 +3,8 @@
 # Pair with GitHub ruleset pull_request.required_review_thread_resolution: true.
 #
 # Security: only `pull_request_target` so the workflow file always comes from the
-# PR base (never the merge commit). Same-repo `pull_request_review` /
+# repository default branch, whatever the PR base (never the merge commit; seen live:
+# review-gate-sandbox PR #27, base repro-api, ran main's file in run 43982863036). Same-repo `pull_request_review` /
 # `pull_request_review_comment` would run PR-modified workflow YAML with
 # checks/actions write — removed on purpose. Gate jobs never execute PR-head
 # or untrusted-base code; they load scripts/check-review-gate.py exclusively
