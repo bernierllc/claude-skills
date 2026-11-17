@@ -39,6 +39,8 @@ The review must confirm a superseded failure cannot mask a real one, for each ca
 
 Remembering to refresh vendored guards is the failure mode: a stale copy kept a guard that recommended `--auto`. Measured by REST on each default branch (Program Cop): pr-merge-flow **nevar-secrets 1.3.0** (guard still has `--auto`), **nevar-contacts 1.1.0**, nevar-fund 1.4.6, nevar-logs 1.4.6 (main is 1.4.7); nevar-api, nevar-auth, nevar-app, nevar-plan, nevar-notify, nevar-admin showed no version line at the path tried (layout may differ, not concluded). The secrets and contacts cops were asked to refresh that skill by hand; that is the stopgap, not the fix.
 
+Measured 2026-11-17 03:30Z (Program Cop): aec's catalog source for `pr-merge-flow` is **1.4.1** while `main` is **1.4.7** (`db2355a5`). `aec install skill pr-merge-flow` on the Mini installed v1.4.1 and also silently rewrote `.claude/settings.json` (adds the `pmf-pr-guard` hook) and the AGENTS/GEMINI/QWEN blurbs. Interim stopgap: copy `pr-merge-flow/` byte-for-byte from `main`. So the first fix step is why aec's catalog lags `main`, and a refresh must not silently rewrite settings or blurbs.
+
 Fix, in order of preference (Do it for us, Flag it):
 
 1. **Do it for us:** `aec update` refreshes vendored guard skills (`pr-merge-flow`, `review-gate`) in a repo whenever the skill version moves, replacing only the skill's own files and never touching `LICENSE` or other repo files. Incumbent to check first: `aec` already installs a skill's whole directory and upgrades on the version (claude-skills `CLAUDE.md`); find out why these repos did not move (not enrolled, pinned, vendored by hand, different path) before adding anything.
