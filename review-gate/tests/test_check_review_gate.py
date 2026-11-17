@@ -313,6 +313,46 @@ try:
 finally:
     mg.gate.parse_repo_with_host, mg.gate.pr_payload = _orig_parse, _orig_payload
 
+# check_one wiring: the real arguments reach parse_repo_with_host / pr_payload, under the merge child's gh env.
+# `GH_REPO=` clears the selector (scrub), GH_HOST and a relative GH_CONFIG_DIR are overlaid against the tool cwd.
+_calls = {}
+def _rec_parse(repo, cwd=None, env=None):
+    _calls["parse"] = (repo, cwd, dict(env) if env is not None else None, mg.gate._GH_SUBPROCESS_ENV.get())
+    return ("ghe.example", "owner", "target")
+def _rec_payload(owner, name, number, hostname=None):
+    _calls["payload"] = (owner, name, number, hostname, mg.gate._GH_SUBPROCESS_ENV.get())
+    return pr(body=f"{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})
+_old_env = os.environ.copy()
+os.environ["GH_REPO"] = "evil/repo"
+mg.gate.parse_repo_with_host, mg.gate.pr_payload = _rec_parse, _rec_payload
+try:
+    assert mg.check_one("GH_REPO= GH_HOST=ghe.example GH_CONFIG_DIR=cfg gh pr merge 42", cwd="/tmp/wire") is None, _calls
+    _repo, _cwd, _env, _ctx = _calls["parse"]
+    assert (_repo, _cwd) == (None, "/tmp/wire"), _calls["parse"][:2]
+    assert _env is not None and "GH_REPO" not in _env, "scrubbed GH_REPO leaked into the gate env"
+    assert _env["GH_HOST"] == "ghe.example" and _env["GH_CONFIG_DIR"] == "/tmp/wire/cfg", _env
+    assert _ctx is not None and _ctx.get("GH_HOST") == "ghe.example" and "GH_REPO" not in _ctx, "gh_subprocess_env not active"
+    _o, _n, _num, _host, _pctx = _calls["payload"]
+    assert (_o, _n, _num, _host) == ("owner", "target", 42, "ghe.example"), _calls["payload"][:4]
+    assert _pctx is _ctx or _pctx == _ctx, "pr_payload ran outside the child env"
+    # any exception on the check path (not only RuntimeError) blocks with a message instead of escaping
+    mg.gate.pr_payload = lambda *a, **k: (_ for _ in ()).throw(ValueError("bad json"))
+    _msg = mg.check_one("gh -R owner/target pr merge 42", cwd="/tmp")
+    assert _msg and _msg.startswith("review-gate: gate check failed: bad json"), _msg
+finally:
+    os.environ.clear(); os.environ.update(_old_env)
+    mg.gate.parse_repo_with_host, mg.gate.pr_payload = _orig_parse, _orig_payload
+
+# a P2 root never closes itself, even when its author may close and its first line is a closing token
+_self_closing = {"body": "fixed in abc1234\n\nP2: x", "author": {"login": "owner"}, "authorAssociation": "OWNER"}
+assert g.P2_ROOT.search(_self_closing["body"]) and g.closes(_self_closing["body"])
+assert g.p2_threads_closed({"reviewThreads": {"nodes": [{"comments": {"nodes": [_self_closing]}}]}}), "root closed itself"
+# no head OID: neither Codex path passes, even with a Codex review that carries no commit and a clean comment
+_codex_nohead = {"state": "COMMENTED", "body": "ok", "commit": None, "author": {"login": "chatgpt-codex-connector"}}
+for _h in ("", None):
+    _p = {"headRefOid": _h, "reviews": {"nodes": [_codex_nohead]}, "comments": {"nodes": [codex_comment("")]}}
+    assert g.codex_done_on_head(_p) is False and g.codex_clean_comment_on_head(_p) is False, _h
+
 # Dismissed Codex review on head does not count
 dismissed = pr(
     reviews={

@@ -19,7 +19,11 @@ _spec = importlib.util.spec_from_file_location(
     "check_review_gate", Path(__file__).resolve().with_name("check-review-gate.py")
 )
 gate = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gate)
+try:
+    _spec.loader.exec_module(gate)
+except BaseException as _exc:  # noqa: BLE001 - a missing/broken gate module must block, not exit 1 (non-blocking)
+    print(f"review-gate merge guard: cannot load check-review-gate.py ({type(_exc).__name__}); blocked", file=sys.stderr)
+    sys.exit(2)
 
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 # Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
@@ -3981,8 +3985,15 @@ def fb_log(subject: str, severity: str, summary: str) -> None:
 
 
 if __name__ == "__main__":
+    # Fail closed on ANY crash: a PreToolUse hook exiting 1 is a non-blocking error, so the command would
+    # run. A ~1000-deep `$( … )` nest raised RecursionError and exited 1 (Sonnet pass on 07baddd).
     try:
-        sys.exit(main())
-    except Exception as exc:
-        fb_log("hook:review-gate/rg-merge-guard", "high", f"merge-guard crashed: {type(exc).__name__}")
-        raise
+        rc = main()
+    except BaseException as exc:  # noqa: BLE001 - only exit 2 blocks the tool call
+        rc = 2
+        print(f"review-gate merge guard: crashed ({type(exc).__name__}); blocked", file=sys.stderr)
+        try:
+            fb_log("hook:review-gate/rg-merge-guard", "high", f"merge-guard crashed: {type(exc).__name__}")
+        except Exception as log_exc:  # noqa: BLE001 - logging must not turn the block into exit 1
+            print(f"review-gate merge guard: feedback log failed ({type(log_exc).__name__})", file=sys.stderr)
+    sys.exit(rc)

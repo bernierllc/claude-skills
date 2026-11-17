@@ -93,7 +93,7 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
    repos still publish from a plain `pull_request` job; that name stays with each repo's main-via-staging guard.
    Residual: a PR job with `checks: write` POSTing `Review Gate` straight to the Checks API looks the same as
    a legacy (3.2.0-3.2.7) run and is not detected (plan options A/B in aec). A job publishing after the scan is
-   caught by the cop's pre-merge run (pr-merge-flow rule 2).
+   caught only if whoever merges runs the detector by hand (pr-merge-flow rule 2); the merge-guard hook does not run it.
 
 Fallback attestations use exactly this format (plain text on its own line inside `## Review`):
 

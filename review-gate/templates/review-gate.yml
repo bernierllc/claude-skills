@@ -33,7 +33,8 @@
 # when another PR shares the head. Runs for PRs into every branch. Residual: a PR job
 # with `checks: write` POSTing the name straight to the Checks API is not detectable
 # here (needs a required workflow or a distinct publisher app). A job publishing
-# after this scan is caught by the merger's own pre-merge run of the detector.
+# after this scan is caught only if whoever merges runs the detector by hand
+# (pr-merge-flow rule 2). The merge-guard hook does NOT run it.
 name: Review Gate
 # Names the PR in the Actions run list. Quoted: unquoted, YAML reads " #" as a comment (3.2.7).
 run-name: "Review Gate - PR #${{ github.event.pull_request.number }}"
