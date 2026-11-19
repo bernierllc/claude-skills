@@ -13,9 +13,28 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_spec = importlib.util.spec_from_file_location("check_review_gate", Path(__file__).with_name("check-review-gate.py"))
-_gate = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_gate)
+# A module constant, not __doc__: `python -O` drops docstrings.
+USAGE = 'usage: python3 scripts/lint-review-body.py [BODY_FILE]   (reads stdin when no file or "-")'
+
+
+def _load_gate():
+    """Load check-review-gate.py beside the real file (resolve() follows a symlinked linter)."""
+    path = Path(__file__).resolve().with_name("check-review-gate.py")
+    try:
+        spec = importlib.util.spec_from_file_location("check_review_gate", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except OSError as e:
+        print(f"review-gate body: cannot load {path}: {e}; re-run install-workflow.py --force", file=sys.stderr)
+        raise SystemExit(2)
+    if not hasattr(mod, "review_region"):  # a checker older than 3.2.8, vendored before this linter
+        print(f"review-gate body: {path} is too old for this linter (no review_region); "
+              "re-run install-workflow.py --force", file=sys.stderr)
+        raise SystemExit(2)
+    return mod
+
+
+_gate = _load_gate()
 
 
 def lint(body: str) -> list[str]:
@@ -23,8 +42,11 @@ def lint(body: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        print(USAGE)
+        return 0
     if len(argv) > 1:
-        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     try:
         body = sys.stdin.read() if not argv or argv[0] == "-" else Path(argv[0]).read_text(encoding="utf-8")

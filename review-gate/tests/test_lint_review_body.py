@@ -45,7 +45,10 @@ assert rc == 0 and "OK" in out, out
 assert gate_body_reasons(OK) == []
 with __import__("tempfile").NamedTemporaryFile("w", suffix=".md", delete=False) as f:
     f.write(OK)
-assert subprocess.run([sys.executable, str(LINTER), f.name], capture_output=True).returncode == 0
+try:
+    assert subprocess.run([sys.executable, str(LINTER), f.name], capture_output=True).returncode == 0
+finally:
+    Path(f.name).unlink()
 assert subprocess.run([sys.executable, str(LINTER), "-"], input=OK, capture_output=True, text=True).returncode == 0
 assert subprocess.run([sys.executable, str(LINTER), "a", "b"], capture_output=True).returncode == 2
 # an unreadable or non-UTF-8 file is a usage error (2) naming the path, not a traceback or a lint failure (1)
@@ -54,6 +57,24 @@ with __import__("tempfile").TemporaryDirectory() as d:
     for path in (Path(d) / "missing.md", Path(d), Path(d) / "latin1.md"):
         r = subprocess.run([sys.executable, str(LINTER), str(path)], capture_output=True, text=True)
         assert r.returncode == 2 and "cannot read" in r.stderr and "Traceback" not in r.stderr, (path, r.stderr)
+
+# --help is not a path; usage survives `python -O` (which drops docstrings)
+r = subprocess.run([sys.executable, str(LINTER), "--help"], capture_output=True, text=True)
+assert r.returncode == 0 and r.stdout.startswith("usage:"), r
+r = subprocess.run([sys.executable, "-O", str(LINTER), "a", "b"], capture_output=True, text=True)
+assert r.returncode == 2 and r.stderr.startswith("usage:"), r
+# a symlinked linter finds the checker beside the real file; a missing or pre-review_region checker is exit 2
+with __import__("tempfile").TemporaryDirectory() as d:
+    d = Path(d)
+    (d / "link.py").symlink_to(LINTER)
+    r = subprocess.run([sys.executable, str(d / "link.py")], input=OK, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    (d / "lint-review-body.py").write_bytes(LINTER.read_bytes())
+    r = subprocess.run([sys.executable, str(d / "lint-review-body.py")], input=OK, capture_output=True, text=True)
+    assert r.returncode == 2 and "cannot load" in r.stderr and "install-workflow.py --force" in r.stderr, r.stderr
+    (d / "check-review-gate.py").write_text("def evaluate(pr):\n    return []\n")  # a pre-3.2.8 checker
+    r = subprocess.run([sys.executable, str(d / "lint-review-body.py")], input=OK, capture_output=True, text=True)
+    assert r.returncode == 2 and "too old" in r.stderr and "Traceback" not in r.stderr, r.stderr
 
 # every banned construct in ## Review fails on its own line (line 5 + 1 = 6 here), naming it
 REVIEW_BAD = {
@@ -109,6 +130,28 @@ for text in fixtures:
     assert (problems == []) == (reasons == []), (text, problems, reasons)
     rc, out = lint_cli(text)
     assert rc == (1 if problems else 0) and all(p in out for p in problems), (text, out)
+
+# golden corpus: verdicts fixed by hand from the rule-2 grammar, not derived from review_region, so a change
+# to what the gate accepts fails here even though the parity check above would still hold
+GOLDEN = [
+    (OK, True),
+    (f"## Review\n\n{ATT}\n", True),  # heading on the first line
+    (f"Summary\n\n## Review\n\n{ATT}\nFixed 3 of 4 issues, all P2.\n", True),
+    (f"Summary\n\n## Review\n\n{ATT}\n\n## Notes\n\n- list, `code` and <b>x</b> inline\n", True),
+    (f"Summary\n## Review\n\n{ATT}\n", False),  # heading not after a blank line
+    (f"Summary\n\n## Review\n\n{ATT}\n- a bullet\n", False),
+    (f"Summary\n\n## Review\n\n{ATT}\n2. note\n", False),
+    (f"Summary\n\n## Review\n\n{ATT}\nFixed a_b\n", False),
+    (f"Summary\n\n## Review\n\n{ATT}\n\u00a0\n", False),  # NBSP-only is not blank
+    (f"<div>\n\n## Review\n\n{ATT}\n", False),
+    (f"- <b>x</b>\n\n## Review\n\n{ATT}\n", False),
+    (f"text <details> x\n\n## Review\n\n{ATT}\n", False),
+    (f"```\nx\n```\n\n## Review\n\n{ATT}\n", False),
+    (f"## Reviews\n\n{ATT}\n", False),  # no ## Review section
+]
+for text, passes in GOLDEN:
+    assert (gate_body_reasons(text) == []) == passes, (text, gate_body_reasons(text))
+    assert (lint_cli(text)[0] == 0) == passes, (text, lint_cli(text))
 
 # the linter has no grammar of its own: it reaches the checker's review_region
 src = LINTER.read_text()
