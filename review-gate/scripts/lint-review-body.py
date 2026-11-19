@@ -26,7 +26,11 @@ def main(argv: list[str]) -> int:
     if len(argv) > 1:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
-    body = sys.stdin.read() if not argv or argv[0] == "-" else Path(argv[0]).read_text(encoding="utf-8")
+    try:
+        body = sys.stdin.read() if not argv or argv[0] == "-" else Path(argv[0]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:  # a bad path is a usage error (2), never a lint verdict (1)
+        print(f"review-gate body: cannot read {argv[0] if argv else 'stdin'}: {e}", file=sys.stderr)
+        return 2
     problems = lint(body)
     for p in problems:
         print(f"review-gate body: {p}", file=sys.stderr)

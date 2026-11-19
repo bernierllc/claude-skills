@@ -48,6 +48,12 @@ with __import__("tempfile").NamedTemporaryFile("w", suffix=".md", delete=False) 
 assert subprocess.run([sys.executable, str(LINTER), f.name], capture_output=True).returncode == 0
 assert subprocess.run([sys.executable, str(LINTER), "-"], input=OK, capture_output=True, text=True).returncode == 0
 assert subprocess.run([sys.executable, str(LINTER), "a", "b"], capture_output=True).returncode == 2
+# an unreadable or non-UTF-8 file is a usage error (2) naming the path, not a traceback or a lint failure (1)
+with __import__("tempfile").TemporaryDirectory() as d:
+    (Path(d) / "latin1.md").write_bytes(b"## Review\n\ncaf\xe9\n")
+    for path in (Path(d) / "missing.md", Path(d), Path(d) / "latin1.md"):
+        r = subprocess.run([sys.executable, str(LINTER), str(path)], capture_output=True, text=True)
+        assert r.returncode == 2 and "cannot read" in r.stderr and "Traceback" not in r.stderr, (path, r.stderr)
 
 # every banned construct in ## Review fails on its own line (line 5 + 1 = 6 here), naming it
 REVIEW_BAD = {
