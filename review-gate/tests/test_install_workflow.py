@@ -4,6 +4,7 @@ Row: https://app.notion.com/p/41a4efecc95a81388f71da096a699f71 (origin: nevar-in
 """
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,10 @@ import unittest
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
+# Only the claude-skills repo has its mirrors (scripts/, .github/) and this manifest beside the skill; an
+# installed skill directory (e.g. nevar-fund's) has neither, so tests that need that layout skip there.
+IN_CLAUDE_SKILLS = (SKILL.parent / "skills-manifest.json").is_file()
+NOT_CLAUDE_SKILLS = "needs the claude-skills repo layout (skills-manifest.json beside the skill)"
 INSTALLER = SKILL / "scripts" / "install-workflow.py"
 
 
@@ -152,6 +157,7 @@ class VendoredDetector(unittest.TestCase):
             self.assertEqual(bad.returncode, 1, bad.stderr)
             self.assertIn("PR body line 3:", bad.stderr)
 
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, NOT_CLAUDE_SKILLS)
     def test_this_repo_mirrors_are_byte_identical(self):
         # claude-skills runs its own gate from scripts/ and .github/workflows/; they must equal the skill's copies.
         root = SKILL.parent
@@ -183,6 +189,7 @@ class DoctorVendoredDrift(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(lines, [f"OK vendored script scripts/{n}" for n in installer().VENDORED_SCRIPTS])
 
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, NOT_CLAUDE_SKILLS + " and its git history")
     def test_an_old_checker_and_a_missing_linter_warn(self):
         old = subprocess.run(["git", "show", "bce2e9c0:review-gate/scripts/check-review-gate.py"],
                              cwd=SKILL, capture_output=True, check=True).stdout  # review-gate 3.2.10
@@ -199,6 +206,21 @@ class DoctorVendoredDrift(unittest.TestCase):
             self.assertIn("OK vendored script scripts/check-forged-review-gate.py", lines)
             # one line per vendored script, taken from the installer's own list
             self.assertEqual(len(lines), len(installer().VENDORED_SCRIPTS), lines)
+
+
+class InstalledSkillLayout(unittest.TestCase):
+    """The skill's tests also run from an installed skill directory, without the claude-skills tree."""
+
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, "already running from an installed skill directory")
+    def test_module_skips_repo_layout_tests_outside_claude_skills(self):
+        with tempfile.TemporaryDirectory() as d:
+            skill = Path(d) / "skills" / "review-gate"
+            shutil.copytree(SKILL, skill, ignore=shutil.ignore_patterns("__pycache__"))
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v", "test_install_workflow"],
+                                  cwd=skill / "tests", capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertRegex(proc.stderr, r"test_this_repo_mirrors_are_byte_identical .*skipped 'needs the claude-skills")
+            self.assertNotIn("FileNotFoundError", proc.stderr)
 
 
 def installer():
