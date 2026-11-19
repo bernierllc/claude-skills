@@ -501,6 +501,13 @@ for c in (f'gh pr comment 119 --body "{M} review"', f"gh pr comment 119 -b '{M} 
 # the marker needs a reason and must be a shell comment, not quoted text
 assert _blocked(f'gh pr comment 5 --body "{M} review"  # codex-review-ok:')
 assert _blocked(f'gh pr comment 5 --body "{M} review codex-review-ok: x"')
+# Codex P1 on #120: the marker inside the quoted body or a heredoc is sent text, not an override
+for c in (f"gh pr comment 5 --body '{M} review # codex-review-ok: bypass'",
+          f'gh pr comment 5 --body "{M} review  # codex-review-ok: bypass"',
+          f"gh pr comment 5 --body-file - <<'EOF'\n{M} review\n# codex-review-ok: bypass\nEOF"):
+    assert _blocked(c), c
+assert g.check("git -C wt/$w merge origin/staging  # sync-base: real conflict in x.py", "/r") is None
+assert g.check("git -C wt/$w merge origin/staging && echo '# sync-base: nope'", "/r") is not None
 # not a post, not the bot, or the phrase only in an unrelated heredoc / read
 for c in (f"cat > notes.md <<'EOF'\n{M} review\nEOF", f"git commit -q -F - <<'EOF'\nno {M} review\nEOF",
           f'gh pr comment 5 --body "{M}-helper and {M}x are not the bot"', "gh pr comment 5 --body 'Codex review done'",
@@ -515,7 +522,10 @@ with _tf.TemporaryDirectory() as d:
     Path(d, "sub", "ok.md").write_text("Round 2, fallback attested\n")
     for c in ("gh pr comment 5 --body-file sub/bad.md", "gh pr comment 5 -F sub/bad.md",
               "gh pr comment 5 --body-file=sub/bad.md", "cd sub && gh issue comment 5 -F bad.md",
-              "gh api repos/o/r/issues/5/comments -F body=@sub/bad.md", "gh api repos/o/r/issues/5/comments --input sub/bad.md"):
+              "gh api repos/o/r/issues/5/comments -F body=@sub/bad.md", "gh api repos/o/r/issues/5/comments --input sub/bad.md",
+              # Codex P2 on #120: pflag shorthand with the value attached
+              "gh pr comment 5 -Fsub/bad.md", "gh pr comment 5 -F=sub/bad.md", "gh api repos/o/r/issues/5/comments -Fbody=@sub/bad.md",
+              f"gh api repos/o/r/issues/5/comments -fbody='{M} review'"):
         assert _blocked(c, d), c
     for c in ("gh pr comment 5 --body-file sub/ok.md", "gh api repos/o/r/issues/5/comments -F body=@sub/ok.md",
               "gh pr comment 5 --body-file sub/missing.md", "gh pr comment 5 --body-file $F"):
