@@ -9,6 +9,7 @@ when it does not. It checks only the body rules; the attestation's head SHA is t
 """
 from __future__ import annotations
 
+import functools
 import importlib.util
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 USAGE = 'usage: python3 scripts/lint-review-body.py [BODY_FILE]   (reads stdin when no file or "-")'
 
 
+@functools.lru_cache(maxsize=None)
 def _load_gate():
     """Load check-review-gate.py beside the real file (resolve() follows a symlinked linter)."""
     path = Path(__file__).resolve().with_name("check-review-gate.py")
@@ -34,11 +36,9 @@ def _load_gate():
     return mod
 
 
-_gate = _load_gate()
-
 
 def lint(body: str) -> list[str]:
-    return _gate.review_region(body)[1]
+    return _load_gate().review_region(body)[1]  # loaded on first use, so --help works without a checker
 
 
 def main(argv: list[str]) -> int:

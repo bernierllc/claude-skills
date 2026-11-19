@@ -70,6 +70,8 @@ with __import__("tempfile").TemporaryDirectory() as d:
     r = subprocess.run([sys.executable, str(d / "link.py")], input=OK, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     (d / "lint-review-body.py").write_bytes(LINTER.read_bytes())
+    r = subprocess.run([sys.executable, str(d / "lint-review-body.py"), "--help"], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.startswith("usage:"), r  # help needs no checker (Codex P2 on #119)
     r = subprocess.run([sys.executable, str(d / "lint-review-body.py")], input=OK, capture_output=True, text=True)
     assert r.returncode == 2 and "cannot load" in r.stderr and "install-workflow.py --force" in r.stderr, r.stderr
     (d / "check-review-gate.py").write_text("def evaluate(pr):\n    return []\n")  # a pre-3.2.8 checker
