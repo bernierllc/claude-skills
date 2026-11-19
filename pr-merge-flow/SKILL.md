@@ -71,10 +71,15 @@ hooks dormant). It blocks:
   `--input` file holds it (1.5.0). Each mention starts a Codex review on Matt's quota; Codex reviews a PR's
   first head only, and later heads get a fallback review plus the `Fallback review:` line in `## Review`.
   The body is scanned in the arguments and in a readable `--body-file`/`-F`, `-F body=@file` or `--input`
-  file (relative to the command's `cd`). A body fed on stdin (`--body-file -`) is blocked when the mention
-  appears anywhere in the command, such as its heredoc. Known limits, not checked: a body built by command
-  substitution (`--body "$(cat f)"`) or a variable, an unreadable file, and stdin piped from another
-  command. A heredoc that feeds no posting command (`cat > notes.md`) is never blocked;
+  file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
+  `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
+  be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). The mention is
+  the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
+  Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
+  a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
+  (an absolute path, `time`/`nohup`, `bash -c`, `xargs`); `gh pr create`/`edit` and `gh issue create`
+  bodies; a comment line ending in a backslash, which folds the next line into the comment; and a heredoc
+  nested in `$(...)` inside quotes. A heredoc that feeds no posting command (`cat > notes.md`) is never blocked;
 - a `sleep` plus a status query (`gh pr checks|view|status`, `gh run view|watch|list`) in one
   command, loop or not. The wanted shape is `gh pr checks <n> --watch --fail-fast` run in the
   background.
@@ -92,7 +97,8 @@ depend on), append `# sync-base: <reason>` to the command. Say which commit and 
 The reason stays in the transcript.
 
 **Codex override:** only when Matt explicitly asked for a Codex review on this head, append
-`# codex-review-ok: <reason>` (a shell comment with a reason; quoted text does not count).
+`# codex-review-ok: <reason>` (a shell comment with a reason; the colon is optional, so
+`# codex-review-ok <reason>` works too; quoted text does not count).
 
 Self-check: `python3 pr-merge-flow/tests/test_pr_guard.py`.
 

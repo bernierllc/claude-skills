@@ -487,6 +487,7 @@ for c in ["gh pr checks 12 --watch --fail-fast", "sleep 5", "gh pr view 12", "ec
     assert g.check(c, "/r") is None, c
 # 1.5.0: a posted comment that mentions the Codex bot is blocked (Matt's quota); `# codex-review-ok: <reason>` allows it
 import tempfile as _tf
+import os
 M = "@" + "codex"
 _blocked = lambda c, cwd="/r": (g.check(c, cwd) or "").startswith("Blocked: this comment mentions the Codex bot")
 for c in (f'gh pr comment 119 --body "{M} review"', f"gh pr comment 119 -b '{M} review'",
@@ -508,6 +509,17 @@ for c in (f"gh pr comment 5 --body '{M} review # codex-review-ok: bypass'",
     assert _blocked(c), c
 assert g.check("git -C wt/$w merge origin/staging  # sync-base: real conflict in x.py", "/r") is None
 assert g.check("git -C wt/$w merge origin/staging && echo '# sync-base: nope'", "/r") is not None
+# Sonnet P1 on #120: a body file written in the same command, or a stdin alias, can't be read by the hook
+for c in (f"cat > /tmp/b-{os.getpid()}.md <<'EOF'\n{M} review\nEOF\ngh pr comment 5 --body-file /tmp/b-{os.getpid()}.md",
+          f"printf '%s' '{M} review' > b.md && gh pr comment 5 -F b.md",
+          f"gh pr comment 5 -F /dev/stdin <<'EOF'\n{M} review\nEOF", f"gh pr comment 5 -F /dev/fd/0 <<'EOF'\n{M} review\nEOF"):
+    assert _blocked(c), c
+# the override's colon is optional; it still needs a reason
+assert g.check(f'gh pr comment 5 --body "{M} review"  # codex-review-ok Matt asked', "/r") is None
+assert _blocked(f'gh pr comment 5 --body "{M} review"  # codex-review-ok')
+assert _blocked(f'gh pr comment 5 --body "{M} review"  # codex-review-okay x')
+# an email address is not a mention
+assert not _blocked("gh pr comment 5 --body 'mail bob@codex.io'")
 # not a post, not the bot, or the phrase only in an unrelated heredoc / read
 for c in (f"cat > notes.md <<'EOF'\n{M} review\nEOF", f"git commit -q -F - <<'EOF'\nno {M} review\nEOF",
           f'gh pr comment 5 --body "{M}-helper and {M}x are not the bot"', "gh pr comment 5 --body 'Codex review done'",

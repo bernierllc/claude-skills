@@ -143,7 +143,7 @@ def shell_comments(cmd):
 def has_override(cmd, marker):
     """True when a real shell comment carries `# <marker>: <reason>`; the marker inside a quoted
     body or a heredoc is text the command sends, not an override."""
-    return any(re.match(rf"#\s*{marker}:\s*\S", c) for c in shell_comments(cmd))
+    return any(re.match(rf"#\s*{marker}(?::\s*|\s+)\S", c) for c in shell_comments(cmd))
 
 
 def shell_tokens(cmd):
@@ -352,7 +352,7 @@ def gh_pr(argv):
 
 
 # Any at-mention of the Codex bot starts a Codex task on Matt's quota (Program Cop, 2026-11-19).
-CODEX_MENTION = re.compile(r"@codex(?![\w-])", re.I)
+CODEX_MENTION = re.compile(r"(?<![\w.+-])@codex(?![\w-])", re.I)  # not an email like bob@codex.io
 # Commands that post a comment body: (words, flags whose value is a file holding the body).
 COMMENT_POSTS = {("pr", "comment"): ("-F", "--body-file"), ("issue", "comment"): ("-F", "--body-file"),
                  ("pr", "review"): ("-F", "--body-file")}
@@ -368,7 +368,7 @@ def _body_file(d, path):
         with open(os.path.join(d, os.path.expanduser(path)), "rb") as f:
             return f.read(MAX_BODY_FILE).decode("utf-8", "replace")
     except OSError:
-        return None  # unreadable: nothing to scan; SKILL.md lists this as a known limit
+        return None  # unreadable: the raw-command search in codex_mention_post still applies
 
 
 def codex_mention_post(cmd, cwd):
@@ -401,10 +401,12 @@ def codex_mention_post(cmd, cwd):
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(value.split("=@", 1)[1])
-        for path in files:
-            if path == "-" and CODEX_MENTION.search(cmd):
-                return True
-            texts.append(_body_file(d, path) or "")
+        # A body file may be written earlier in this same command (`cat > b.md <<EOF … && gh … -F b.md`) or be
+        # stdin (`-`, /dev/stdin, /dev/fd/0), so the hook can't read what will be posted: any mention anywhere
+        # in the command blocks. Otherwise the file as it stands now is scanned.
+        if files and CODEX_MENTION.search(cmd):
+            return True
+        texts += [_body_file(d, path) or "" for path in files]
         if any(CODEX_MENTION.search(t) for t in texts):
             return True
     return False
@@ -675,7 +677,7 @@ def check(cmd, cwd):
                 "Codex reviews a PR's first head only. For a later head, run a fallback reviewer and add "
                 "`Fallback review: <reviewer> on <sha> — verdict: <clean|findings fixed>` to the PR's "
                 "## Review section. Only when Matt explicitly asked for a Codex review here, add "
-                "`# codex-review-ok: <reason>` to the command.")
+                "`# codex-review-ok: <reason>` (the colon is optional) to the command.")
     for d, ref, toks, repo in merge_calls(cmd, cwd):
         if repo is None:
             return ("Blocked: can't parse this merge (a short-flag cluster such as `-dR x` or `-st 5`). "
