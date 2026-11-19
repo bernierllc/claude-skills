@@ -505,6 +505,22 @@ _two = codex_comment("deadbeef" + head[8:])
 _two["body"] += "\n" + codex_comment(head)["body"]
 assert g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": [_two]})) == []
 
+# 3.2.12: a Codex state naming an older sha words the failure as "attest a fallback review"; the verdict is
+# unchanged (same failing reasons, one message longer), and no state or a state on the head adds no hint
+_old_sha = "deadbeef" + head[8:]
+_stale = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": [codex_comment(_old_sha)]}))
+_none = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": []}))
+assert len(_stale) == len(_none) and _stale != _none, (_stale, _none)
+_hint = [r for r in _stale if "Codex bot last reviewed deadbeef" in r]
+assert len(_hint) == 1 and "add that Fallback review line to ## Review" in _hint[0] and "quota" in _hint[0], _stale
+assert "@codex" not in _hint[0]
+assert not any("last reviewed" in r for r in _none)
+_running = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": [codex_comment(head, status="running")]}))
+assert _running and not any("last reviewed" in r for r in _running), _running
+_fixed = f"Summary\n\n## Review\n\nFallback review: claude-sonnet on {head} — verdict: clean\n"
+assert g.evaluate(pr(body=_fixed, headRefOid=head, reviews=no_reviews,
+                     comments={"nodes": [codex_comment(_old_sha)]})) == []
+
 # main without label
 main = pr(baseRefName="main")
 assert any("review:high" in r for r in g.evaluate(main))
