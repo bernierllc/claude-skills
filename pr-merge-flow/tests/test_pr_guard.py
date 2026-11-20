@@ -40,14 +40,12 @@ assert not list(g.pr_create_dirs("gh pr create -R me/r --title x", "/r"))
 assert not list(g.pr_create_dirs("gh pr create --repo=me/r", "/r"))
 # Codex P2s on #37: quoting, continuation, other ref spellings, gh aliases/inherited -R.
 assert calls('git merge -m "sync; base" origin/main') == [("/r", "merge", ["origin/main"])]
-assert calls("git merge \\\n  origin/staging") == [("/r", "merge", ["origin/staging"])]
 assert calls("git merge origin/staging # sync; not a command") == [("/r", "merge", ["origin/staging"])]
 assert calls('git commit -m "" && git merge origin/staging') == [("/r", "merge", ["origin/staging"])]
 assert calls("if true; then git -C wt rebase origin/main; fi") == [("/r/wt", "rebase", ["origin/main"])]
 for ref in ["refs/heads/main", "refs/remotes/upstream/main", "company/main", "refs/remotes/origin/main"]:
     assert g.names_base([ref], "main"), ref
 assert not g.names_base(["refs/heads/feat/main-fix", "a/b/main"], "main")
-assert g.draft_violation("gh pr create \\\n  --draft --title x")
 assert g.draft_violation("gh pr new --draft")
 assert g.draft_violation("gh -R owner/repo pr create --draft")
 assert not g.draft_violation('gh pr create --title "no --draft; here"')
@@ -573,7 +571,7 @@ with _tf.TemporaryDirectory() as d:
               "gh pr comment 123 --body-file ~-/sub/bad.md", "gh pr comment 123 --body-file ~root/bad.md",
               "gh pr comment 123 --body-file '~/bad.md'", "gh pr comment 123 -F \\~/bad.md"):
         assert _unread(c), c
-    # a continuation inside a word, and zsh =(...) / =cmd, fail closed (F3)
+    # a continuation inside a word joins as in bash (sub/bad.md is read); zsh =(...) / =cmd fail closed (F3)
     for c in ("gh pr comment 123 --body-file sub/ba\\\nd.md", "gh pr comment 123 --body-file =(cat sub/bad.md)",
               "gh pr comment 123 -F =cat"):
         assert _any(c), c
@@ -593,6 +591,13 @@ with _tf.TemporaryDirectory() as d:
         assert _unread(c), c
     assert g.check(f"cd sub && gh pr comment 5 -F {d}/sub/ok.md", d) is None
     assert _blocked(f"cd sub && gh pr comment 5 -F {d}/sub/bad.md", d)
+    # round 4 (G1-G3): an attached -b value is scanned; env -C in every spelling changes dir; a continuation
+    # inside `cd` joins before any detector runs
+    for c in (f"gh pr comment 1 '-b{M} review'", f"gh issue comment 1 '-b{M} review'", f"gh pr review 1 --comment '-b{M} review'"):
+        assert _blocked(c, d), c
+    for c in ("env -Csub gh pr comment 1 -F bad.md", "env --chdir=sub gh pr comment 1 -F bad.md",
+              "env -C sub gh pr comment 1 -F bad.md", "c\\\nd sub; gh pr comment 1 -F bad.md"):
+        assert _unread(c), c
     # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
     assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
     # a file too large to scan whole fails closed instead of scanning a prefix (F6)

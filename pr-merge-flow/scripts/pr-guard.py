@@ -54,8 +54,7 @@ HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
 # Raw words (segments(raw=True)) also carry these markers, which UNHIDE drops: a word the hook can't be
 # sure it reads as bash does never passes literal().
 ANSI = "\uE0FF"  # a $'...' word, which this parser decodes only approximately
-CONT = "\uE0FE"  # a backslash-newline continuation
-UNHIDE = {**{v: k for k, v in HIDE.items()}, ord(ANSI): None, ord(CONT): None}
+UNHIDE = {**{v: k for k, v in HIDE.items()}, ord(ANSI): None}
 # The only body-file paths and cd targets the hook resolves: plain characters, no quoting needed, nothing
 # the shell rewrites (no ~, $, glob, brace, backslash, newline, zsh `=cmd` / `=(...)`, `<(...)`).
 PLAIN = re.compile(r"[A-Za-z0-9_./+,:@%-][A-Za-z0-9_./+,:@%=-]*")
@@ -143,7 +142,7 @@ def strip_comments_and_heredocs(cmd, comments=None):
 def shell_comments(cmd):
     """The command's real shell comments: not quoted text, not heredoc bodies."""
     comments = []
-    strip_comments_and_heredocs(cmd.replace("\\\n", " "), comments)
+    strip_comments_and_heredocs(cmd, comments)
     return comments
 
 
@@ -171,7 +170,7 @@ def runs_async(cmd):
     Uses the same tokens as segments(), so quoted text never counts, and `>&`/`&>` redirections
     (`2>&1`, `&>log`) are not operators. Unparseable input counts as async, so callers fail closed.
     """
-    toks = shell_tokens(strip_comments_and_heredocs(cmd.replace("\\\n", " ")))
+    toks = shell_tokens(strip_comments_and_heredocs(cmd))
     if toks is None:
         return True
     for i, t in enumerate(toks):
@@ -188,7 +187,7 @@ def segments(cmd, raw=False):
     backslash-newline continues the command, as in Bash. With raw, words keep their hidden
     characters and markers (see literal).
     """
-    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", CONT if raw else " "))
+    cmd = strip_comments_and_heredocs(cmd)
     tokens = shell_tokens(cmd)
     if tokens is None:
         # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
@@ -218,6 +217,8 @@ def segments(cmd, raw=False):
                         chdir = argv[1]
                     elif argv[0].startswith("--chdir="):
                         chdir = argv[0].split("=", 1)[1]
+                    elif argv[0].startswith("-C"):
+                        chdir = argv[0][2:]
                     del argv[:2 if argv[0] in ("-u", "-C", "--chdir") else 1]
             if argv:
                 # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
@@ -225,10 +226,8 @@ def segments(cmd, raw=False):
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")
-        elif not raw:
-            argv.append(t.translate(UNHIDE))
-        elif t.strip(CONT):  # a continuation between words is only whitespace
-            argv.append(t)
+        else:
+            argv.append(t if raw else t.translate(UNHIDE))
 
 
 # Any word that may change directory, anywhere in the raw command (over-matching is fine: it only fails closed).
@@ -446,10 +445,10 @@ def comment_posts(cmd, cwd):
                     (value, odd), i = nxt, i + 1
             else:
                 continue
-            mark = ANSI if odd else ""  # a continuation or $'...' in the word: the path is never literal()
+            mark = ANSI if odd else ""  # a $'...' in the word: the path is never literal()
             if name in file_flags:
                 files.append(mark + value)
-            elif api and name in API_FIELD_FLAGS:
+            elif not api or name in API_FIELD_FLAGS:  # an attached value (-b@x) is scanned on its own
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(mark + value.split("=@", 1)[1])
@@ -750,6 +749,7 @@ def polls(cmd):
 
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
+    cmd = cmd.replace("\\\n", "")  # the shell deletes backslash-newline first; every detector sees the joined text
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")

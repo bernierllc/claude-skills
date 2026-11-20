@@ -76,19 +76,19 @@ hooks dormant). It blocks:
   be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
   hook can't resolve before the shell runs is blocked too, with a message to write the body to a plain
   path (1.5.1). The hook resolves only an allowlist: a path of letters, digits and `_ . / + , : @ % = -`,
-  not starting with `=`, with no quoting, backslash, continuation or `~`. Anything else fails closed,
+  not starting with `=`, with no quoting, backslash or `~`. Anything else fails closed,
   including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
   every `~` form (`~/`, `~+`, `~-`, `~user`). There is no cd tracking: when the command contains `cd`,
   `pushd`, `popd` or `chdir` as a word anywhere (after `builtin`/`command`/a backslash, inside `if`, a
-  function, a loop, a subshell or a pipeline) or runs `env -C`, the directory is unknown, so a relative
+  function, a loop, a subshell or a pipeline) or runs `env -C`/`--chdir` in any spelling (`-Csub`), the directory is unknown, so a relative
   body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
   1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
   contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
   including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
   absolute path). Out of scope: wrappers that change directory other than `env -C` (`sudo -D`,
-  `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag,
-  and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
+  `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
+  attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
@@ -101,11 +101,11 @@ hooks dormant). It blocks:
 
 The sync and draft rules fail open when there's no open PR, `gh` is unavailable, or GitHub reports `UNKNOWN`.
 
-**Scope:** the guard catches the commands agents habitually run, not a determined
-evasion; it is a speed bump, not a Bash sandbox. Parsing errs toward checking more:
-comments and heredoc bodies are dropped, `( … )` scopes `cd`, and input `shlex` can't
-parse is split on every operator character. Exotic Bash that still slips past is out of
-scope unless an agent actually ran it.
+**Best-effort guard:** this is a quota guard, not a security boundary. It catches the
+commands agents habitually run, not a determined evasion. Backslash-newline is joined first,
+as the shell does, then comments and heredoc bodies are dropped, and input `shlex` can't parse
+is split on every operator character. Any shell form that rewrites the command after the hook
+sees it is out of scope: wrappers, `bash -c`, `eval`, variables and command substitution.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.
