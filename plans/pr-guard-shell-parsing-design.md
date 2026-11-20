@@ -19,19 +19,55 @@ Round 8 lost no block against 1.5.0. That was checked by a differential run: 3,3
 
 The guard decides what a shell will execute by re-implementing shell parsing: quoting, continuations, `env` options, `cd` state and wrappers. Every partial re-implementation has edge cases. Review finds them one per round, and nothing in CI stops a fix from losing a block that an earlier release had.
 
+## What already exists, and what this plan reuses
+
+Nothing here replaces an incumbent. The guard already has the pieces; the gap is a regression check.
+
+- `segments()` (shlex-based, operator-aware) is the single tokenizer every detector reads. It is kept; no second parser is added.
+- Fail-closed wrappers already exist in `segments()`: `env` yields every later word as a candidate command (round 8), and `command` strips its options. Every detector (Codex mention, body file, `gh pr merge`, base sync, draft) reads `segments()`, so a wrapper rule there covers all of them at once.
+- Effective-flag parsing already exists: `comment_posts()` with `GH_VALUE_FLAGS` reads pflag short clusters (`-iXPOST`, `-iF x`).
+- The round-8 harness (`diff.py`, 46 lines) already loads two copies of `pr-guard.py` in-process, stubs `pr_state`, `not_green`, `unpinned_fork`, `draft_mode` and `fb_log`, and replays every call the test file makes. It is committed as is, not rewritten.
+- `scripts/check-version-bumps.py` and `scripts/generate-manifest.py --check` already gate versions in CI.
+
 ## Correct fix
 
-1. **Commit the differential harness as a test.** Move the round-8 harness (`diff.py`: every attack input from `test_pr_guard.py`, plus the review-round inputs, run against the previous release's `pr-guard.py` fetched from the last release tag) into `pr-merge-flow/tests/`. Assert that every input the previous release blocks (exit 2) still blocks. This turns a "lost block" regression into a CI failure instead of a review round.
-2. **Narrow what the guard parses.** Stop interpreting wrappers. If a command contains `gh` as a word in a position the guard does not fully resolve (after `env`, `command`, `xargs`, `sudo`, `nice`, `timeout` or similar), the guard either treats the rest as the command (as `env` does now) or blocks once, with a fix message ("run gh directly"). It never guesses option arities. Pick per detector and record the choice in SKILL.md "Best-effort guard".
-3. **Fix or WONTFIX each 1.5.1 false block** (all fail closed today):
-   - `env echo gh pr merge 1`: a fix needs to know that `echo` is not a wrapper. Either keep a small allowlist of real wrappers whose next word is the command, or WONTFIX with the reason that the false block is rare and has a one-line workaround.
-   - A Codex mention split by a backslash-newline inside single quotes: in single quotes the shell keeps the backslash-newline literally, so the posted text contains no mention. A fix is to join continuations only outside single quotes when scanning the joined text.
-   - Read-only `gh api -X GET … -F x=@"$F"` with an unresolvable file: exempt `-X GET` (and `--method GET`) from the body-file check. Tracker: https://app.notion.com/p/PR-GUARD-GET-BODY-FILE-FALSE-BLOCK-41e4efecc95a81eabd64fc8a79af8296
-4. Version bump (1.5.2), regenerate the manifest with `python3 scripts/generate-manifest.py`, and update SKILL.md limits.
+### 1. Commit the differential harness as a CI test
+
+- File: `pr-merge-flow/tests/test_pr_guard_parity.py`, adapted from the round-8 `diff.py`.
+- **Baseline:** the `pr-guard.py` at a pinned commit, read with `git show <sha>:pr-merge-flow/scripts/pr-guard.py`. The repo has no tags or releases, so the baseline is a commit SHA held in one constant, `BASELINE = "dd01440"` (the 1.5.1 merge). The release PR that ships a new guard version moves `BASELINE` to the previous release's merge commit in the same commit. `check-version-bumps.py` gets one rule: a PR that bumps the pr-merge-flow version must also change `BASELINE`, so the bump cannot be made without moving it.
+- **Inputs:** the union of (a) every command string the head `test_pr_guard.py` passes to a guard function, (b) the same from the baseline commit's `test_pr_guard.py` (so deleting a test case cannot drop its input from the check), and (c) `pr-merge-flow/tests/fixtures/pr_guard_inputs.txt`, one command per line with its cwd, holding the review-round attack inputs that never became test cases (the cop's 3,310-input set minus duplicates).
+- **Stubs:** the four configs from round 8: base `staging` or `main`, times checks green or red.
+- **Compare:** for every input and stub config, call `check(cmd, cwd)` on the baseline and on the head. The baseline blocks when it returns a message. The test fails when the baseline blocks and the head does not, unless the exact `(cmd, cwd)` pair is listed in `ALLOWED_FLIPS` in the test file. Each entry carries a one-line reason and the issue or PR that approved it. New blocks on the head are reported, not failures.
+- **Crashes:** an exception from the head fails the test, naming the input. An exception from the baseline counts as "baseline blocks" (the hook exits non-zero), so the head must block that input too.
+- **CI:** one step in the `consistency` job, which already checks out with `fetch-depth: 0`, so `git show <BASELINE>` works without a new fetch. The step: `python3 pr-merge-flow/tests/test_pr_guard_parity.py`.
+- **Runtime:** the round-8 harness ran in 6.3 s for 838 inputs x 4 configs on the author's laptop. With the fixture set, budget 30 s; the test prints its wall time, and the 5-minute job timeout stays as is.
+
+### 2. Keep wrappers fail closed; stop guessing option arity
+
+The guard keeps reading through wrappers. It never stops seeing a command because a wrapper came first. Concretely:
+
+- `env` keeps the round-8 rule: every word after it is a candidate command. That is what blocks `env git merge origin/main`, `env -S gh …` and `env -uC gh …` today.
+- `command` keeps its current stripping, so `command git merge origin/main` stays a git merge.
+- `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and `exec` get the same rule as `env`: every later word is a candidate. Today they hide the command.
+- No wrapper's option table is ever parsed. A false block from trying an argument as a command is the accepted cost.
+- Because this lives in `segments()`, it applies to every detector, Git ones included. The parity test proves no block is lost. New test cases pin `env git merge origin/main`, `command git merge origin/main`, `sudo git pull origin main`, `timeout 60 git rebase origin/staging`, `xargs gh pr merge` and `nice gh pr comment 1 -F "$B"` as blocked.
+
+### 3. The three 1.5.1 false blocks
+
+Each one either flips with its exact command listed in `ALLOWED_FLIPS`, or is a written WONTFIX in SKILL.md "Known limits". There is no third option, so the invariant "exit 2 stays exit 2" has only those named exceptions.
+
+- **`env echo gh pr merge 1`: WONTFIX.** Fixing it means knowing that `echo` is not a wrapper, which is the wrapper knowledge step 2 rules out. Reason in SKILL.md: rare, fails closed, workaround is to drop the `env`.
+- **A Codex mention split by a backslash-newline inside single quotes: fix.** In single quotes the shell keeps the backslash-newline, so the posted text has no mention. The continuation join skips single-quoted spans when building the joined text. The mention scan still also reads the unjoined text. `ALLOWED_FLIPS` gets exactly the single-quoted split-mention inputs from test_pr_guard.py (listed in the fix PR). The double-quoted and unquoted split mentions stay blocked, and test cases pin that.
+- **Read-only `gh api -X GET … -F x=@"$F"` with an unresolvable file: fix, with effective-method resolution first.** The effective method is the last `-X`/`--method` value in the call, read the way `comment_posts()` already reads flags: separate (`-X GET`), attached (`-XGET`, `--method=GET`) and inside a short cluster (`-iXPOST`). The exemption applies only when that effective method is the literal word `GET`. A variable, a quoted or unknown value, or no `-X` at all (gh then defaults to POST when fields are given) is not GET and stays checked. `gh api repos/o/r/issues/123/comments -X GET -iXPOST -F body=@sub/bad.md` and every other case pinned at test_pr_guard.py:634-640 stay blocked. `ALLOWED_FLIPS` gets exactly `gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"` and `gh api -X GET repos/o/r/issues --input "$B"`. Tracker: https://app.notion.com/p/PR-GUARD-GET-BODY-FILE-FALSE-BLOCK-41e4efecc95a81eabd64fc8a79af8296
+
+### 4. Version
+
+The version bump rides each commit that changes `pr-merge-flow/`, in that same commit. The fix PR lands as one squash commit, so it ships as 1.5.2: SKILL.md and hooks.json bumped, the manifest regenerated with `python3 scripts/generate-manifest.py`, SKILL.md "Best-effort guard" and "Known limits" updated, and `BASELINE` left at dd01440 (1.5.1, the previous release).
 
 ## Affected surfaces
 
-- `pr-merge-flow/scripts/pr-guard.py`, `pr-merge-flow/tests/test_pr_guard.py`, `pr-merge-flow/SKILL.md` (Best-effort guard and Known limits), `pr-merge-flow/hooks.json` version.
+- In this repo: `pr-merge-flow/scripts/pr-guard.py`, `pr-merge-flow/tests/test_pr_guard.py`, the new `pr-merge-flow/tests/test_pr_guard_parity.py` and `pr-merge-flow/tests/fixtures/pr_guard_inputs.txt`, `pr-merge-flow/SKILL.md`, `pr-merge-flow/hooks.json`, `skills-manifest.json`, `scripts/check-version-bumps.py` (the BASELINE rule) and `.github/workflows/ci.yml` (one step).
+- AEC distribution: agents-environment-config installs the skill from this repo's catalog (`aec install skill pr-merge-flow`, pinned in its `catalog-hashes.json`, hook registered via `.aec/installed-hooks/skill.pr-merge-flow.json`), and carries its own vendored copies under `.claude/agents/.claude/skills/pr-merge-flow/` and `.cursor/commands/`. The catalog hash and those copies update through one PR to the agents-environment-config cop.
 - Vendored copies in about 20 repos (`.claude/skills/pr-merge-flow/` in nevar-content, prevost, email_demo, agency-agents, nevar-*, tools and others). Each takes the new version through its own re-vendor PR to its cop, after 1.5.1's re-vendor (nevar-content first).
 
 ## Not in scope
@@ -40,7 +76,8 @@ The guard is a quota guard, not a security boundary. `bash -c`, `eval`, variable
 
 ## Done when
 
-- The differential test is in CI and passes against 1.5.1.
-- Each of the three false blocks is fixed with a test, or has a written WONTFIX in SKILL.md with its reason.
-- No input 1.5.1 blocks becomes allowed.
+- `test_pr_guard_parity.py` runs in CI, passes against BASELINE dd01440, and fails on a deliberately lost block (shown once in the fix PR).
+- `ALLOWED_FLIPS` holds only the exact inputs named in step 3, each with its reason.
+- `env echo gh pr merge 1` is a written WONTFIX in SKILL.md; the other two false blocks are fixed with tests.
+- The wrapper cases in step 2 are pinned as blocked.
 - The PR goes to main, gets the adversarial review and Review Gate, and is merged by the claude-skills traffic cop.
