@@ -86,7 +86,9 @@ hooks dormant). It blocks:
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
   contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
   including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
-  absolute path), and a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`). env options are not parsed: every word after `env` may start the command, so no option argument hides
+  absolute path), a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`), and a
+  `gh …` that is only an argument after `env` (`env echo gh pr merge 1`), since every word after `env` is
+  tried as the command. env options are not parsed: every word after `env` may start the command, so no option argument hides
   `gh` (`env -S gh …`, `env -u gh gh …`, `env env -C sub gh …`). Out of scope: abbreviated env long options
   (`--ch=dir`), an attached split string (`env -Sgh …`), BSD `env -P dir`, and wrappers that change directory other than `env -C` (`sudo -D`,
   `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
