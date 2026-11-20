@@ -3691,6 +3691,25 @@ def iter_merge_segments(
 FORGED_CHECK = Path(__file__).resolve().with_name("check-forged-review-gate.py")
 
 
+GATE_WORKFLOW = ".github/workflows/review-gate.yml"
+
+
+def _no_check_runs(listing: str) -> bool:
+    """True only for a well-formed `--paginate` listing (concatenated pages) with zero check runs."""
+    decoder, text, pos, pages = json.JSONDecoder(), listing.strip(), 0, 0
+    try:
+        while pos < len(text):
+            page, pos = decoder.raw_decode(text, pos)
+            if page["check_runs"]:
+                return False
+            pages += 1
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+    except (ValueError, KeyError, TypeError):
+        return False  # malformed: the wrapper decides, and fails closed
+    return pages > 0
+
+
 def forged_gate_check(
     owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
 ) -> str | None:
@@ -3699,7 +3718,7 @@ def forged_gate_check(
     The same wrapper the Review Gate workflow runs reads the head's check runs, so a `Review Gate` job
     from an untrusted workflow (or another PR's run on a shared head) blocks here too, not only in CI.
     Fails closed: a failed listing, a missing wrapper, or wrapper exit 1 (forged) or 2 (could not
-    evaluate) all block.
+    evaluate) all block. A well-formed empty listing blocks only where the repo has the gate workflow.
     """
     base = dict(env if env is not None else os.environ)
     listing = subprocess.run(
@@ -3710,6 +3729,20 @@ def forged_gate_check(
     if listing.returncode != 0:
         detail = listing.stderr.strip() or "no output"
         return f"review-gate: could not list check runs on {head[:12]} for the forged-check step: {detail}"
+    if _no_check_runs(listing.stdout):
+        # Nothing to forge. Only a repo configured for Review Gate (the workflow file doctor checks for,
+        # on the default branch) must have runs; there, the wrapper's exit 2 still blocks. A repo without
+        # the gate and without CI merges on gate.evaluate alone (cop P2 on #121).
+        wf = subprocess.run(
+            ["gh", "api", *(["--hostname", hostname] if hostname else []), "--silent",
+             f"repos/{owner}/{name}/contents/{GATE_WORKFLOW}"],
+            capture_output=True, text=True, env=base, timeout=120,
+        )
+        if wf.returncode != 0 and "HTTP 404" in wf.stderr:
+            return None
+        if wf.returncode != 0:
+            detail = wf.stderr.strip() or "no output"
+            return f"review-gate: could not tell whether {owner}/{name} has {GATE_WORKFLOW}: {detail}"
     child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number)}
     if hostname:
         child["GH_HOST"] = hostname

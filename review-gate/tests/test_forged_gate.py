@@ -51,6 +51,11 @@ if "-X" in args and "PATCH" in args:
     with open(os.path.join(state, "patches.log"), "a") as patches:
         patches.write(f"{path.rsplit('/', 1)[1]} {concl}\n")
     open(os.path.join(state, "conclusion"), "w").write(concl); sys.exit(0)
+if path.endswith("/contents/.github/workflows/review-gate.yml"):  # merge-guard's "is the gate configured"
+    wf = fixture.get("workflow", True)
+    if wf is True:
+        sys.exit(0)
+    print("gh: Not Found (HTTP 404)" if wf is False else "gh: Bad Gateway (HTTP 502)", file=sys.stderr); sys.exit(1)
 if "/contents/scripts/" in path:
     name = path.split("/contents/scripts/")[1].split("?")[0]
     src = fixture["scripts"].get(name)
@@ -60,6 +65,8 @@ if "/contents/scripts/" in path:
 if "/check-runs" in path and "/commits/" in path:
     if fixture.get("listing_fails"):
         sys.exit(1)
+    if "raw_listing" in fixture:
+        print(fixture["raw_listing"]); sys.exit(0)
     runs = fixture["check_runs"] + created + fixture.get("own_jobs", [])
     page2 = fixture.get("page2", [])  # served only to --paginate, as a second concatenated page
     print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": runs}))
@@ -459,6 +466,24 @@ class MergeGuardForgedStep(unittest.TestCase):
     def test_unevaluable_blocks_exit_2(self):
         msg = self.guard({"check_runs": [job("Review Gate", 514)], "runs": {"514": TRUSTED_RUN}})
         self.assertIn("forged-check step exited 2", msg)
+
+    # cop P2 on #121: an empty listing is "nothing to forge" unless the repo is configured for Review Gate
+    def test_empty_listing_in_configured_repo_blocks_exit_2(self):
+        msg = self.guard({"check_runs": [], "workflow": True})
+        self.assertIn("forged-check step exited 2", msg)
+
+    def test_empty_listing_in_unconfigured_repo_allows(self):
+        self.assertIsNone(self.guard({"check_runs": [], "workflow": False}))
+
+    def test_empty_listing_with_failed_config_lookup_blocks(self):
+        msg = self.guard({"check_runs": [], "workflow": "error"})
+        self.assertIn("could not tell whether o/r has .github/workflows/review-gate.yml", msg)
+
+    def test_malformed_listing_blocks_even_in_unconfigured_repo(self):
+        for raw in ("not json", '{"total_count": 0}', ""):
+            with self.subTest(raw=raw):
+                msg = self.guard({"check_runs": [], "workflow": False, "raw_listing": raw})
+                self.assertIn("forged-check step exited 2", msg)
 
     def test_failed_listing_blocks(self):
         msg = self.guard({"check_runs": [], "listing_fails": True})
