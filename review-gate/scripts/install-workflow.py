@@ -26,6 +26,13 @@ KNOWN_OLD = frozenset({
 })
 
 
+# Every script copied into a repo's scripts/. doctor-review-gate.py reads this tuple, so the two cannot drift.
+# The workflow loads the first three from the default branch. lint-review-body.py is for authors (it imports
+# the checker beside it); the workflow never runs it.
+VENDORED_SCRIPTS = ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
+                    "lint-review-body.py")
+
+
 WRAPPER = "check-forged-review-gate.py"
 # What the bundled wrapper calls on the detector. Checked by parsing, never by running: the
 # installer runs on a developer machine and must not execute repo code (#105 Codex P1).
@@ -105,10 +112,7 @@ def main() -> int:
     skill_root = Path(__file__).resolve().parents[1]
     force = "--force" in sys.argv
     workflow_src = skill_root / "templates" / "review-gate.yml"
-    # The workflow loads each of these from the default branch.
-    # lint-review-body.py is for authors (it imports the checker beside it); the workflow never runs it.
-    scripts = ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py", "lint-review-body.py")
-    script_srcs = [skill_root / "scripts" / name for name in scripts]
+    script_srcs = [skill_root / "scripts" / name for name in VENDORED_SCRIPTS]
     for src in (workflow_src, *script_srcs):
         if not src.is_file():
             print(f"missing: {src}", file=sys.stderr)

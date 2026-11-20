@@ -2,6 +2,9 @@
 
 Row: https://app.notion.com/p/41a4efecc95a81388f71da096a699f71 (origin: nevar-integrations PR #11).
 """
+import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,6 +12,10 @@ import unittest
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
+# Only the claude-skills repo has its mirrors (scripts/, .github/) and this manifest beside the skill; an
+# installed skill directory (e.g. nevar-fund's) has neither, so tests that need that layout skip there.
+IN_CLAUDE_SKILLS = (SKILL.parent / "skills-manifest.json").is_file()
+NOT_CLAUDE_SKILLS = "needs the claude-skills repo layout (skills-manifest.json beside the skill)"
 INSTALLER = SKILL / "scripts" / "install-workflow.py"
 
 
@@ -150,13 +157,77 @@ class VendoredDetector(unittest.TestCase):
             self.assertEqual(bad.returncode, 1, bad.stderr)
             self.assertIn("PR body line 3:", bad.stderr)
 
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, NOT_CLAUDE_SKILLS)
     def test_this_repo_mirrors_are_byte_identical(self):
         # claude-skills runs its own gate from scripts/ and .github/workflows/; they must equal the skill's copies.
         root = SKILL.parent
-        for name in ("check-review-gate.py", "check-forged-review-gate.py", "lint-review-body.py"):
+        for name in ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
+                     "lint-review-body.py"):
             self.assertEqual((root / "scripts" / name).read_bytes(), (SKILL / "scripts" / name).read_bytes(), name)
+        for linter in (root / "scripts" / "lint-review-body.py", SKILL / "scripts" / "lint-review-body.py"):
+            self.assertTrue(os.access(linter, os.X_OK), linter)
         self.assertEqual((root / ".github" / "workflows" / "review-gate.yml").read_bytes(),
                          (SKILL / "templates" / "review-gate.yml").read_bytes())
+
+
+
+DOCTOR = SKILL / "scripts" / "doctor-review-gate.py"
+
+
+def doctor_script_lines(repo):
+    proc = subprocess.run([sys.executable, str(DOCTOR)], cwd=repo, capture_output=True, text=True)
+    return proc, [line for line in proc.stdout.splitlines() if " scripts/" in line and "workflows" not in line]
+
+
+class DoctorVendoredDrift(unittest.TestCase):
+    """doctor-review-gate.py compares every vendored script with the skill's copy (3.2.12)."""
+
+    def test_fresh_install_reports_every_vendored_script_ok(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            proc, lines = doctor_script_lines(repo)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(lines, [f"OK vendored script scripts/{n}" for n in installer().VENDORED_SCRIPTS])
+
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, NOT_CLAUDE_SKILLS + " and its git history")
+    def test_an_old_checker_and_a_missing_linter_warn(self):
+        old = subprocess.run(["git", "show", "bce2e9c0:review-gate/scripts/check-review-gate.py"],
+                             cwd=SKILL, capture_output=True, check=True).stdout  # review-gate 3.2.10
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            (Path(repo) / "scripts" / "check-review-gate.py").write_bytes(old)
+            (Path(repo) / "scripts" / "lint-review-body.py").unlink()
+            proc, lines = doctor_script_lines(repo)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("WARN scripts/check-review-gate.py differs from the skill; re-run "
+                          "install-workflow.py --force and merge it to the default branch", lines)
+            self.assertIn("WARN missing scripts/lint-review-body.py; re-run install-workflow.py and merge it "
+                          "to the default branch", lines)
+            self.assertIn("OK vendored script scripts/check-forged-review-gate.py", lines)
+            # one line per vendored script, taken from the installer's own list
+            self.assertEqual(len(lines), len(installer().VENDORED_SCRIPTS), lines)
+
+
+class InstalledSkillLayout(unittest.TestCase):
+    """The skill's tests also run from an installed skill directory, without the claude-skills tree."""
+
+    @unittest.skipUnless(IN_CLAUDE_SKILLS, "already running from an installed skill directory")
+    def test_module_skips_repo_layout_tests_outside_claude_skills(self):
+        with tempfile.TemporaryDirectory() as d:
+            skill = Path(d) / "skills" / "review-gate"
+            shutil.copytree(SKILL, skill, ignore=shutil.ignore_patterns("__pycache__"))
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v", "test_install_workflow"],
+                                  cwd=skill / "tests", capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertRegex(proc.stderr, r"test_this_repo_mirrors_are_byte_identical .*skipped 'needs the claude-skills")
+            self.assertNotIn("FileNotFoundError", proc.stderr)
+
+
+def installer():
+    spec = importlib.util.spec_from_file_location("install_workflow", INSTALLER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 if __name__ == "__main__":

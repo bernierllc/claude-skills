@@ -6,6 +6,7 @@ Prints WARN / OK lines on stdout.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -18,6 +19,17 @@ MERGE_BRANCHES = ("main", "staging")
 
 
 MAIN_REVIEW_LABEL = "review:high"  # must stay in check-review-gate.py MAIN_REVIEW_LABELS (pinned by a test)
+
+
+SKILL_SCRIPTS = Path(__file__).resolve().parent
+
+
+def _load_installer():
+    """install-workflow.py owns the list of vendored scripts; load it rather than keep a second list."""
+    spec = importlib.util.spec_from_file_location("install_workflow", SKILL_SCRIPTS / "install-workflow.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def gh_json(args: list[str]) -> object | None:
@@ -190,15 +202,19 @@ def main() -> int:
             "WARN missing .github/workflows/review-gate.yml — copy from "
             "skill review-gate/templates/review-gate.yml"
         )
-    for name in ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py"):
+    installer = _load_installer()
+    for name in installer.VENDORED_SCRIPTS:
         script = root / "scripts" / name
-        if script.is_file():
-            print(f"OK trusted script {script.relative_to(root)}")
+        if not script.is_file():
+            print(f"WARN missing scripts/{name}; re-run install-workflow.py and merge it to the default branch")
+        elif script.read_bytes() != (SKILL_SCRIPTS / name).read_bytes():
+            # the installer keeps a newer or custom aec detector, so for that file this WARN can be expected
+            kept = (" (if yours is a newer agents-environment-config copy, the installer keeps it)"
+                    if name == installer.VENDORED else "")
+            print(f"WARN scripts/{name} differs from the skill; re-run install-workflow.py --force "
+                  f"and merge it to the default branch{kept}")
         else:
-            print(
-                f"WARN missing scripts/{name} — the workflow loads this from the "
-                "default branch and fails closed without it; re-run install-workflow.py"
-            )
+            print(f"OK vendored script {script.relative_to(root)}")
 
     rulesets = gh_json(["api", "repos/{owner}/{repo}/rulesets", "--jq", "."])
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.

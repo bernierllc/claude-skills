@@ -278,12 +278,8 @@ def _review_threads(owner: str, name: str, number: int, hostname: str | None = N
     return threads
 
 
-def codex_clean_comment_on_head(pr: dict[str, Any]) -> bool:
-    """True when Codex's summary comment says a code review completed on the
-    current head with no unresolved findings (the clean case posts no review)."""
-    head = pr.get("headRefOid") or ""
-    if not head:
-        return False
+def _codex_states(pr: dict[str, Any]):
+    """Yield the code_review dict of every codex-review-state marker in the Codex bot's PR comments."""
     for c in pr.get("comments", {}).get("nodes") or []:
         if not is_codex_author((c.get("author") or {}).get("login")):
             continue
@@ -293,13 +289,32 @@ def codex_clean_comment_on_head(pr: dict[str, Any]) -> bool:
                 review = json.loads(m.group(1)).get("code_review") or {}
             except (ValueError, AttributeError):
                 continue  # malformed marker: not evidence of a review; fail closed
-            if (
-                review.get("commit_sha") == head
-                and review.get("status") == "completed"
-                and review.get("has_unresolved_findings") is False
-            ):
-                return True
-    return False
+            if isinstance(review, dict):
+                yield review
+
+
+def codex_clean_comment_on_head(pr: dict[str, Any]) -> bool:
+    """True when Codex's summary comment says a code review completed on the
+    current head with no unresolved findings (the clean case posts no review)."""
+    head = pr.get("headRefOid") or ""
+    if not head:
+        return False
+    return any(
+        review.get("commit_sha") == head
+        and review.get("status") == "completed"
+        and review.get("has_unresolved_findings") is False
+        for review in _codex_states(pr)
+    )
+
+
+def codex_stale_state_shas(pr: dict[str, Any]) -> list[str]:
+    """Commit SHAs the Codex bot's review state names when none of them is the current head.
+
+    Used only to word the failure message: Codex reviews the first head, and later heads are covered
+    by a fallback attestation, not by asking Codex again (that spends quota)."""
+    head = pr.get("headRefOid") or ""
+    shas = sorted({str(r.get("commit_sha")) for r in _codex_states(pr) if r.get("commit_sha")})
+    return [] if head in shas else shas
 
 
 def pr_payload(
@@ -522,11 +537,20 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
         or codex_clean_comment_on_head(pr)
         or review_section_names_fallback(body, head)
     ):
-        reasons.append(
+        reason = (
             "No completed Codex review on current head, and ## Review lacks a completed "
             "fallback attestation: Fallback review: <codex|agy|antigravity|superpowers|claude-sonnet> "
             "on <head SHA> — verdict: <clean|findings fixed>"
         )
+        stale = codex_stale_state_shas(pr)
+        if stale:
+            reason += (
+                f". The Codex bot last reviewed {', '.join(x[:12] for x in stale)}, not this head "
+                f"{head[:12]}: Codex reviews the first head only, so review this head with a fallback "
+                "reviewer and add that Fallback review line to ## Review. Asking Codex for a manual "
+                "re-review also works but spends Codex quota and is not the default"
+            )
+        reasons.append(reason)
     reasons.extend(p2_threads_closed(pr))
     if (pr.get("baseRefName") or "") == "main":
         labels = {n.get("name") for n in (pr.get("labels", {}).get("nodes") or [])}
