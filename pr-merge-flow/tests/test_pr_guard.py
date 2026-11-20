@@ -533,7 +533,7 @@ with _tf.TemporaryDirectory() as d:
     Path(d, "sub", "bad.md").write_text(f"Round 2\n{M} review\n")
     Path(d, "sub", "ok.md").write_text("Round 2, fallback attested\n")
     for c in ("gh pr comment 5 --body-file sub/bad.md", "gh pr comment 5 -F sub/bad.md",
-              "gh pr comment 5 --body-file=sub/bad.md", "cd sub && gh issue comment 5 -F bad.md",
+              "gh pr comment 5 --body-file=sub/bad.md",
               "gh api repos/o/r/issues/5/comments -F body=@sub/bad.md", "gh api repos/o/r/issues/5/comments --input sub/bad.md",
               # Codex P2 on #120: pflag shorthand with the value attached
               "gh pr comment 5 -Fsub/bad.md", "gh pr comment 5 -F=sub/bad.md", "gh api repos/o/r/issues/5/comments -Fbody=@sub/bad.md",
@@ -580,20 +580,25 @@ with _tf.TemporaryDirectory() as d:
     # a continuation between words still joins the command
     for c in ("gh pr comment 5 \\\n  --body-file sub/bad.md", "gh pr \\\n comment 5 -F sub/bad.md"):
         assert _blocked(c, d), c
-    # a cd is honored only as a plain top-level command: first, or after ; or a newline (F4)
-    Path(d, "top.md").write_text(f"{M} review\n")
-    Path(d, "sub", "top.md").write_text("clean\n")
-    for c in ("cd sub | cat; gh pr comment 123 -F top.md", "cd sub & gh pr comment 123 -F top.md",
-              "{ cd sub; } | cat; gh pr comment 123 -F top.md", "(cd sub && gh pr comment 123 -F top.md)",
-              "false || cd sub; gh pr comment 123 -F top.md", "false && cd sub; gh pr comment 123 -F top.md",
-              "if true; then cd sub; fi; gh pr comment 123 -F top.md", "cd sub || exit; gh pr comment 123 -F top.md"):
-        assert _any(c), c
-    for c in ("cd sub && gh pr comment 5 -F ok.md", "cd sub; gh pr comment 5 -F ok.md", "cd sub\ngh pr comment 5 -F ok.md",
-              f"cd {d}/sub && gh pr comment 5 -F ok.md", "(cd sub); gh pr comment 5 -F sub/ok.md"):
-        assert g.check(c, d) is None, c
-    assert _blocked("(cd sub); gh pr comment 5 -F top.md", d)  # the subshell's cd is gone after `)`
-    # a cd target the hook can't resolve leaves relative body paths unknown (F5: a quoted plain* dir included)
-    assert _unread("cd 'plain*' && gh pr comment 123 -F ok.md")
+    # 1.5.1 round 4: no cd tracking. Any cd/pushd/popd/chdir word (or env -C) makes the dir unknown, so a
+    # relative body path fails closed; an absolute literal path is still scanned (F1-F4 of round 3).
+    os.symlink(os.path.join(d, "sub"), os.path.join(d, "link"))
+    for c in ("cd sub && gh issue comment 5 -F bad.md", "cd sub; gh pr comment 5 -F ok.md",
+              "if false; then true; cd sub; fi; gh pr comment 1 -F bad.md", "f() { true; cd sub; }; gh pr comment 1 -F bad.md",
+              "for x in; do cd sub; done; gh pr comment 1 -F bad.md", "cd nonexistent; gh pr comment 1 -F bad.md",
+              "cd link/..; gh pr comment 1 -F sub/bad.md", "CDPATH=sub cd x; gh pr comment 1 -F ../bad.md",
+              "builtin cd sub; gh pr comment 1 -F bad.md", "command cd sub; gh pr comment 1 -F bad.md",
+              "\\cd sub; gh pr comment 1 -F bad.md", "pushd sub; gh pr comment 1 -F bad.md",
+              "env -C sub gh pr comment 1 -F bad.md", "cd 'plain*' && gh pr comment 123 -F ok.md"):
+        assert _unread(c), c
+    assert g.check(f"cd sub && gh pr comment 5 -F {d}/sub/ok.md", d) is None
+    assert _blocked(f"cd sub && gh pr comment 5 -F {d}/sub/bad.md", d)
+    # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
+    assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
+    # a file too large to scan whole fails closed instead of scanning a prefix (F6)
+    Path(d, "big.json").write_text(" " * g.MAX_BODY_FILE + '{"body":"' + M + ' review"}')
+    assert "too large to scan" in (g.check("gh api repos/o/r/issues/1/comments --input big.json", d) or "")
+    assert g.check("gh api repos/o/r/issues/1/comments --input big.json  # codex-review-ok: Matt asked", d) is None
     # a value consumed by --body is text, never a flag (P1-2)
     for c in ("gh pr comment 123 --body '--body-file=$BODY is the syntax'", "gh pr comment 123 -b '-F $X'",
               "gh api repos/o/r/issues/1/comments -f body='--input $B'"):

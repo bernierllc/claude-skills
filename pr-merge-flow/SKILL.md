@@ -71,21 +71,23 @@ hooks dormant). It blocks:
   `--input` file holds it (1.5.0). Each mention starts a Codex review on Matt's quota; Codex reviews a PR's
   first head only, and later heads get a fallback review plus the `Fallback review:` line in `## Review`.
   The body is scanned in the arguments and in a readable `--body-file`/`-F`, `-F body=@file` or `--input`
-  file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
+  file (a relative path against the hook's working directory). When the body comes from a file or stdin (`-`, `/dev/stdin`,
   `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
   be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
   hook can't resolve before the shell runs is blocked too, with a message to write the body to a plain
   path (1.5.1). The hook resolves only an allowlist: a path of letters, digits and `_ . / + , : @ % = -`,
   not starting with `=`, with no quoting, backslash, continuation or `~`. Anything else fails closed,
   including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
-  every `~` form (`~/`, `~+`, `~-`, `~user`). A relative path is resolved against a `cd` only when that cd
-  is a plain top-level command (first, or after `;` or a newline) to such a path, in a command with no
-  pipeline, background job or `||`; any other cd (in a subshell, `if`, `{ }` group or after `&&`) makes the
-  directory unknown, so a relative body path after it fails closed. Conservative blocks, by design: a quoted
-  path or cd target with special characters (`'plain*.md'`, `cd 'plain*'`), `~/body.md`, a cd inside a
-  subshell (`(cd sub && gh … -F b.md)`), and any `gh api` call with a body file, including a read-only
-  `gh api -X GET … -F labels=@"$F"` (GET is not exempt). Workaround: an absolute or plain relative path,
-  and `cd dir && gh …`. A value consumed by `--body`/`-b` or another value flag is never read as a flag,
+  every `~` form (`~/`, `~+`, `~-`, `~user`). There is no cd tracking: when the command contains `cd`,
+  `pushd`, `popd` or `chdir` as a word anywhere (after `builtin`/`command`/a backslash, inside `if`, a
+  function, a loop, a subshell or a pipeline) or runs `env -C`, the directory is unknown, so a relative
+  body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
+  1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
+  path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
+  contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
+  including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
+  absolute path). Out of scope: wrappers that change directory other than `env -C` (`sudo -D`,
+  `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag,
   and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;

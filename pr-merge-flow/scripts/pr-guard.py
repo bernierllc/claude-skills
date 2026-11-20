@@ -185,9 +185,8 @@ def segments(cmd, raw=False):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
-    backslash-newline continues the command, as in Bash. With raw (for walk), words keep their hidden
-    characters and markers (see literal), and operators and leading keywords come through as their own
-    one-word segments.
+    backslash-newline continues the command, as in Bash. With raw, words keep their hidden
+    characters and markers (see literal).
     """
     cmd = strip_comments_and_heredocs(cmd.replace("\\\n", CONT if raw else " "))
     tokens = shell_tokens(cmd)
@@ -201,9 +200,7 @@ def segments(cmd, raw=False):
         if t and set(t) <= OPERATORS:
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
-                kw = argv.pop(0)
-                if raw and kw in KEYWORDS:
-                    yield [kw]
+                argv.pop(0)
             # `command [-p] [--] cmd …` runs cmd; `command -v/-V cmd` only looks it up.
             while argv and argv[0] == "command":
                 argv.pop(0)
@@ -227,11 +224,15 @@ def segments(cmd, raw=False):
                 yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
-            yield from ([c] for c in re.findall(r"[()]|[^()]+", t) if raw or c in "()")
+            yield from ([c] for c in t if c in "()")
         elif not raw:
             argv.append(t.translate(UNHIDE))
         elif t.strip(CONT):  # a continuation between words is only whitespace
             argv.append(t)
+
+
+# Any word that may change directory, anywhere in the raw command (over-matching is fine: it only fails closed).
+CHDIR = re.compile(r"(?<![\w.-])(?:cd|pushd|popd|chdir)(?![\w.-])")
 
 
 def literal(word):
@@ -239,26 +240,18 @@ def literal(word):
     return bool(PLAIN.fullmatch(word))
 
 
-def walk(cmd, cwd, raw=False):
+def walk(cmd, cwd):
     """Yield (dir, argv) for each non-cd segment, tracking `cd DIR` and subshell bounds.
 
-    A dir containing `$` or a backtick can't be resolved statically; it is yielded as-is so the
-    caller can refuse or skip it. With raw (yielding raw words), an unknown dir is None: a cd counts
-    only as a plain top-level command (first, or after `;` or a newline, outside any subshell, keyword
-    or `{ }` group) to a literal() target, in a command with no pipeline, background job or `||`.
+    A dir containing `$` or a backtick can't be resolved statically; it is yielded
+    as-is so the caller can refuse or skip it.
     """
-    stack, prev = [], None
-    if raw:
-        toks = shell_tokens(strip_comments_and_heredocs(cmd.replace("\\\n", " "))) or ["||"]
-        scoped = runs_async(cmd) or any("||" in t for t in toks)
-    for argv in segments(cmd, raw):
-        op, prev = prev, argv[0]
+    stack = []
+    for argv in segments(cmd):
         if argv == ["("]:
             stack.append(cwd)
         elif argv == [")"]:
             cwd = stack.pop() if stack else cwd
-        elif raw and len(argv) == 1 and (set(argv[0]) <= OPERATORS or argv[0] in KEYWORDS):
-            continue
         elif argv[0] in ("cd", "pushd", "popd"):
             # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word. A bare `cd` ($HOME),
             # `cd -` ($OLDPWD) and pushd/popd (the dir stack) go where the guard can't see: left unresolved.
@@ -269,14 +262,8 @@ def walk(cmd, cwd, raw=False):
                 d = "$OLDPWD"
             elif d is None:
                 d = "$HOME"
-            if not raw:
-                cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
-            elif scoped or stack or not set(op or ";") <= set(";\n") or not literal(d):
-                cwd = None
-            else:
-                cwd = d if d.startswith("/") else cwd and os.path.join(cwd, d)
+            cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
         else:
-            prev = "cmd"
             yield cwd, argv
 
 
@@ -394,7 +381,7 @@ MAX_BODY_FILE = 1 << 20
 
 def unresolvable(d, path):
     """True when the hook can't tell which file the raw word `path` names: it isn't literal(), or it is
-    relative under an unknown dir (None)."""
+    relative and the command may change directory (d is None)."""
     return not literal(path) or (d is None and not path.startswith("/"))
 
 
@@ -417,8 +404,14 @@ GH_VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-R", "--repo", "-X", "--
 
 def comment_posts(cmd, cwd):
     """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, any gh api call
-    with a body): the body text passed inline, and the raw words naming body files."""
-    for d, raw in walk(cmd, cwd, raw=True):
+    with a body): the body text passed inline, and the raw words naming body files.
+
+    There is no cd tracking: when the command may change directory anywhere (CHDIR, or `env -C`), the dir is
+    unknown (None), so only an absolute body path resolves.
+    """
+    segs = list(segments(cmd, raw=True))
+    d = None if CHDIR.search(cmd) or any(a[0] == "cd" for a in segs) else cwd
+    for raw in segs:
         argv = [a.translate(UNHIDE) for a in raw]
         words = gh_words(argv)
         if not words:
@@ -453,24 +446,34 @@ def comment_posts(cmd, cwd):
                     (value, odd), i = nxt, i + 1
             else:
                 continue
-            if odd:  # a continuation or $'...' in the word: mark it, so the path is never literal()
-                value = ANSI + value
+            mark = ANSI if odd else ""  # a continuation or $'...' in the word: the path is never literal()
             if name in file_flags:
-                files.append(value)
+                files.append(mark + value)
             elif api and name in API_FIELD_FLAGS:
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
-                    files.append(value.split("=@", 1)[1])
+                    files.append(mark + value.split("=@", 1)[1])
         yield d, texts, files
 
 
-def unresolved_body_file(cmd, cwd):
-    """The first body-file path the hook can't resolve before the shell runs, else None. Its contents
-    are unknown, so the Codex check fails closed on it."""
+def body_file_block(cmd, cwd):
+    """A block message for the first body file the hook can't scan whole before the shell runs, else None:
+    one it can't resolve, or one over MAX_BODY_FILE. Its contents are unknown, so the Codex check fails closed."""
     for d, _, files in comment_posts(cmd, cwd):
-        for path in files:
-            if path != "-" and unresolvable(d, path):
-                return path
+        for path in (p for p in files if p != "-"):
+            if unresolvable(d, path):
+                return (f"Blocked: can't read the comment body file `{path.translate(UNHIDE)}` before the shell runs, "
+                        "so the hook can't check it for a Codex bot mention. Write the body to a plain path (letters, "
+                        "digits, `_ . / + , : @ % = -`, no `~`, quotes or expansions; e.g. `/tmp/pr-<n>-comment.md`) "
+                        "and pass that path to --body-file / -F / --input. In a command that changes directory "
+                        "(cd, pushd, env -C), use an absolute path.")
+            try:
+                big = os.path.getsize(os.path.join(d or "/", path)) > MAX_BODY_FILE
+            except OSError:
+                big = False  # missing or unreadable: nothing will be posted from it
+            if big:
+                return (f"Blocked: the comment body file `{path}` is too large to scan (over {MAX_BODY_FILE} bytes) "
+                        "for a Codex bot mention. Post a smaller body.")
     return None
 
 
@@ -756,12 +759,9 @@ def check(cmd, cwd):
                 "`Fallback review: <reviewer> on <sha> — verdict: <clean|findings fixed>` to the PR's "
                 "## Review section. Only when Matt explicitly asked for a Codex review here, add "
                 "`# codex-review-ok: <reason>` (the colon is optional) to the command.")
-    path = unresolved_body_file(cmd, cwd)
-    if path and not has_override(cmd, "codex-review-ok"):
-        return (f"Blocked: can't read the comment body file `{path.translate(UNHIDE)}` before the shell runs, so the "
-                "hook can't check it for a Codex bot mention. Write the body to a plain path (letters, digits, "
-                "`_ . / + , : @ % = -`, no `~`, quotes or expansions; e.g. `/tmp/pr-<n>-comment.md`), pass that "
-                "path to --body-file / -F / --input, and cd only as a plain first command (`cd dir && gh …`).")
+    block = body_file_block(cmd, cwd)
+    if block and not has_override(cmd, "codex-review-ok"):
+        return block
     for d, ref, toks, repo in merge_calls(cmd, cwd):
         if repo is None:
             return ("Blocked: can't parse this merge (a short-flag cluster such as `-dR x` or `-st 5`). "
