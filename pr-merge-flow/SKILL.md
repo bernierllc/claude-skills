@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.5.0
+version: 1.5.1
 author: Bernier LLC
 ---
 
@@ -71,9 +71,28 @@ hooks dormant). It blocks:
   `--input` file holds it (1.5.0). Each mention starts a Codex review on Matt's quota; Codex reviews a PR's
   first head only, and later heads get a fallback review plus the `Fallback review:` line in `## Review`.
   The body is scanned in the arguments and in a readable `--body-file`/`-F`, `-F body=@file` or `--input`
-  file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
+  file (a relative path against the hook's working directory). When the body comes from a file or stdin (`-`, `/dev/stdin`,
   `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
-  be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). The mention is
+  be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
+  hook can't resolve before the shell runs is blocked too, with a message to write the body to a plain
+  path (1.5.1). The hook resolves only an allowlist: a path of letters, digits and `_ . / + , : @ % = -`,
+  not starting with `=`, with no quoting, backslash or `~`. Anything else fails closed,
+  including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
+  every `~` form (`~/`, `~+`, `~-`, `~user`). There is no cd tracking: when the command contains `cd`,
+  `pushd`, `popd` or `chdir` as a word anywhere (after `builtin`/`command`/a backslash, inside `if`, a
+  function, a loop, a subshell or a pipeline) or runs `env` with `--chdir` or a short option holding `C` (`-Csub`, `-iC sub`, even `-uC`), the directory is unknown, so a relative
+  body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
+  1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
+  path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
+  contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
+  including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
+  absolute path), a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`), and a
+  `gh …` that is only an argument after `env` (`env echo gh pr merge 1`), since every word after `env` is
+  tried as the command. env options are not parsed: every word after `env` may start the command, so no option argument hides
+  `gh` (`env -S gh …`, `env -u gh gh …`, `env env -C sub gh …`). Out of scope: abbreviated env long options
+  (`--ch=dir`), an attached split string (`env -Sgh …`), BSD `env -P dir`, and wrappers that change directory other than `env -C` (`sudo -D`,
+  `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
+  attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
@@ -86,11 +105,11 @@ hooks dormant). It blocks:
 
 The sync and draft rules fail open when there's no open PR, `gh` is unavailable, or GitHub reports `UNKNOWN`.
 
-**Scope:** the guard catches the commands agents habitually run, not a determined
-evasion; it is a speed bump, not a Bash sandbox. Parsing errs toward checking more:
-comments and heredoc bodies are dropped, `( … )` scopes `cd`, and input `shlex` can't
-parse is split on every operator character. Exotic Bash that still slips past is out of
-scope unless an agent actually ran it.
+**Best-effort guard:** this is a quota guard, not a security boundary. It catches the
+commands agents habitually run, not a determined evasion. Backslash-newline is joined first,
+as the shell does (the mention scan also reads the unjoined text), then comments and heredoc bodies are dropped, and input `shlex` can't parse
+is split on every operator character. Any shell form that rewrites the command after the hook
+sees it is out of scope: wrappers, `bash -c`, `eval`, variables and command substitution.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.

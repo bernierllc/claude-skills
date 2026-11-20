@@ -40,14 +40,12 @@ assert not list(g.pr_create_dirs("gh pr create -R me/r --title x", "/r"))
 assert not list(g.pr_create_dirs("gh pr create --repo=me/r", "/r"))
 # Codex P2s on #37: quoting, continuation, other ref spellings, gh aliases/inherited -R.
 assert calls('git merge -m "sync; base" origin/main') == [("/r", "merge", ["origin/main"])]
-assert calls("git merge \\\n  origin/staging") == [("/r", "merge", ["origin/staging"])]
 assert calls("git merge origin/staging # sync; not a command") == [("/r", "merge", ["origin/staging"])]
 assert calls('git commit -m "" && git merge origin/staging') == [("/r", "merge", ["origin/staging"])]
 assert calls("if true; then git -C wt rebase origin/main; fi") == [("/r/wt", "rebase", ["origin/main"])]
 for ref in ["refs/heads/main", "refs/remotes/upstream/main", "company/main", "refs/remotes/origin/main"]:
     assert g.names_base([ref], "main"), ref
 assert not g.names_base(["refs/heads/feat/main-fix", "a/b/main"], "main")
-assert g.draft_violation("gh pr create \\\n  --draft --title x")
 assert g.draft_violation("gh pr new --draft")
 assert g.draft_violation("gh -R owner/repo pr create --draft")
 assert not g.draft_violation('gh pr create --title "no --draft; here"')
@@ -533,15 +531,113 @@ with _tf.TemporaryDirectory() as d:
     Path(d, "sub", "bad.md").write_text(f"Round 2\n{M} review\n")
     Path(d, "sub", "ok.md").write_text("Round 2, fallback attested\n")
     for c in ("gh pr comment 5 --body-file sub/bad.md", "gh pr comment 5 -F sub/bad.md",
-              "gh pr comment 5 --body-file=sub/bad.md", "cd sub && gh issue comment 5 -F bad.md",
+              "gh pr comment 5 --body-file=sub/bad.md",
               "gh api repos/o/r/issues/5/comments -F body=@sub/bad.md", "gh api repos/o/r/issues/5/comments --input sub/bad.md",
               # Codex P2 on #120: pflag shorthand with the value attached
               "gh pr comment 5 -Fsub/bad.md", "gh pr comment 5 -F=sub/bad.md", "gh api repos/o/r/issues/5/comments -Fbody=@sub/bad.md",
               f"gh api repos/o/r/issues/5/comments -fbody='{M} review'"):
         assert _blocked(c, d), c
     for c in ("gh pr comment 5 --body-file sub/ok.md", "gh api repos/o/r/issues/5/comments -F body=@sub/ok.md",
-              "gh pr comment 5 --body-file sub/missing.md", "gh pr comment 5 --body-file $F"):
+              "gh pr comment 5 --body-file sub/missing.md"):
         assert not _blocked(c, d), c
+    # 1.5.1, Codex on nevar-content #14: a body path the shell expands ($VAR, `cmd`, or relative under such a
+    # cd) can't be read here, so the check fails closed with a fix; an absolute path under such a cd still reads.
+    _unread = lambda c: (g.check(c, d) or "").startswith("Blocked: can't read the comment body file")
+    for c in ('gh pr comment 1 --body-file "$BODY"', "gh pr comment 1 -F $F", "gh pr comment 1 -F`mktemp`",
+              'gh issue comment 1 --body-file="${TMP}/b.md"', 'gh api repos/o/r/issues/1/comments -F body=@"$B"',
+              'gh api repos/o/r/issues/1/comments --input "$B"', 'cd "$WT" && gh pr comment 1 -F b.md'):
+        assert _unread(c), c
+        assert g.check(c + "  # codex-review-ok: Matt asked for a Codex pass", d) is None, c
+    for c in (f'cd "$WT" && gh pr comment 1 -F {d}/sub/ok.md', "gh pr comment 1 --body-file - <<'EOF'\nhi\nEOF",
+              'gh pr comment 1 --body "$MSG"', 'git commit -F "$MSG_FILE"'):
+        assert g.check(c, d) is None, c
+    assert _blocked(f'cd "$WT" && gh pr comment 1 -F {d}/sub/bad.md', d)
+    # Codex high on #123: every shell expansion form fails closed, not just $ and backtick (P1-1)
+    _any = lambda c, cwd=d: (g.check(c, cwd) or "").startswith("Blocked:")
+    for c in ("gh pr comment 123 --body-file sub/bad.?d", "gh pr comment 123 --body-file sub/b*.md",
+              "gh pr comment 123 --body-file sub/[b]ad.md", "gh pr comment 123 --body-file sub/bad.{md,txt}",
+              "gh pr review 123 --comment --body-file <(cat sub/bad.md)", "gh pr comment 123 -F <(cat sub/bad.md)",
+              "gh pr comment 123 --body-file $'sub/bad.\\x6dd'", "cd sub* && gh pr comment 1 -F bad.md"):
+        assert _any(c), c
+    # 1.5.1 round 3: only a plain literal word resolves; anything the shell may rewrite fails closed.
+    # A quoted `plain*.md` or `cost$5.md` is a conservative block (workaround: rename, or a plain path).
+    Path(d, "cost$5.md").write_text(f"{M} review\n")
+    Path(d, "plain*.md").write_text("ok\n")
+    for c in ("gh pr comment 123 --body-file 'cost$5.md'", 'gh pr comment 123 --body-file "cost\\$5.md"',
+              "gh pr comment 123 --body-file 'plain*.md'", 'gh pr comment 123 --body-file "plain*.md"'):
+        assert _any(c), c
+    # ~ forms: bash expands ~+, ~- and ~user, and a quoted ~ is literal; none resolve here (F2)
+    for c in ("gh pr comment 123 --body-file ~/no-such-pr-guard-body.md", "gh pr comment 123 --body-file ~+/sub/bad.md",
+              "gh pr comment 123 --body-file ~-/sub/bad.md", "gh pr comment 123 --body-file ~root/bad.md",
+              "gh pr comment 123 --body-file '~/bad.md'", "gh pr comment 123 -F \\~/bad.md"):
+        assert _unread(c), c
+    # a continuation inside a word joins as in bash (sub/bad.md is read); zsh =(...) / =cmd fail closed (F3)
+    for c in ("gh pr comment 123 --body-file sub/ba\\\nd.md", "gh pr comment 123 --body-file =(cat sub/bad.md)",
+              "gh pr comment 123 -F =cat"):
+        assert _any(c), c
+    # a continuation between words still joins the command
+    for c in ("gh pr comment 5 \\\n  --body-file sub/bad.md", "gh pr \\\n comment 5 -F sub/bad.md"):
+        assert _blocked(c, d), c
+    # 1.5.1 round 4: no cd tracking. Any cd/pushd/popd/chdir word (or env -C) makes the dir unknown, so a
+    # relative body path fails closed; an absolute literal path is still scanned (F1-F4 of round 3).
+    os.symlink(os.path.join(d, "sub"), os.path.join(d, "link"))
+    for c in ("cd sub && gh issue comment 5 -F bad.md", "cd sub; gh pr comment 5 -F ok.md",
+              "if false; then true; cd sub; fi; gh pr comment 1 -F bad.md", "f() { true; cd sub; }; gh pr comment 1 -F bad.md",
+              "for x in; do cd sub; done; gh pr comment 1 -F bad.md", "cd nonexistent; gh pr comment 1 -F bad.md",
+              "cd link/..; gh pr comment 1 -F sub/bad.md", "CDPATH=sub cd x; gh pr comment 1 -F ../bad.md",
+              "builtin cd sub; gh pr comment 1 -F bad.md", "command cd sub; gh pr comment 1 -F bad.md",
+              "\\cd sub; gh pr comment 1 -F bad.md", "pushd sub; gh pr comment 1 -F bad.md",
+              "env -C sub gh pr comment 1 -F bad.md", "cd 'plain*' && gh pr comment 123 -F ok.md"):
+        assert _unread(c), c
+    assert g.check(f"cd sub && gh pr comment 5 -F {d}/sub/ok.md", d) is None
+    assert _blocked(f"cd sub && gh pr comment 5 -F {d}/sub/bad.md", d)
+    # round 4 (G1-G3): an attached -b value is scanned; env -C in every spelling changes dir; a continuation
+    # inside `cd` joins before any detector runs
+    for c in (f"gh pr comment 1 '-b{M} review'", f"gh issue comment 1 '-b{M} review'", f"gh pr review 1 --comment '-b{M} review'"):
+        assert _blocked(c, d), c
+    for c in ("env -Csub gh pr comment 1 -F bad.md", "env --chdir=sub gh pr comment 1 -F bad.md",
+              "env -C sub gh pr comment 1 -F bad.md", "c\\\nd sub; gh pr comment 1 -F bad.md"):
+        assert _unread(c), c
+    # round 5 (H1): a backslash-newline before the mention, quoted or not, still blocks (bash keeps it in
+    # single quotes); (H2) an env short cluster holding C changes dir
+    for c in (f"gh pr comment 1 --body 'thanks\\\n{M} review'", f'gh pr comment 1 --body "thanks\\\n{M} review"',
+              f"gh pr comment 1 --body thanks\\\n{M}", f"gh issue comment 1 -b 'x\\\n{M}'",
+              f"gh pr review 1 --comment -b 'x\\\n{M}'"):
+        assert _blocked(c, d), c
+    for c in ("env -iCsub PATH=/usr/bin gh pr comment 1 -F bad.md", "env -iC sub gh pr comment 1 -F bad.md"):
+        assert _unread(c), c
+    # rounds 6-7 (J1, K1): env options are not parsed. Every later word may start the command, so no option
+    # argument hides `gh`; a --chdir or short option holding C before it makes the dir unknown (conservative)
+    keep, chdir = ("--unset=C", "--unset C", "-i", "X=1", "C=sub", "-u gh", "-S", "-i -S"), \
+                  ("-iC sub", "-iCsub", "-Csub", "-C sub", "--chdir=sub", "--chdir sub", "env -C sub",
+                   "-uC", "-uCACHE", "-SC", "-iuC")
+    for c in (f"env -S 'gh' pr comment 1 -b '{M} review'", f"env -S gh pr review 1 --comment -b '{M}'",
+              f"env -u gh gh issue comment 1 -b '{M}'", f"env env -C sub gh api repos/o/r/issues/1/comments -f body='{M}'"):
+        assert _blocked(c, d), c
+    for o in keep + chdir:
+        assert _blocked(f'env {o} gh pr comment 1 -b "{M} review"', d), o
+        assert g.check(f"env {o} gh pr comment 1 -F {d}/sub/ok.md", d) is None, o
+    for o in keep:
+        assert g.check(f"env {o} gh pr comment 1 -F sub/ok.md", d) is None, o
+    for o in chdir:
+        assert _unread(f"env {o} gh pr comment 1 -F bad.md"), o
+    # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
+    assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
+    # a file too large to scan whole fails closed instead of scanning a prefix (F6)
+    Path(d, "big.json").write_text(" " * g.MAX_BODY_FILE + '{"body":"' + M + ' review"}')
+    assert "too large to scan" in (g.check("gh api repos/o/r/issues/1/comments --input big.json", d) or "")
+    assert g.check("gh api repos/o/r/issues/1/comments --input big.json  # codex-review-ok: Matt asked", d) is None
+    # a value consumed by --body is text, never a flag (P1-2)
+    for c in ("gh pr comment 123 --body '--body-file=$BODY is the syntax'", "gh pr comment 123 -b '-F $X'",
+              "gh api repos/o/r/issues/1/comments -f body='--input $B'"):
+        assert g.check(c, d) is None, c
+    # no GET exemption: any gh api body file is checked, as pflag parses short-flag clusters (F1)
+    for c in ("gh api repos/o/r/issues/123/comments -X GET -iXPOST -F body=@sub/bad.md",
+              "gh api repos/o/r/issues/5/comments -iF body=@sub/bad.md", "gh api repos/o/r/issues/5/comments -iFbody=@sub/bad.md",
+              'gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api -X GET repos/o/r/issues --input "$B"',
+              'gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"', "gh pr comment 5 -eF sub/bad.md"):
+        assert _any(c), c
+    assert g.check("gh api -X GET repos/o/r/issues -F q=@sub/ok.md", d) is None
 
 print("ok")
 

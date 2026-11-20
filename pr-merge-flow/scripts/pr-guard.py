@@ -51,7 +51,13 @@ ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
-UNHIDE = {v: k for k, v in HIDE.items()}
+# Raw words (segments(raw=True)) also carry these markers, which UNHIDE drops: a word the hook can't be
+# sure it reads as bash does never passes literal().
+ANSI = "\uE0FF"  # a $'...' word, which this parser decodes only approximately
+UNHIDE = {**{v: k for k, v in HIDE.items()}, ord(ANSI): None}
+# The only body-file paths and cd targets the hook resolves: plain characters, no quoting needed, nothing
+# the shell rewrites (no ~, $, glob, brace, backslash, newline, zsh `=cmd` / `=(...)`, `<(...)`).
+PLAIN = re.compile(r"[A-Za-z0-9_./+,:@%-][A-Za-z0-9_./+,:@%=-]*")
 
 
 def strip_comments_and_heredocs(cmd, comments=None):
@@ -88,7 +94,7 @@ def strip_comments_and_heredocs(cmd, comments=None):
                 i += 1
                 continue
             body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
-            out.append('"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
+            out.append(ANSI + '"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
             i += m.end()
         elif c in "'\"":
             quote = c
@@ -136,7 +142,7 @@ def strip_comments_and_heredocs(cmd, comments=None):
 def shell_comments(cmd):
     """The command's real shell comments: not quoted text, not heredoc bodies."""
     comments = []
-    strip_comments_and_heredocs(cmd.replace("\\\n", " "), comments)
+    strip_comments_and_heredocs(cmd, comments)
     return comments
 
 
@@ -164,7 +170,7 @@ def runs_async(cmd):
     Uses the same tokens as segments(), so quoted text never counts, and `>&`/`&>` redirections
     (`2>&1`, `&>log`) are not operators. Unparseable input counts as async, so callers fail closed.
     """
-    toks = shell_tokens(strip_comments_and_heredocs(cmd.replace("\\\n", " ")))
+    toks = shell_tokens(strip_comments_and_heredocs(cmd))
     if toks is None:
         return True
     for i, t in enumerate(toks):
@@ -174,13 +180,14 @@ def runs_async(cmd):
     return False
 
 
-def segments(cmd):
+def segments(cmd, raw=False):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
-    backslash-newline continues the command, as in Bash.
+    backslash-newline continues the command, as in Bash. With raw, words keep their hidden
+    characters and markers (see literal).
     """
-    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", " "))
+    cmd = strip_comments_and_heredocs(cmd)
     tokens = shell_tokens(cmd)
     if tokens is None:
         # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
@@ -202,23 +209,38 @@ def segments(cmd):
                         break
                     if "v" in opt or "V" in opt:
                         argv = []
-            chdir = None
             if argv and argv[0] == "env":
-                argv.pop(0)
-                while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
-                    if argv[0] in ("-C", "--chdir") and len(argv) > 1:
-                        chdir = argv[1]
-                    elif argv[0].startswith("--chdir="):
-                        chdir = argv[0].split("=", 1)[1]
-                    del argv[:2 if argv[0] in ("-u", "-C", "--chdir") else 1]
-            if argv:
-                # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
-                yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
+                # env's options are not parsed (a parser here regressed four review rounds running): every later
+                # word may start the command. A --chdir or a short option holding C before it makes the dir
+                # unknown, as `(cd ? && cmd)`, unless the only one is a plain `-C DIR`/`--chdir[=]DIR` right before
+                # it. A false positive only fails closed (comment_posts treats any cd as an unknown dir anyway).
+                for i in range(1, len(argv)):
+                    pre = argv[1:i]
+                    cds = [a for a in pre if a.startswith("--chdir") or re.match(r"-[^-]*C", a)]
+                    d = None
+                    if cds:
+                        d = "$ENV_CHDIR"
+                        if cds in (["-C"], ["--chdir"]) and pre[-2:-1] == cds:
+                            d = pre[-1]
+                        elif cds == pre[-1:] and cds[0].startswith("--chdir="):
+                            d = cds[0][8:]
+                    yield from ([["("], ["cd", d], argv[i:], [")"]] if d else [argv[i:]])
+            elif argv:
+                yield argv
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")
         else:
-            argv.append(t.translate(UNHIDE))
+            argv.append(t if raw else t.translate(UNHIDE))
+
+
+# Any word that may change directory, anywhere in the raw command (over-matching is fine: it only fails closed).
+CHDIR = re.compile(r"(?<![\w.-])(?:cd|pushd|popd|chdir)(?![\w.-])")
+
+
+def literal(word):
+    """True when a raw word (segments(raw=True)) is a plain path the shell passes through unchanged."""
+    return bool(PLAIN.fullmatch(word))
 
 
 def walk(cmd, cwd):
@@ -360,22 +382,40 @@ API_FIELD_FLAGS = ("-f", "--raw-field", "-F", "--field")
 MAX_BODY_FILE = 1 << 20
 
 
+def unresolvable(d, path):
+    """True when the hook can't tell which file the raw word `path` names: it isn't literal(), or it is
+    relative and the command may change directory (d is None)."""
+    return not literal(path) or (d is None and not path.startswith("/"))
+
+
 def _body_file(d, path):
-    """Text of a body file, or None when it can't be read (stdin, a $-path, missing, binary)."""
-    if path == "-" or "$" in path or "`" in path or "$" in d or "`" in d:
+    """Text of a body file, or None when it can't be read (stdin, an unresolvable path, missing, binary)."""
+    if path == "-" or unresolvable(d, path):
         return None
     try:
-        with open(os.path.join(d, os.path.expanduser(path)), "rb") as f:
+        with open(os.path.join(d or "/", path), "rb") as f:
             return f.read(MAX_BODY_FILE).decode("utf-8", "replace")
     except OSError:
         return None  # unreadable: the raw-command search in codex_mention_post still applies
 
 
-def codex_mention_post(cmd, cwd):
-    """True when the command posts a comment (gh pr/issue comment, gh pr review, gh api) whose body
-    mentions the Codex bot: in an argument, in a readable body file, or on stdin when the raw command
-    holds the mention (a heredoc fed to `--body-file -`, which strip_comments_and_heredocs drops)."""
-    for d, argv in walk(cmd, cwd):
+# gh flags of these commands that take a separate value; the value is never read as a flag.
+GH_VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-R", "--repo", "-X", "--method", "-f", "--raw-field",
+                  "--field", "-H", "--header", "--input", "-q", "--jq", "-t", "--template", "-p", "--preview",
+                  "--hostname", "--cache"}
+
+
+def comment_posts(cmd, cwd):
+    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, any gh api call
+    with a body): the body text passed inline, and the raw words naming body files.
+
+    There is no cd tracking: when the command may change directory anywhere (CHDIR, or `env -C`), the dir is
+    unknown (None), so only an absolute body path resolves.
+    """
+    segs = list(segments(cmd, raw=True))
+    d = None if CHDIR.search(cmd) or any(a[0] == "cd" for a in segs) else cwd
+    for raw in segs:
+        argv = [a.translate(UNHIDE) for a in raw]
         words = gh_words(argv)
         if not words:
             continue
@@ -388,19 +428,63 @@ def codex_mention_post(cmd, cwd):
             continue
         api = pos[0] == "api"
         # gh api: only the request body (fields and --input) posts; a --jq filter or path does not
-        texts, files = ([] if api else list(argv)), []
-        for i, a in enumerate(argv):
-            if re.match(r"-[A-Za-z].", a):  # pflag shorthand with an attached value: -Ffile, -fbody=x, -F=file
-                name, value = a[:2], a[2:].removeprefix("=")
-            else:
+        texts, files, i = ([] if api else list(argv)), [], 0
+        while i < len(argv):
+            a, odd, i = argv[i], raw[i] != argv[i], i + 1
+            nxt = (argv[i], raw[i] != argv[i]) if i < len(argv) else ("", False)
+            if a.startswith("--"):
                 name, eq, value = a.partition("=")
-                value = value if eq else (argv[i + 1] if i + 1 < len(argv) else "")
+                if not eq:
+                    if name not in GH_VALUE_FLAGS:
+                        continue
+                    (value, odd), i = nxt, i + 1
+            elif re.match(r"-[A-Za-z]", a):
+                # pflag shorthand: bool letters run together up to one that takes a value, whose value is the
+                # rest of the word (after an optional =) or else the next word: -F x, -Fx, -F=x, -iF x, -iXPOST
+                j = next((k for k in range(1, len(a)) if "-" + a[k] in GH_VALUE_FLAGS or a[k] == "="), len(a))
+                if j == len(a) or a[j] == "=":
+                    continue
+                name, value = "-" + a[j], a[j + 1:].removeprefix("=")
+                if not value:
+                    (value, odd), i = nxt, i + 1
+            else:
+                continue
+            mark = ANSI if odd else ""  # a $'...' in the word: the path is never literal()
             if name in file_flags:
-                files.append(value)
-            elif api and name in API_FIELD_FLAGS:
+                files.append(mark + value)
+            elif not api or name in API_FIELD_FLAGS:  # an attached value (-b@x) is scanned on its own
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
-                    files.append(value.split("=@", 1)[1])
+                    files.append(mark + value.split("=@", 1)[1])
+        yield d, texts, files
+
+
+def body_file_block(cmd, cwd):
+    """A block message for the first body file the hook can't scan whole before the shell runs, else None:
+    one it can't resolve, or one over MAX_BODY_FILE. Its contents are unknown, so the Codex check fails closed."""
+    for d, _, files in comment_posts(cmd, cwd):
+        for path in (p for p in files if p != "-"):
+            if unresolvable(d, path):
+                return (f"Blocked: can't read the comment body file `{path.translate(UNHIDE)}` before the shell runs, "
+                        "so the hook can't check it for a Codex bot mention. Write the body to a plain path (letters, "
+                        "digits, `_ . / + , : @ % = -`, no `~`, quotes or expansions; e.g. `/tmp/pr-<n>-comment.md`) "
+                        "and pass that path to --body-file / -F / --input. In a command that changes directory "
+                        "(cd, pushd, env -C), use an absolute path.")
+            try:
+                big = os.path.getsize(os.path.join(d or "/", path)) > MAX_BODY_FILE
+            except OSError:
+                big = False  # missing or unreadable: nothing will be posted from it
+            if big:
+                return (f"Blocked: the comment body file `{path}` is too large to scan (over {MAX_BODY_FILE} bytes) "
+                        "for a Codex bot mention. Post a smaller body.")
+    return None
+
+
+def codex_mention_post(cmd, cwd):
+    """True when the command posts a comment whose body mentions the Codex bot: in an argument, in a
+    readable body file, or on stdin when the raw command holds the mention (a heredoc fed to
+    `--body-file -`, which strip_comments_and_heredocs drops)."""
+    for d, texts, files in comment_posts(cmd, cwd):
         # A body file may be written earlier in this same command (`cat > b.md <<EOF … && gh … -F b.md`) or be
         # stdin (`-`, /dev/stdin, /dev/fd/0), so the hook can't read what will be posted: any mention anywhere
         # in the command blocks. Otherwise the file as it stands now is scanned.
@@ -669,15 +753,21 @@ def polls(cmd):
 
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
+    # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
+    # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
+    raw, cmd = cmd, cmd.replace("\\\n", "")
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")
-    if codex_mention_post(cmd, cwd) and not has_override(cmd, "codex-review-ok"):
+    if (codex_mention_post(cmd, cwd) or codex_mention_post(raw, cwd)) and not has_override(cmd, "codex-review-ok"):
         return ("Blocked: this comment mentions the Codex bot, which starts a Codex review on Matt's quota. "
                 "Codex reviews a PR's first head only. For a later head, run a fallback reviewer and add "
                 "`Fallback review: <reviewer> on <sha> — verdict: <clean|findings fixed>` to the PR's "
                 "## Review section. Only when Matt explicitly asked for a Codex review here, add "
                 "`# codex-review-ok: <reason>` (the colon is optional) to the command.")
+    block = body_file_block(cmd, cwd)
+    if block and not has_override(cmd, "codex-review-ok"):
+        return block
     for d, ref, toks, repo in merge_calls(cmd, cwd):
         if repo is None:
             return ("Blocked: can't parse this merge (a short-flag cluster such as `-dR x` or `-st 5`). "
