@@ -51,14 +51,14 @@ ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
-# Shell expansion characters get the same treatment when quoted, so a raw word from segments(raw=True)
-# shows them only where the shell will expand them (see expands). Double quotes still expand $ and `.
-EXPANDS = "$`*?[{<>"
-META = {ord(c): 0xE010 + k for k, c in enumerate(EXPANDS)}
-ANSI = "\uE0FF"  # marks a $'...' word, which this parser decodes only approximately
-HIDE_LITERAL = {**HIDE, **META}
-HIDE_DQ = {k: v for k, v in HIDE_LITERAL.items() if chr(k) not in "$`"}
-UNHIDE = {**{v: k for k, v in HIDE_LITERAL.items()}, ord(ANSI): None}
+# Raw words (segments(raw=True)) also carry these markers, which UNHIDE drops: a word the hook can't be
+# sure it reads as bash does never passes literal().
+ANSI = "\uE0FF"  # a $'...' word, which this parser decodes only approximately
+CONT = "\uE0FE"  # a backslash-newline continuation
+UNHIDE = {**{v: k for k, v in HIDE.items()}, ord(ANSI): None, ord(CONT): None}
+# The only body-file paths and cd targets the hook resolves: plain characters, no quoting needed, nothing
+# the shell rewrites (no ~, $, glob, brace, backslash, newline, zsh `=cmd` / `=(...)`, `<(...)`).
+PLAIN = re.compile(r"[A-Za-z0-9_./+,:@%-][A-Za-z0-9_./+,:@%=-]*")
 
 
 def strip_comments_and_heredocs(cmd, comments=None):
@@ -76,17 +76,15 @@ def strip_comments_and_heredocs(cmd, comments=None):
     while i < n:
         c = cmd[i]
         if quote:
-            out.append(c.translate(HIDE_LITERAL if quote == "'" else HIDE_DQ))
+            out.append(c.translate(HIDE))
             if c == "\\" and quote == '"' and i + 1 < n:
-                if cmd[i + 1] in "$`":  # bash drops this backslash; shlex keeps it (it only escapes " and \\)
-                    out.pop()
-                out.append(cmd[i + 1].translate(HIDE_LITERAL))
+                out.append(cmd[i + 1])
                 i += 1
             elif c == quote:
                 quote = None
             i += 1
         elif c == "\\" and i + 1 < n:
-            out.append("\\" + cmd[i + 1].translate(HIDE_LITERAL))
+            out.append("\\" + cmd[i + 1].translate(HIDE))
             i += 2
         elif cmd.startswith("$'", i):
             # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
@@ -97,7 +95,7 @@ def strip_comments_and_heredocs(cmd, comments=None):
                 i += 1
                 continue
             body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
-            out.append(ANSI + '"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE_LITERAL) + '"')
+            out.append(ANSI + '"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
             i += m.end()
         elif c in "'\"":
             quote = c
@@ -187,10 +185,11 @@ def segments(cmd, raw=False):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
-    backslash-newline continues the command, as in Bash. With raw, words keep their quoted
-    characters hidden, so expands() can tell what the shell will expand.
+    backslash-newline continues the command, as in Bash. With raw (for walk), words keep their hidden
+    characters and markers (see literal), and operators and leading keywords come through as their own
+    one-word segments.
     """
-    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", " "))
+    cmd = strip_comments_and_heredocs(cmd.replace("\\\n", CONT if raw else " "))
     tokens = shell_tokens(cmd)
     if tokens is None:
         # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
@@ -202,7 +201,9 @@ def segments(cmd, raw=False):
         if t and set(t) <= OPERATORS:
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
-                argv.pop(0)
+                kw = argv.pop(0)
+                if raw and kw in KEYWORDS:
+                    yield [kw]
             # `command [-p] [--] cmd …` runs cmd; `command -v/-V cmd` only looks it up.
             while argv and argv[0] == "command":
                 argv.pop(0)
@@ -226,30 +227,38 @@ def segments(cmd, raw=False):
                 yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
-            yield from ([c] for c in t if c in "()")
-        else:
-            argv.append(t if raw else t.translate(UNHIDE))
+            yield from ([c] for c in re.findall(r"[()]|[^()]+", t) if raw or c in "()")
+        elif not raw:
+            argv.append(t.translate(UNHIDE))
+        elif t.strip(CONT):  # a continuation between words is only whitespace
+            argv.append(t)
 
 
-def expands(word):
-    """True when the shell, not the hook, decides what a raw word becomes: an unquoted $, backtick,
-    glob or brace character, a redirection or process substitution, or $'...' quoting. A leading ~
-    is not counted: expanduser resolves it the same way."""
-    return any(c in word for c in EXPANDS + ANSI)
+def literal(word):
+    """True when a raw word (segments(raw=True)) is a plain path the shell passes through unchanged."""
+    return bool(PLAIN.fullmatch(word))
 
 
 def walk(cmd, cwd, raw=False):
     """Yield (dir, argv) for each non-cd segment, tracking `cd DIR` and subshell bounds.
 
-    A dir containing `$` or a backtick (with raw, anything expands() flags) can't be resolved
-    statically; it is yielded as-is so the caller can refuse or skip it.
+    A dir containing `$` or a backtick can't be resolved statically; it is yielded as-is so the
+    caller can refuse or skip it. With raw (yielding raw words), an unknown dir is None: a cd counts
+    only as a plain top-level command (first, or after `;` or a newline, outside any subshell, keyword
+    or `{ }` group) to a literal() target, in a command with no pipeline, background job or `||`.
     """
-    stack = []
+    stack, prev = [], None
+    if raw:
+        toks = shell_tokens(strip_comments_and_heredocs(cmd.replace("\\\n", " "))) or ["||"]
+        scoped = runs_async(cmd) or any("||" in t for t in toks)
     for argv in segments(cmd, raw):
+        op, prev = prev, argv[0]
         if argv == ["("]:
             stack.append(cwd)
         elif argv == [")"]:
             cwd = stack.pop() if stack else cwd
+        elif raw and len(argv) == 1 and (set(argv[0]) <= OPERATORS or argv[0] in KEYWORDS):
+            continue
         elif argv[0] in ("cd", "pushd", "popd"):
             # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word. A bare `cd` ($HOME),
             # `cd -` ($OLDPWD) and pushd/popd (the dir stack) go where the guard can't see: left unresolved.
@@ -260,8 +269,14 @@ def walk(cmd, cwd, raw=False):
                 d = "$OLDPWD"
             elif d is None:
                 d = "$HOME"
-            cwd = d if (expands(d) if raw else "$" in d) else os.path.join(cwd, os.path.expanduser(d.translate(UNHIDE)))
+            if not raw:
+                cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
+            elif scoped or stack or not set(op or ";") <= set(";\n") or not literal(d):
+                cwd = None
+            else:
+                cwd = d if d.startswith("/") else cwd and os.path.join(cwd, d)
         else:
+            prev = "cmd"
             yield cwd, argv
 
 
@@ -378,9 +393,9 @@ MAX_BODY_FILE = 1 << 20
 
 
 def unresolvable(d, path):
-    """True when the shell, not the hook, decides which file the raw word `path` names: it expands,
-    or it is relative under a cd that does."""
-    return expands(path) or (expands(d) and not os.path.isabs(os.path.expanduser(path.translate(UNHIDE))))
+    """True when the hook can't tell which file the raw word `path` names: it isn't literal(), or it is
+    relative under an unknown dir (None)."""
+    return not literal(path) or (d is None and not path.startswith("/"))
 
 
 def _body_file(d, path):
@@ -388,7 +403,7 @@ def _body_file(d, path):
     if path == "-" or unresolvable(d, path):
         return None
     try:
-        with open(os.path.join(d, os.path.expanduser(path.translate(UNHIDE))), "rb") as f:
+        with open(os.path.join(d or "/", path), "rb") as f:
             return f.read(MAX_BODY_FILE).decode("utf-8", "replace")
     except OSError:
         return None  # unreadable: the raw-command search in codex_mention_post still applies
@@ -401,9 +416,10 @@ GH_VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-R", "--repo", "-X", "--
 
 
 def comment_posts(cmd, cwd):
-    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, gh api other
-    than a GET without --input): the body text passed inline, and the raw words naming body files."""
-    for d, argv in walk(cmd, cwd, raw=True):
+    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, any gh api call
+    with a body): the body text passed inline, and the raw words naming body files."""
+    for d, raw in walk(cmd, cwd, raw=True):
+        argv = [a.translate(UNHIDE) for a in raw]
         words = gh_words(argv)
         if not words:
             continue
@@ -416,29 +432,35 @@ def comment_posts(cmd, cwd):
             continue
         api = pos[0] == "api"
         # gh api: only the request body (fields and --input) posts; a --jq filter or path does not
-        texts, files, method, i = ([] if api else [a.translate(UNHIDE) for a in argv]), [], "", 0
-        flags_seen = set()
+        texts, files, i = ([] if api else list(argv)), [], 0
         while i < len(argv):
-            a, i = argv[i], i + 1
-            if re.match(r"-[A-Za-z].", a):  # pflag shorthand with an attached value: -Ffile, -fbody=x, -F=file
-                name, value = a[:2], a[2:].removeprefix("=")
-            elif a.startswith("--") and "=" in a:
-                name, _, value = a.partition("=")
-            elif a in GH_VALUE_FLAGS:
-                name, value, i = a, (argv[i] if i < len(argv) else ""), i + 1
+            a, odd, i = argv[i], raw[i] != argv[i], i + 1
+            nxt = (argv[i], raw[i] != argv[i]) if i < len(argv) else ("", False)
+            if a.startswith("--"):
+                name, eq, value = a.partition("=")
+                if not eq:
+                    if name not in GH_VALUE_FLAGS:
+                        continue
+                    (value, odd), i = nxt, i + 1
+            elif re.match(r"-[A-Za-z]", a):
+                # pflag shorthand: bool letters run together up to one that takes a value, whose value is the
+                # rest of the word (after an optional =) or else the next word: -F x, -Fx, -F=x, -iF x, -iXPOST
+                j = next((k for k in range(1, len(a)) if "-" + a[k] in GH_VALUE_FLAGS or a[k] == "="), len(a))
+                if j == len(a) or a[j] == "=":
+                    continue
+                name, value = "-" + a[j], a[j + 1:].removeprefix("=")
+                if not value:
+                    (value, odd), i = nxt, i + 1
             else:
                 continue
-            flags_seen.add(name)
-            if name in ("-X", "--method"):
-                method = value.translate(UNHIDE).upper()
+            if odd:  # a continuation or $'...' in the word: mark it, so the path is never literal()
+                value = ANSI + value
             if name in file_flags:
                 files.append(value)
             elif api and name in API_FIELD_FLAGS:
-                texts.append(value.translate(UNHIDE))
+                texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(value.split("=@", 1)[1])
-        if api and method == "GET" and "--input" not in flags_seen:
-            continue  # fields become query parameters: a GET posts nothing
         yield d, texts, files
 
 
@@ -736,9 +758,10 @@ def check(cmd, cwd):
                 "`# codex-review-ok: <reason>` (the colon is optional) to the command.")
     path = unresolved_body_file(cmd, cwd)
     if path and not has_override(cmd, "codex-review-ok"):
-        return (f"Blocked: can't read the comment body file `{path}` before the shell expands it, so the hook "
-                "can't check it for a Codex bot mention. Write the body to a literal path (e.g. "
-                "`/tmp/pr-<n>-comment.md`) and pass that path to --body-file / -F / --input.")
+        return (f"Blocked: can't read the comment body file `{path.translate(UNHIDE)}` before the shell runs, so the "
+                "hook can't check it for a Codex bot mention. Write the body to a plain path (letters, digits, "
+                "`_ . / + , : @ % = -`, no `~`, quotes or expansions; e.g. `/tmp/pr-<n>-comment.md`), pass that "
+                "path to --body-file / -F / --input, and cd only as a plain first command (`cd dir && gh …`).")
     for d, ref, toks, repo in merge_calls(cmd, cwd):
         if repo is None:
             return ("Blocked: can't parse this merge (a short-flag cluster such as `-dR x` or `-st 5`). "

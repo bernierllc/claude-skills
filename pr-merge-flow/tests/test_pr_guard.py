@@ -561,24 +561,50 @@ with _tf.TemporaryDirectory() as d:
               "gh pr review 123 --comment --body-file <(cat sub/bad.md)", "gh pr comment 123 -F <(cat sub/bad.md)",
               "gh pr comment 123 --body-file $'sub/bad.\\x6dd'", "cd sub* && gh pr comment 1 -F bad.md"):
         assert _any(c), c
-    # quoting makes the same characters literal: the file is read and scanned (P2-2)
+    # 1.5.1 round 3: only a plain literal word resolves; anything the shell may rewrite fails closed.
+    # A quoted `plain*.md` or `cost$5.md` is a conservative block (workaround: rename, or a plain path).
     Path(d, "cost$5.md").write_text(f"{M} review\n")
     Path(d, "plain*.md").write_text("ok\n")
-    assert _blocked("gh pr comment 123 --body-file 'cost$5.md'", d)
-    assert _blocked('gh pr comment 123 --body-file "cost\\$5.md"', d)
-    assert g.check("gh pr comment 123 --body-file 'plain*.md'", d) is None
-    assert g.check('gh pr comment 123 --body-file "plain*.md"', d) is None
-    assert g.check("gh pr comment 123 --body-file ~/no-such-pr-guard-body.md", d) is None  # ~/ expands to a known path
+    for c in ("gh pr comment 123 --body-file 'cost$5.md'", 'gh pr comment 123 --body-file "cost\\$5.md"',
+              "gh pr comment 123 --body-file 'plain*.md'", 'gh pr comment 123 --body-file "plain*.md"'):
+        assert _any(c), c
+    # ~ forms: bash expands ~+, ~- and ~user, and a quoted ~ is literal; none resolve here (F2)
+    for c in ("gh pr comment 123 --body-file ~/no-such-pr-guard-body.md", "gh pr comment 123 --body-file ~+/sub/bad.md",
+              "gh pr comment 123 --body-file ~-/sub/bad.md", "gh pr comment 123 --body-file ~root/bad.md",
+              "gh pr comment 123 --body-file '~/bad.md'", "gh pr comment 123 -F \\~/bad.md"):
+        assert _unread(c), c
+    # a continuation inside a word, and zsh =(...) / =cmd, fail closed (F3)
+    for c in ("gh pr comment 123 --body-file sub/ba\\\nd.md", "gh pr comment 123 --body-file =(cat sub/bad.md)",
+              "gh pr comment 123 -F =cat"):
+        assert _any(c), c
+    # a continuation between words still joins the command
+    for c in ("gh pr comment 5 \\\n  --body-file sub/bad.md", "gh pr \\\n comment 5 -F sub/bad.md"):
+        assert _blocked(c, d), c
+    # a cd is honored only as a plain top-level command: first, or after ; or a newline (F4)
+    Path(d, "top.md").write_text(f"{M} review\n")
+    Path(d, "sub", "top.md").write_text("clean\n")
+    for c in ("cd sub | cat; gh pr comment 123 -F top.md", "cd sub & gh pr comment 123 -F top.md",
+              "{ cd sub; } | cat; gh pr comment 123 -F top.md", "(cd sub && gh pr comment 123 -F top.md)",
+              "false || cd sub; gh pr comment 123 -F top.md", "false && cd sub; gh pr comment 123 -F top.md",
+              "if true; then cd sub; fi; gh pr comment 123 -F top.md", "cd sub || exit; gh pr comment 123 -F top.md"):
+        assert _any(c), c
+    for c in ("cd sub && gh pr comment 5 -F ok.md", "cd sub; gh pr comment 5 -F ok.md", "cd sub\ngh pr comment 5 -F ok.md",
+              f"cd {d}/sub && gh pr comment 5 -F ok.md", "(cd sub); gh pr comment 5 -F sub/ok.md"):
+        assert g.check(c, d) is None, c
+    assert _blocked("(cd sub); gh pr comment 5 -F top.md", d)  # the subshell's cd is gone after `)`
+    # a cd target the hook can't resolve leaves relative body paths unknown (F5: a quoted plain* dir included)
+    assert _unread("cd 'plain*' && gh pr comment 123 -F ok.md")
     # a value consumed by --body is text, never a flag (P1-2)
     for c in ("gh pr comment 123 --body '--body-file=$BODY is the syntax'", "gh pr comment 123 -b '-F $X'",
               "gh api repos/o/r/issues/1/comments -f body='--input $B'"):
         assert g.check(c, d) is None, c
-    # a GET request posts nothing (P2-1)
-    for c in ('gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api --method=get repos/o/r/issues -F q=@"$F"',
-              'gh api -XGET repos/o/r/issues -F q=@"$F"'):
-        assert g.check(c, d) is None, c
-    assert _any('gh api -X GET repos/o/r/issues --input "$B"')
-    assert _any('gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"')
+    # no GET exemption: any gh api body file is checked, as pflag parses short-flag clusters (F1)
+    for c in ("gh api repos/o/r/issues/123/comments -X GET -iXPOST -F body=@sub/bad.md",
+              "gh api repos/o/r/issues/5/comments -iF body=@sub/bad.md", "gh api repos/o/r/issues/5/comments -iFbody=@sub/bad.md",
+              'gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api -X GET repos/o/r/issues --input "$B"',
+              'gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"', "gh pr comment 5 -eF sub/bad.md"):
+        assert _any(c), c
+    assert g.check("gh api -X GET repos/o/r/issues -F q=@sub/ok.md", d) is None
 
 print("ok")
 

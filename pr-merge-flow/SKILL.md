@@ -74,12 +74,19 @@ hooks dormant). It blocks:
   file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
   `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
   be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
-  hook can't resolve before the shell runs is blocked too, with a message to write the body to a literal
-  path (1.5.1): an unquoted `$`, backtick, glob (`* ? [`), brace, `<`/`>` (process substitution) or a
-  `$'...'` word in the path, or a relative path after such a `cd`. Its contents are unknown, so the check
-  fails closed instead of skipping the scan; quoted characters are literal, so `'cost$5.md'` is read and
-  scanned. A value consumed by `--body`/`-b` or another value flag is never read as a flag, and a
-  `gh api -X GET` without `--input` posts nothing, so neither is checked. The mention is
+  hook can't resolve before the shell runs is blocked too, with a message to write the body to a plain
+  path (1.5.1). The hook resolves only an allowlist: a path of letters, digits and `_ . / + , : @ % = -`,
+  not starting with `=`, with no quoting, backslash, continuation or `~`. Anything else fails closed,
+  including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
+  every `~` form (`~/`, `~+`, `~-`, `~user`). A relative path is resolved against a `cd` only when that cd
+  is a plain top-level command (first, or after `;` or a newline) to such a path, in a command with no
+  pipeline, background job or `||`; any other cd (in a subshell, `if`, `{ }` group or after `&&`) makes the
+  directory unknown, so a relative body path after it fails closed. Conservative blocks, by design: a quoted
+  path or cd target with special characters (`'plain*.md'`, `cd 'plain*'`), `~/body.md`, a cd inside a
+  subshell (`(cd sub && gh … -F b.md)`), and any `gh api` call with a body file, including a read-only
+  `gh api -X GET … -F labels=@"$F"` (GET is not exempt). Workaround: an absolute or plain relative path,
+  and `cd dir && gh …`. A value consumed by `--body`/`-b` or another value flag is never read as a flag,
+  and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
