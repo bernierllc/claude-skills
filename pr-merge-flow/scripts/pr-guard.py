@@ -213,13 +213,14 @@ def segments(cmd, raw=False):
             if argv and argv[0] == "env":
                 argv.pop(0)
                 while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
-                    if argv[0] in ("-C", "--chdir") and len(argv) > 1:
+                    cluster = re.match(r"-[^-]", argv[0]) and "C" in argv[0]  # -C dir, -Cdir, -iCdir, -iC dir
+                    if argv[0] == "--chdir" and len(argv) > 1:
                         chdir = argv[1]
                     elif argv[0].startswith("--chdir="):
                         chdir = argv[0].split("=", 1)[1]
-                    elif argv[0].startswith("-C"):
-                        chdir = argv[0][2:]
-                    del argv[:2 if argv[0] in ("-u", "-C", "--chdir") else 1]
+                    elif cluster:
+                        chdir = argv[0].partition("C")[2] or (argv[1] if len(argv) > 1 else "")
+                    del argv[:2 if argv[0] in ("-u", "--chdir") or cluster and argv[0].endswith("C") else 1]
             if argv:
                 # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
                 yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
@@ -749,11 +750,13 @@ def polls(cmd):
 
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
-    cmd = cmd.replace("\\\n", "")  # the shell deletes backslash-newline first; every detector sees the joined text
+    # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
+    # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
+    raw, cmd = cmd, cmd.replace("\\\n", "")
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")
-    if codex_mention_post(cmd, cwd) and not has_override(cmd, "codex-review-ok"):
+    if (codex_mention_post(cmd, cwd) or codex_mention_post(raw, cwd)) and not has_override(cmd, "codex-review-ok"):
         return ("Blocked: this comment mentions the Codex bot, which starts a Codex review on Matt's quota. "
                 "Codex reviews a PR's first head only. For a later head, run a fallback reviewer and add "
                 "`Fallback review: <reviewer> on <sha> — verdict: <clean|findings fixed>` to the PR's "

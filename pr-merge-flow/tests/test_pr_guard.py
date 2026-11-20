@@ -598,6 +598,14 @@ with _tf.TemporaryDirectory() as d:
     for c in ("env -Csub gh pr comment 1 -F bad.md", "env --chdir=sub gh pr comment 1 -F bad.md",
               "env -C sub gh pr comment 1 -F bad.md", "c\\\nd sub; gh pr comment 1 -F bad.md"):
         assert _unread(c), c
+    # round 5 (H1): a backslash-newline before the mention, quoted or not, still blocks (bash keeps it in
+    # single quotes); (H2) an env short cluster holding C changes dir
+    for c in (f"gh pr comment 1 --body 'thanks\\\n{M} review'", f'gh pr comment 1 --body "thanks\\\n{M} review"',
+              f"gh pr comment 1 --body thanks\\\n{M}", f"gh issue comment 1 -b 'x\\\n{M}'",
+              f"gh pr review 1 --comment -b 'x\\\n{M}'"):
+        assert _blocked(c, d), c
+    for c in ("env -iCsub PATH=/usr/bin gh pr comment 1 -F bad.md", "env -iC sub gh pr comment 1 -F bad.md"):
+        assert _unread(c), c
     # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
     assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
     # a file too large to scan whole fails closed instead of scanning a prefix (F6)

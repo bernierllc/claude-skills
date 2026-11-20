@@ -80,7 +80,7 @@ hooks dormant). It blocks:
   including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
   every `~` form (`~/`, `~+`, `~-`, `~user`). There is no cd tracking: when the command contains `cd`,
   `pushd`, `popd` or `chdir` as a word anywhere (after `builtin`/`command`/a backslash, inside `if`, a
-  function, a loop, a subshell or a pipeline) or runs `env -C`/`--chdir` in any spelling (`-Csub`), the directory is unknown, so a relative
+  function, a loop, a subshell or a pipeline) or runs `env -C`/`--chdir` in any spelling (`-Csub`, a cluster such as `-iC sub`), the directory is unknown, so a relative
   body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
   1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
@@ -103,7 +103,7 @@ The sync and draft rules fail open when there's no open PR, `gh` is unavailable,
 
 **Best-effort guard:** this is a quota guard, not a security boundary. It catches the
 commands agents habitually run, not a determined evasion. Backslash-newline is joined first,
-as the shell does, then comments and heredoc bodies are dropped, and input `shlex` can't parse
+as the shell does (the mention scan also reads the unjoined text), then comments and heredoc bodies are dropped, and input `shlex` can't parse
 is split on every operator character. Any shell form that rewrites the command after the hook
 sees it is out of scope: wrappers, `bash -c`, `eval`, variables and command substitution.
 
