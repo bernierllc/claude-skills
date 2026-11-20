@@ -48,6 +48,7 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
 ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
+ENV_ARG = {"u": "unset", "C": "chdir", "S": "split-string"}  # env options that take an argument
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
@@ -213,14 +214,19 @@ def segments(cmd, raw=False):
             if argv and argv[0] == "env":
                 argv.pop(0)
                 while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
-                    cluster = re.match(r"-[^-]", argv[0]) and "C" in argv[0]  # -C dir, -Cdir, -iCdir, -iC dir
-                    if argv[0] == "--chdir" and len(argv) > 1:
-                        chdir = argv[1]
-                    elif argv[0].startswith("--chdir="):
-                        chdir = argv[0].split("=", 1)[1]
-                    elif cluster:
-                        chdir = argv[0].partition("C")[2] or (argv[1] if len(argv) > 1 else "")
-                    del argv[:2 if argv[0] in ("-u", "--chdir") or cluster and argv[0].endswith("C") else 1]
+                    a = argv.pop(0)
+                    if ASSIGN.match(a):
+                        continue
+                    if a.startswith("--"):  # --chdir=DIR / --chdir DIR; --unset, --split-string take one too
+                        name, eq, val = a[2:].partition("=")
+                        if name in ENV_ARG.values() and not eq:
+                            val = argv.pop(0) if argv else ""
+                    else:  # a short cluster: the first argument-taking letter takes the rest of the word or the next
+                        j = next((k for k in range(1, len(a)) if a[k] in ENV_ARG), 0)
+                        name = ENV_ARG.get(a[j:j + 1], "")
+                        val = a[j + 1:] or (argv.pop(0) if j and argv else "")
+                    if name == "chdir":
+                        chdir = val
             if argv:
                 # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
                 yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])

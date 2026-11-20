@@ -606,6 +606,16 @@ with _tf.TemporaryDirectory() as d:
         assert _blocked(c, d), c
     for c in ("env -iCsub PATH=/usr/bin gh pr comment 1 -F bad.md", "env -iC sub gh pr comment 1 -F bad.md"):
         assert _unread(c), c
+    # round 6 (J1): env options by table; only an argument-taking C changes dir, and no argument eats `gh`
+    keep, chdir = ("-uC", "-uCACHE", "-SC", "-iuC", "--unset=C", "--unset C", "-i", "X=1", "C=sub"), \
+                  ("-iC sub", "-iCsub", "-Csub", "-C sub", "--chdir=sub", "--chdir sub")
+    for o in keep + chdir:
+        assert _blocked(f'env {o} gh pr comment 1 -b "{M} review"', d), o
+        assert g.check(f"env {o} gh pr comment 1 -F {d}/sub/ok.md", d) is None, o
+    for o in keep:
+        assert g.check(f"env {o} gh pr comment 1 -F sub/ok.md", d) is None, o
+    for o in chdir:
+        assert _unread(f"env {o} gh pr comment 1 -F bad.md"), o
     # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
     assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
     # a file too large to scan whole fails closed instead of scanning a prefix (F6)

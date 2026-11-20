@@ -86,7 +86,7 @@ hooks dormant). It blocks:
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
   contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
   including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
-  absolute path). Out of scope: wrappers that change directory other than `env -C` (`sudo -D`,
+  absolute path), and a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`). Out of scope: abbreviated env long options (`--ch=dir`) and wrappers that change directory other than `env -C` (`sudo -D`,
   `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
   attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
