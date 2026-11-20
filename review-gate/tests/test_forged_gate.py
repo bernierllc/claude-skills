@@ -28,6 +28,7 @@ args = sys.argv[1:]
 with open(os.path.join(state, "calls.log"), "a") as log:
     log.write(" ".join(args) + "\n")
 fixture = json.load(open(os.path.join(state, "fixture.json")))
+__import__("time").sleep(fixture.get("sleep", 0))  # a slow GitHub, for merge-guard's time budget
 path = next(a for a in args if a.startswith("repos/"))
 fail = fixture.get("fail")  # {"pattern": regex over the joined args, "nth": which match 404s (1-based)}
 if fail and __import__("re").search(fail["pattern"], " ".join(args)):
@@ -436,10 +437,12 @@ class WrapperDetector(unittest.TestCase):
 class MergeGuardForgedStep(unittest.TestCase):
     """3.2.13 (SEC-MVS-01 rung 1): merge-guard runs the forged-check wrapper before a merge, fail closed."""
 
-    def guard(self, fixture):
+    def guard(self, fixture, budget=None):
         import importlib.util
         spec = importlib.util.spec_from_file_location("mg_forged", SCRIPTS / "merge-guard.py")
         mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        if budget is not None:
+            mg.FORGED_BUDGET_S = budget
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
             (bindir / "fixture.json").write_text(json.dumps({"scripts": {}, "runs": {}, "titles": {}, **fixture}))
@@ -480,10 +483,31 @@ class MergeGuardForgedStep(unittest.TestCase):
         self.assertIn("could not tell whether o/r has .github/workflows/review-gate.yml", msg)
 
     def test_malformed_listing_blocks_even_in_unconfigured_repo(self):
-        for raw in ("not json", '{"total_count": 0}', ""):
+        # cop P2 on f99ca1ac: null, {}, "", 0 and false are not an empty list and must not read as one
+        for raw in ("not json", '{"total_count": 0}', "", '{"check_runs": null}', "{}", '""', "0", "false",
+                    '{"check_runs": []} {"check_runs": null}', '{"check_runs": [1]}'):
             with self.subTest(raw=raw):
                 msg = self.guard({"check_runs": [], "workflow": False, "raw_listing": raw})
                 self.assertIn("forged-check step exited 2", msg)
+
+    # cop P2 on f99ca1ac: the hook is killed (and does not block) at timeout_ms; the step must block first
+    def test_slow_github_blocks_within_the_budget(self):
+        import time
+        started = time.monotonic()
+        msg = self.guard({"check_runs": [], "workflow": False, "sleep": 5}, budget=1)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertIn("did not finish within 1 s", msg)
+
+    def test_spent_budget_blocks_before_calling_gh(self):
+        msg = self.guard({"check_runs": [], "workflow": False}, budget=0)
+        self.assertIn("did not finish within 0 s", msg)
+
+    def test_budget_fits_under_the_hook_timeout(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mg_budget", SCRIPTS / "merge-guard.py")
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        hook = json.loads((SKILL / "hooks.json").read_text())["hooks"][0]
+        self.assertLessEqual(mg.FORGED_BUDGET_S * 1000 + 5000, hook["timeout_ms"])
 
     def test_failed_listing_blocks(self):
         msg = self.guard({"check_runs": [], "listing_fails": True})

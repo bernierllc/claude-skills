@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -3689,25 +3690,35 @@ def iter_merge_segments(
 
 
 FORGED_CHECK = Path(__file__).resolve().with_name("check-forged-review-gate.py")
-
-
 GATE_WORKFLOW = ".github/workflows/review-gate.yml"
+# hooks.json gives this blocking hook timeout_ms 25000, and a harness-killed hook does not block. The forged
+# step therefore finishes, or fails closed, by FORGED_BUDGET_S after the hook started (main sets the start;
+# a library caller gets the budget from its call).
+FORGED_BUDGET_S = 20.0
+_HOOK_STARTED: float | None = None
+_NO_RUNS = "input contains no check runs"  # the detector's error for a well-formed listing with zero runs
 
 
-def _no_check_runs(listing: str) -> bool:
-    """True only for a well-formed `--paginate` listing (concatenated pages) with zero check runs."""
-    decoder, text, pos, pages = json.JSONDecoder(), listing.strip(), 0, 0
+def _is_empty_listing(listing: str) -> bool:
+    """True only for a well-formed listing with zero check runs, by the detector's own type validation.
+
+    Anything malformed (no page, `check_runs` missing, null or not a list, a non-object page) is False,
+    so the wrapper sees it and fails closed. If the detector's message ever changes this returns False,
+    which also fails closed.
+    """
+    if not listing.strip():
+        return False
+    spec = importlib.util.spec_from_file_location(
+        "check_forged_gate_names", FORGED_CHECK.with_name("check-forged-gate-names.py"))
+    detector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(detector)
     try:
-        while pos < len(text):
-            page, pos = decoder.raw_decode(text, pos)
-            if page["check_runs"]:
-                return False
-            pages += 1
-            while pos < len(text) and text[pos].isspace():
-                pos += 1
-    except (ValueError, KeyError, TypeError):
-        return False  # malformed: the wrapper decides, and fails closed
-    return pages > 0
+        detector._load_check_runs(listing)
+    except ValueError as exc:
+        return str(exc) == _NO_RUNS
+    except (KeyError, TypeError):
+        return False
+    return False
 
 
 def forged_gate_check(
@@ -3717,37 +3728,43 @@ def forged_gate_check(
 
     The same wrapper the Review Gate workflow runs reads the head's check runs, so a `Review Gate` job
     from an untrusted workflow (or another PR's run on a shared head) blocks here too, not only in CI.
-    Fails closed: a failed listing, a missing wrapper, or wrapper exit 1 (forged) or 2 (could not
-    evaluate) all block. A well-formed empty listing blocks only where the repo has the gate workflow.
+    Fails closed: a failed or malformed listing, a missing wrapper, wrapper exit 1 (forged) or 2 (could
+    not evaluate), or running out of the time budget all block. A well-formed empty listing blocks only
+    where the repo has the gate workflow.
     """
+    deadline = (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + FORGED_BUDGET_S
     base = dict(env if env is not None else os.environ)
-    listing = subprocess.run(
-        ["gh", "api", *(["--hostname", hostname] if hostname else []),
-         f"repos/{owner}/{name}/commits/{head}/check-runs?per_page=100&filter=all", "--paginate"],
-        capture_output=True, text=True, env=base, timeout=120,
-    )
-    if listing.returncode != 0:
-        detail = listing.stderr.strip() or "no output"
-        return f"review-gate: could not list check runs on {head[:12]} for the forged-check step: {detail}"
-    if _no_check_runs(listing.stdout):
-        # Nothing to forge. Only a repo configured for Review Gate (the workflow file doctor checks for,
-        # on the default branch) must have runs; there, the wrapper's exit 2 still blocks. A repo without
-        # the gate and without CI merges on gate.evaluate alone (cop P2 on #121).
-        wf = subprocess.run(
-            ["gh", "api", *(["--hostname", hostname] if hostname else []), "--silent",
-             f"repos/{owner}/{name}/contents/{GATE_WORKFLOW}"],
-            capture_output=True, text=True, env=base, timeout=120,
-        )
-        if wf.returncode != 0 and "HTTP 404" in wf.stderr:
-            return None
-        if wf.returncode != 0:
-            detail = wf.stderr.strip() or "no output"
-            return f"review-gate: could not tell whether {owner}/{name} has {GATE_WORKFLOW}: {detail}"
-    child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number)}
-    if hostname:
-        child["GH_HOST"] = hostname
-    proc = subprocess.run([sys.executable, str(FORGED_CHECK)], input=listing.stdout,
-                          capture_output=True, text=True, env=child, timeout=120)
+    host = ["--hostname", hostname] if hostname else []
+
+    def run(args, **kw):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(args, 0)
+        return subprocess.run(args, capture_output=True, text=True, timeout=left, **kw)
+
+    try:
+        listing = run(["gh", "api", *host, "--paginate",
+                       f"repos/{owner}/{name}/commits/{head}/check-runs?per_page=100&filter=all"], env=base)
+        if listing.returncode != 0:
+            detail = listing.stderr.strip() or "no output"
+            return f"review-gate: could not list check runs on {head[:12]} for the forged-check step: {detail}"
+        if _is_empty_listing(listing.stdout):
+            # Nothing to forge. Only a repo configured for Review Gate (the workflow file doctor checks for,
+            # on the default branch) must have runs; there, the wrapper's exit 2 still blocks. A repo without
+            # the gate and without CI merges on gate.evaluate alone (cop P2 on #121).
+            wf = run(["gh", "api", *host, "--silent", f"repos/{owner}/{name}/contents/{GATE_WORKFLOW}"], env=base)
+            if wf.returncode != 0 and "HTTP 404" in wf.stderr:
+                return None
+            if wf.returncode != 0:
+                detail = wf.stderr.strip() or "no output"
+                return f"review-gate: could not tell whether {owner}/{name} has {GATE_WORKFLOW}: {detail}"
+        child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number)}
+        if hostname:
+            child["GH_HOST"] = hostname
+        proc = run([sys.executable, str(FORGED_CHECK)], input=listing.stdout, env=child)
+    except subprocess.TimeoutExpired:
+        return (f"review-gate blocked merge: the forged-check step did not finish within {FORGED_BUDGET_S:.0f} s "
+                "of the hook starting (GitHub slow or unreachable); retry the merge")
     if proc.returncode == 0:
         return None
     detail = proc.stderr.strip().replace("::error::", "") or "no output"
@@ -4012,6 +4029,8 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
 
 
 def main() -> int:
+    global _HOOK_STARTED
+    _HOOK_STARTED = time.monotonic()
     # Any tool the hook matcher routes here is checked when it carries a command, whatever the harness
     # names it (`Bash`, `mcp__…__Bash`, `run_shell_command`): an allow-list of tool names failed open.
     # Unreadable input blocks: a guard that cannot see the command must not let it through.
