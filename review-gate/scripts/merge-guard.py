@@ -3688,6 +3688,39 @@ def iter_merge_segments(
     return out, None
 
 
+FORGED_CHECK = Path(__file__).resolve().with_name("check-forged-review-gate.py")
+
+
+def forged_gate_check(
+    owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
+) -> str | None:
+    """SEC-MVS-01 rung 1: run CI's forged-check step locally before a merge; None when nothing is forged.
+
+    The same wrapper the Review Gate workflow runs reads the head's check runs, so a `Review Gate` job
+    from an untrusted workflow (or another PR's run on a shared head) blocks here too, not only in CI.
+    Fails closed: a failed listing, a missing wrapper, or wrapper exit 1 (forged) or 2 (could not
+    evaluate) all block.
+    """
+    base = dict(env if env is not None else os.environ)
+    listing = subprocess.run(
+        ["gh", "api", *(["--hostname", hostname] if hostname else []),
+         f"repos/{owner}/{name}/commits/{head}/check-runs?per_page=100&filter=all", "--paginate"],
+        capture_output=True, text=True, env=base, timeout=120,
+    )
+    if listing.returncode != 0:
+        detail = listing.stderr.strip() or "no output"
+        return f"review-gate: could not list check runs on {head[:12]} for the forged-check step: {detail}"
+    child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number)}
+    if hostname:
+        child["GH_HOST"] = hostname
+    proc = subprocess.run([sys.executable, str(FORGED_CHECK)], input=listing.stdout,
+                          capture_output=True, text=True, env=child, timeout=120)
+    if proc.returncode == 0:
+        return None
+    detail = proc.stderr.strip().replace("::error::", "") or "no output"
+    return f"review-gate blocked merge: forged-check step exited {proc.returncode}:\n- {detail}"
+
+
 def check_one(segment: str, cwd: str | None) -> str | None:
     number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd)
     if err:
@@ -3702,12 +3735,12 @@ def check_one(segment: str, cwd: str | None) -> str | None:
             )
             pr = gate.pr_payload(owner, name, number, hostname=hostname)
             reasons = gate.evaluate(pr)
+            if reasons:
+                return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
+            return forged_gate_check(owner, name, number, pr.get("headRefOid") or "", hostname, child_env)
     except Exception as e:  # noqa: BLE001
         # Fail closed: infra / GraphQL errors must not silently allow merges.
         return f"review-gate: gate check failed: {e}"
-    if reasons:
-        return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
-    return None
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
@@ -3964,6 +3997,7 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 2
     return 0
+
 
 def fb_log(subject: str, severity: str, summary: str) -> None:
     """Best-effort feedback-loop capture: a missing or failing store never affects this hook."""

@@ -159,3 +159,19 @@ for text, passes in GOLDEN:
 src = LINTER.read_text()
 assert "review_region" in src and "re.compile" not in src and "import re" not in src
 print("lint ok")
+
+# 3.2.13: a Fallback review line with a short SHA fails the linter AND the gate; the full 40-hex head passes both.
+# The linter uses the checker's FALLBACK_ATTESTATION, so the two shapes cannot drift.
+_short = f"Summary\n\n## Review\n\nFallback review: claude-sonnet on {HEAD[:7]} — verdict: clean\n"
+_full = f"Summary\n\n## Review\n\nFallback review: claude-sonnet on {HEAD} — verdict: clean\n"
+rc, out = lint_cli(_short)
+assert rc == 1 and "not an exact attestation" in out and "full 40-hex head SHA" in out, out
+assert any("Fallback review" in r for r in gate_body_reasons(_short)), gate_body_reasons(_short)
+rc, out = lint_cli(_full)
+assert rc == 0, out
+assert gate_body_reasons(_full) == []
+# prose that only mentions a fallback review mid-line is not an attestation and is not checked
+rc, out = lint_cli(_full + "Round 2 used a fallback review: same verdict.\n")
+assert rc == 0, out
+assert "FALLBACK_ATTESTATION" in Path(LINTER).read_text() and "re.compile" not in Path(LINTER).read_text()
+print("lint attestation tests passed")

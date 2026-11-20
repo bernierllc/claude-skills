@@ -61,7 +61,14 @@ def foreign_run(repo, pr, run_id):
     """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
     title = _gh(f"repos/{repo}/actions/runs/{run_id}", "--jq", ".display_title").strip()
     want = RUN_TITLE.format(pr=pr)
-    return None if title == want else f"run {run_id} is titled {title!r}, not {want!r}"
+    if title == want:
+        return None
+    why = f"run {run_id} is titled {title!r}, not {want!r}"
+    other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
+    if other:  # a real gate run of another PR on this same head sha, not a forgery: name the fix (3.2.13)
+        why += (f": this head sha is also PR #{other.group(1)}'s head, and that PR's Review Gate run is listed "
+                "on it. Push a new commit to this PR (an empty commit works) so it has a head of its own")
+    return why
 
 
 def main():
@@ -106,7 +113,8 @@ def main():
         print(f"::error::could not evaluate check runs, failing closed: {exc}", file=sys.stderr)
         return 2
     for name, where, why in bad:
-        print(f"::error::forged check '{name}' from an untrusted Actions job: {where} ({why})", file=sys.stderr)
+        kind = "shared head sha, not this PR's run" if "is also PR #" in why else "from an untrusted Actions job"
+        print(f"::error::forged check '{name}' {kind}: {where} ({why})", file=sys.stderr)
     return 1 if bad else 0
 
 

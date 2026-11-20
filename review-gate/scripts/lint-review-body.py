@@ -5,7 +5,9 @@ usage: python3 scripts/lint-review-body.py [BODY_FILE]   (reads stdin when no fi
 
 Runs the gate's own `review_region` from check-review-gate.py beside this file, so the two cannot
 drift. Exit 0 when the body passes, 1 with one line per problem (line number and offending construct)
-when it does not. It checks only the body rules; the attestation's head SHA is the gate's job.
+when it does not. It checks the body rules and the shape of every `Fallback review:` line (the checker's
+own FALLBACK_ATTESTATION, so a short SHA fails here as it does in the gate); whether that SHA is the
+current head is the gate's job.
 """
 from __future__ import annotations
 
@@ -36,9 +38,15 @@ def _load_gate():
     return mod
 
 
-
 def lint(body: str) -> list[str]:
-    return _load_gate().review_region(body)[1]  # loaded on first use, so --help works without a checker
+    gate = _load_gate()  # loaded on first use, so --help works without a checker
+    region, problems = gate.review_region(body)
+    for line in region:
+        if line.lower().startswith("fallback review:") and not gate.FALLBACK_ATTESTATION.fullmatch(line):
+            problems.append(f"## Review line {line!r} is not an exact attestation: Fallback review: "
+                            "<codex|agy|antigravity|superpowers|claude-sonnet> on <full 40-hex head SHA> "
+                            "— verdict: <clean|findings fixed>")
+    return problems
 
 
 def main(argv: list[str]) -> int:

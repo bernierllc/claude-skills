@@ -6,6 +6,7 @@ so a regression in the wiring (not only in the detector) fails here.
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -384,6 +385,16 @@ class WrapperDetector(unittest.TestCase):
                                        fixture={"titles": {"517": title}})
                 self.assertEqual(rc, 1, err)
                 self.assertIn("not 'Review Gate - PR #7'", err)
+                # 3.2.13: another PR's real run title names that PR and the fix; any other title does not
+                other = re.fullmatch(r"Review Gate - PR #(\d+)", title)
+                if other:
+                    self.assertIn("shared head sha, not this PR's run: ", err)
+                    self.assertIn(f"this head sha is also PR #{other.group(1)}'s head, and that PR's Review Gate "
+                                  "run is listed on it. Push a new commit to this PR (an empty commit works) so it "
+                                  "has a head of its own", err)
+                else:
+                    self.assertIn("from an untrusted Actions job", err)
+                    self.assertNotIn("is also PR #", err)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
@@ -413,6 +424,45 @@ class WrapperDetector(unittest.TestCase):
             with self.subTest(stdin=stdin):
                 rc, err = self.wrapper([], {}, stdin=stdin)
                 self.assertEqual(rc, 2, err)
+
+
+class MergeGuardForgedStep(unittest.TestCase):
+    """3.2.13 (SEC-MVS-01 rung 1): merge-guard runs the forged-check wrapper before a merge, fail closed."""
+
+    def guard(self, fixture):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mg_forged", SCRIPTS / "merge-guard.py")
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            (bindir / "fixture.json").write_text(json.dumps({"scripts": {}, "runs": {}, "titles": {}, **fixture}))
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp)
+            return mg.forged_gate_check("o", "r", 7, "a" * 40, None, env)
+
+    def test_own_trusted_run_allows(self):
+        self.assertIsNone(self.guard({"check_runs": [job("Review Gate", 506)], "runs": {"506": TRUSTED_RUN},
+                                      "titles": {"506": run_title(7)}}))
+
+    def test_forged_job_blocks_exit_1(self):
+        msg = self.guard({"check_runs": [job("Review Gate", 508)],
+                          "runs": {"508": ".github/workflows/forge.yml\tpull_request"}, "titles": {"508": run_title(7)}})
+        self.assertIn("forged-check step exited 1", msg)
+        self.assertIn("untrusted workflow", msg)
+        self.assertNotIn("::error::", msg)
+
+    def test_another_prs_run_blocks_and_names_the_fix(self):
+        msg = self.guard({"check_runs": [job("Review Gate", 517)], "runs": {"517": TRUSTED_RUN},
+                          "titles": {"517": run_title(8)}})
+        self.assertIn("forged-check step exited 1", msg)
+        self.assertIn("is also PR #8", msg)
+
+    def test_unevaluable_blocks_exit_2(self):
+        msg = self.guard({"check_runs": [job("Review Gate", 514)], "runs": {"514": TRUSTED_RUN}})
+        self.assertIn("forged-check step exited 2", msg)
+
+    def test_failed_listing_blocks(self):
+        msg = self.guard({"check_runs": [], "listing_fails": True})
+        self.assertIn("could not list check runs on aaaaaaaaaaaa", msg)
 
 
 class CopMergeCommand(unittest.TestCase):

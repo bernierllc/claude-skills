@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -216,7 +217,9 @@ def main() -> int:
         else:
             print(f"OK vendored script {script.relative_to(root)}")
 
-    rulesets = gh_json(["api", "repos/{owner}/{repo}/rulesets", "--jq", "."])
+    if shutil.which("gh") is None:  # the local checks above still ran; the rest needs the GitHub CLI
+        print("WARN gh (GitHub CLI) not found; skip label and ruleset checks")
+        return 0
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.
     repo = subprocess.run(
         ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
