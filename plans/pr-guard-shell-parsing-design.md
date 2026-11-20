@@ -42,16 +42,34 @@ Nothing here replaces an incumbent. The guard already has the pieces; the gap is
 - **CI:** one step in the `consistency` job, which already checks out with `fetch-depth: 0`, so the `git log` walk and `git show` work without a new fetch. The step: `python3 pr-merge-flow/tests/test_pr_guard_parity.py`.
 - **Runtime:** pending until step 1 lands. The author measured the round-8 harness on a laptop at 6.3 s for 838 inputs x 4 configs, but `diff.py` and its corpus are not in the repo yet, so nobody else can reproduce that. Step 1's first commit adds `diff.py` (as `test_pr_guard_parity.py`) and the fixture corpus, then records the measured CI wall time in the PR. The budget is 30 s; the test prints its wall time, and the 5-minute job timeout stays as is.
 
-### 2. Keep wrappers fail closed; stop guessing option arity
+### 2. Keep wrappers fail closed: an allowlist of known prefixes, everything else unknown
 
-The guard keeps reading through wrappers. It never stops seeing a command because a wrapper came first. Concretely:
+Two rules, both in `segments()`, so every detector (Codex mention, body file, `gh pr merge`, base sync, draft) gets them at once. No wrapper's option arity is parsed, and there is no per-wrapper list of dangerous options.
 
-- **One wrapper rule: an option word makes both the directory and the root unknown, and unknown state blocks every body file.** For each listed wrapper other than `env` and `command`, any option word before the candidate command sets an unknown-root state for that candidate. The guard does not parse which options matter: `sudo -D dir`/`--chdir` changes the directory, and `sudo -R dir`/`--chroot` changes the root, so even an absolute path would name a different file. In the unknown-root state every body-file input blocks, relative or absolute. The existing `$ENV_CHDIR` path (unknown directory, absolute plain path still read) stays as is for `env -C`/`--chdir`, because `env` cannot change the root. New tests pin these as blocked: `sudo -D other gh pr comment 1 -F body.md`, `sudo -R /x gh pr comment 1 -F /body.md`, `sudo --chroot=/x gh pr comment 1 -F /body.md`, `sudo --chdir=other gh pr comment 1 -F /abs/body.md` and `timeout -k 5 60 gh pr comment 1 -F /abs/body.md`. Tests also pin two cases that keep today's behavior: `sudo gh pr comment 1 -F body.md` (no options) reads `body.md` from the current directory, and `sudo gh pr comment 1 -F /abs/body.md` reads that absolute path.
-- `env` keeps the round-8 rule: every word after it is a candidate command. That is what blocks `env git merge origin/main`, `env -S gh …` and `env -uC gh …` today.
-- `command` keeps its current stripping, so `command git merge origin/main` stays a git merge.
-- `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and `exec` get the same rule as `env`: every later word is a candidate. Today they hide the command.
-- No wrapper's option table is ever parsed. A false block from trying an argument as a command is the accepted cost.
-- Because this lives in `segments()`, it applies to every detector, Git ones included. The parity test proves no block is lost. New test cases pin `env git merge origin/main`, `command git merge origin/main`, `sudo git pull origin main`, `timeout 60 git rebase origin/staging`, `xargs gh pr merge` and `nice gh pr comment 1 -F "$B"` as blocked.
+**Rule A: which words may be the command.** This is unchanged in spirit from round 8. After `env`, every later word is a candidate command, and `command` keeps its current stripping. `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and `exec` get the `env` rule: every later word is a candidate. Today they hide the command. A false block from trying an argument as a command is the accepted cost.
+
+**Rule B: when the directory and root are known (an allowlist).** For a candidate command, the directory and root are known only when the words before it are one of these:
+
+- nothing (the candidate is the first word, after keywords and `NAME=value` prefixes);
+- a plain `command` with no options;
+- `env` followed only by `NAME=value` assignments.
+
+`env -C dir`/`--chdir[=]dir` keeps today's `$ENV_CHDIR` behavior: the directory is unknown and the root is known, so only an absolute plain path is read. Any other word before the candidate puts the candidate in the unknown state. That covers any wrapper name (`sudo`, `timeout`, …), any option word (including `env -S`/`--split-string`, `env -i`, `env -u`), and any word holding whitespace (a split string such as `'sudo -R /x'`). In the unknown state every body-file input blocks, relative or absolute.
+
+Pinned as blocked:
+
+- body file through a root- or directory-changing word: `env -S 'sudo -R /x' gh pr comment 1 -F /body.md`, `env sudo -R /x gh pr comment 1 -F /body.md`, `sudo env -C d gh pr comment 1 -F /abs/body.md`, `sudo -R /x gh pr comment 1 -F /body.md`, `sudo -D other gh pr comment 1 -F body.md`, `timeout -k 5 60 gh pr comment 1 -F /abs/body.md`;
+- body file through any wrapper, even with no options: `sudo gh pr comment 1 -F body.md`, `nice gh pr comment 1 -F "$B"`;
+- Git and merge detectors through wrappers: `env git merge origin/main`, `command git merge origin/main`, `sudo git pull origin main`, `timeout 60 git rebase origin/staging`, `xargs gh pr merge`.
+
+Pinned as read, as today:
+
+- `gh pr comment 1 -F body.md`
+- `command gh pr comment 1 -F body.md`
+- `env X=1 gh pr comment 1 -F body.md`
+- `env -C d gh pr comment 1 -F /abs/body.md` (the absolute path is read)
+
+New blocks are not losses, so the parity test allows them. Today `sudo …` and `timeout …` hide `gh` entirely, so those were silent allows. `env -i`/`env -u` before a body file become new false blocks. That is the accepted cost, and SKILL.md "Known limits" records it.
 
 ### 3. The three 1.5.1 false blocks
 
@@ -80,5 +98,5 @@ The guard is a quota guard, not a security boundary. `bash -c`, `eval`, variable
 - `test_pr_guard_parity.py` and its fixture corpus are committed and run in CI. The test resolves its baseline to dd01440 (1.5.1), passes, fails on a deliberately lost block (shown once in the fix PR), and its CI wall time is recorded in the PR.
 - `ALLOWED_FLIPS` holds only the exact inputs named in step 3, each with its reason.
 - `env echo gh pr merge 1` is a written WONTFIX in SKILL.md; the other two false blocks are fixed with tests.
-- The wrapper cases in step 2 are pinned as blocked, including the directory-changing wrapper options.
+- The step 2 cases are pinned: the blocked list blocks and the read list reads.
 - The PR goes to main, gets the adversarial review and Review Gate, and is merged by the claude-skills traffic cop.
