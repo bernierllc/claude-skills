@@ -95,7 +95,6 @@ class VendoredDetector(unittest.TestCase):
             self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), first)
             self.assertEqual(dest.with_name(dest.name + ".custom.1.bak").read_bytes(), second)
 
-
     def test_differing_repo_detector_is_left_untouched_even_with_force(self):
         with tempfile.TemporaryDirectory() as repo:
             dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
@@ -170,12 +169,11 @@ class VendoredDetector(unittest.TestCase):
                          (SKILL / "templates" / "review-gate.yml").read_bytes())
 
 
-
 DOCTOR = SKILL / "scripts" / "doctor-review-gate.py"
 
 
-def doctor_script_lines(repo):
-    proc = subprocess.run([sys.executable, str(DOCTOR)], cwd=repo, capture_output=True, text=True)
+def doctor_script_lines(repo, env=None):
+    proc = subprocess.run([sys.executable, str(DOCTOR)], cwd=repo, capture_output=True, text=True, env=env)
     return proc, [line for line in proc.stdout.splitlines() if " scripts/" in line and "workflows" not in line]
 
 
@@ -187,6 +185,16 @@ class DoctorVendoredDrift(unittest.TestCase):
             install(repo)
             proc, lines = doctor_script_lines(repo)
             self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(lines, [f"OK vendored script scripts/{n}" for n in installer().VENDORED_SCRIPTS])
+
+    def test_without_gh_the_local_checks_run_and_doctor_warns(self):
+        # 3.2.13: a machine without the GitHub CLI used to crash with FileNotFoundError after the local checks
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as empty_path:
+            install(repo)
+            proc, lines = doctor_script_lines(repo, env={**os.environ, "PATH": empty_path})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+            self.assertIn("WARN gh (GitHub CLI) not found; skip label and ruleset checks", proc.stdout)
             self.assertEqual(lines, [f"OK vendored script scripts/{n}" for n in installer().VENDORED_SCRIPTS])
 
     @unittest.skipUnless(IN_CLAUDE_SKILLS, NOT_CLAUDE_SKILLS + " and its git history")

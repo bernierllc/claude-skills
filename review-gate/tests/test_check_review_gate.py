@@ -18,6 +18,10 @@ spec2 = importlib.util.spec_from_file_location(
 )
 mg = importlib.util.module_from_spec(spec2)
 spec2.loader.exec_module(mg)
+# check_one runs CI's forged-check step after evaluate; its own behavior tests live in test_forged_gate.py
+# (MergeGuardForgedStep). Here it is recorded, so the payload stubs below decide alone.
+_forged_calls = []
+mg.forged_gate_check = lambda *a, **k: _forged_calls.append(a)
 
 
 def pr(**kwargs):
@@ -285,6 +289,16 @@ try:
     good = f"Intro\r\n\r\n{R}\r\n\r\n{attestation}\r\n"
     mg.gate.pr_payload = lambda *a, **k: pr(body=good, headRefOid=head, reviews={"nodes": []})
     assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") is None
+    # 3.2.13: the forged-check step runs only once evaluate passes, on the PR's own head; its block is the result
+    _forged_calls.clear()
+    assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") is None
+    assert [c[:4] for c in _forged_calls] == [("owner", "target", 42, head)], _forged_calls
+    mg.forged_gate_check = lambda *a, **k: "forged here"
+    assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") == "forged here"
+    mg.forged_gate_check = lambda *a, **k: _forged_calls.append(a)
+    _forged_calls.clear()
+    mg.gate.pr_payload = lambda *a, **k: pr(body=f"{R}\n\nno attestation\n", headRefOid=head, reviews={"nodes": []})
+    assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") and _forged_calls == []
     # a command the guard cannot resolve is blocked with its own reason, before any payload is read
     _err = mg.check_one("GH_CONFIG_DIR=~/e gh -R o/t pr merge 42", cwd="/tmp")
     assert _err and "dynamic GH_CONFIG_DIR" in _err, _err
@@ -347,6 +361,14 @@ finally:
 _self_closing = {"body": "fixed in abc1234\n\nP2: x", "author": {"login": "owner"}, "authorAssociation": "OWNER"}
 assert g.P2_ROOT.search(_self_closing["body"]) and g.closes(_self_closing["body"])
 assert g.p2_threads_closed({"reviewThreads": {"nodes": [{"comments": {"nodes": [_self_closing]}}]}}), "root closed itself"
+# 3.2.13: a closing reply with text on its first line does not close, and the failure names the rule
+_root = {"body": "P2: x", "author": {"login": "r"}, "authorAssociation": "OWNER"}
+_trailing = {"body": "fixed in abc1234: explained here", "author": {"login": "owner"}, "authorAssociation": "OWNER"}
+_alone = {"body": "fixed in abc1234\n\nexplained here", "author": {"login": "owner"}, "authorAssociation": "OWNER"}
+_fail = g.p2_threads_closed({"reviewThreads": {"nodes": [{"comments": {"nodes": [_root, _trailing]}}]}})
+assert len(_fail) == 1 and "must be the reply's whole first line, standing alone" in _fail[0], _fail
+assert "explanation after a blank line" in _fail[0], _fail
+assert g.p2_threads_closed({"reviewThreads": {"nodes": [{"comments": {"nodes": [_root, _alone]}}]}}) == []
 # no head OID: neither Codex path passes, even with a Codex review that carries no commit and a clean comment
 _codex_nohead = {"state": "COMMENTED", "body": "ok", "commit": None, "author": {"login": "chatgpt-codex-connector"}}
 for _h in ("", None):
@@ -512,8 +534,9 @@ _stale = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": [
 _none = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": []}))
 assert len(_stale) == len(_none) and _stale != _none, (_stale, _none)
 _hint = [r for r in _stale if "Codex bot last reviewed deadbeef" in r]
-assert len(_hint) == 1 and "add that Fallback review line to ## Review" in _hint[0] and "quota" in _hint[0], _stale
-assert "@codex" not in _hint[0]
+assert len(_hint) == 1 and "add that Fallback review line to ## Review" in _hint[0], _stale
+# 3.2.13: the hint no longer offers a manual Codex re-review (it spends quota; never the default)
+assert "@codex" not in _hint[0] and "quota" not in _hint[0] and "manual" not in _hint[0], _hint[0]
 assert not any("last reviewed" in r for r in _none)
 _running = g.evaluate(pr(headRefOid=head, reviews=no_reviews, comments={"nodes": [codex_comment(head, status="running")]}))
 assert _running and not any("last reviewed" in r for r in _running), _running

@@ -521,7 +521,8 @@ def p2_threads_closed(pr: dict[str, Any]) -> list[str]:
         })
         failures.append(
             f"P2 thread #{i} has no closing reply from a repo owner, member, collaborator or user with write access "
-            "(Notion link / fixed in <sha> / not-a-finding:)"
+            "(Notion link / fixed in <sha> / not-a-finding:). The closing token must be the reply's whole "
+            "first line, standing alone: put any explanation after a blank line"
             + (f"; closing replies not counted: {', '.join(not_counted)}" if not_counted else "")
         )
     return failures
@@ -547,8 +548,7 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
             reason += (
                 f". The Codex bot last reviewed {', '.join(x[:12] for x in stale)}, not this head "
                 f"{head[:12]}: Codex reviews the first head only, so review this head with a fallback "
-                "reviewer and add that Fallback review line to ## Review. Asking Codex for a manual "
-                "re-review also works but spends Codex quota and is not the default"
+                "reviewer and add that Fallback review line to ## Review"
             )
         reasons.append(reason)
     reasons.extend(p2_threads_closed(pr))
