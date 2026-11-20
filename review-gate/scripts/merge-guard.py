@@ -3474,7 +3474,7 @@ def _child_gh_env(
 
 
 def resolve_pr_number(
-    cmd: str, cwd: str | None = None
+    cmd: str, cwd: str | None = None, deadline: float | None = None
 ) -> tuple[int | None, str | None, str | None, bool]:
     """Resolve gh pr merge selector → (number, repo, error, scrub_gh_repo).
 
@@ -3520,14 +3520,14 @@ def resolve_pr_number(
     if repo:
         args.extend(["-R", repo])
     try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            env=child_env,
-            timeout=20,
-        )
+        # ``deadline``: check_one's hook-wide budget; a library caller gets a fresh one.
+        with gate.gh_deadline(deadline if deadline is not None else _deadline()):
+            proc = gate.run_by_deadline(args, cwd=cwd or None, env=child_env)
+    except subprocess.TimeoutExpired:
+        return None, repo, (
+            f"review-gate blocked merge: resolving the PR from the merge selector did not finish within "
+            f"{HOOK_BUDGET_S:.0f} s (GitHub slow or unreachable); retry"
+        ), scrub_gh_repo
     except (OSError, subprocess.SubprocessError) as e:
         return None, repo, f"review-gate: could not resolve PR via gh: {e}", scrub_gh_repo
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -3691,10 +3691,10 @@ def iter_merge_segments(
 
 FORGED_CHECK = Path(__file__).resolve().with_name("check-forged-review-gate.py")
 GATE_WORKFLOW = ".github/workflows/review-gate.yml"
-# hooks.json gives this blocking hook timeout_ms 25000, and a harness-killed hook does not block. The forged
-# step therefore finishes, or fails closed, by FORGED_BUDGET_S after the hook started (main sets the start;
-# a library caller gets the budget from its call).
-FORGED_BUDGET_S = 20.0
+# hooks.json gives this blocking hook timeout_ms 25000, and a harness-killed hook does not block. Every gh
+# call of a merge check (the gate's GraphQL reads and the forged step) therefore finishes, or fails closed, by
+# HOOK_BUDGET_S after the hook started (main sets the start; a library caller gets the budget from its call).
+HOOK_BUDGET_S = 20.0
 _HOOK_STARTED: float | None = None
 _NO_RUNS = "input contains no check runs"  # the detector's error for a well-formed listing with zero runs
 
@@ -3721,6 +3721,10 @@ def _is_empty_listing(listing: str) -> bool:
     return False
 
 
+def _deadline() -> float:
+    return (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + HOOK_BUDGET_S
+
+
 def forged_gate_check(
     owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
 ) -> str | None:
@@ -3732,7 +3736,7 @@ def forged_gate_check(
     not evaluate), or running out of the time budget all block. A well-formed empty listing blocks only
     where the repo has the gate workflow.
     """
-    deadline = (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + FORGED_BUDGET_S
+    deadline = gate._GH_DEADLINE.get() or _deadline()  # check_one's budget when called from there
     base = dict(env if env is not None else os.environ)
     host = ["--hostname", hostname] if hostname else []
 
@@ -3763,7 +3767,7 @@ def forged_gate_check(
             child["GH_HOST"] = hostname
         proc = run([sys.executable, str(FORGED_CHECK)], input=listing.stdout, env=child)
     except subprocess.TimeoutExpired:
-        return (f"review-gate blocked merge: the forged-check step did not finish within {FORGED_BUDGET_S:.0f} s "
+        return (f"review-gate blocked merge: the forged-check step did not finish within {HOOK_BUDGET_S:.0f} s "
                 "of the hook starting (GitHub slow or unreachable); retry the merge")
     if proc.returncode == 0:
         return None
@@ -3772,14 +3776,15 @@ def forged_gate_check(
 
 
 def check_one(segment: str, cwd: str | None) -> str | None:
-    number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd)
+    deadline = _deadline()  # one budget for every gh call below, PR resolution included
+    number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd, deadline=deadline)
     if err:
         return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     child_env = _child_gh_env(segment, scrub_gh_repo, cwd=cwd)
     try:
-        with gate.gh_subprocess_env(child_env):
+        with gate.gh_subprocess_env(child_env), gate.gh_deadline(deadline):
             hostname, owner, name = gate.parse_repo_with_host(
                 repo, cwd=cwd, env=child_env
             )

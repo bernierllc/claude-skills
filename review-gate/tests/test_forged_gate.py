@@ -442,7 +442,7 @@ class MergeGuardForgedStep(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("mg_forged", SCRIPTS / "merge-guard.py")
         mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
         if budget is not None:
-            mg.FORGED_BUDGET_S = budget
+            mg.HOOK_BUDGET_S = budget
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
             (bindir / "fixture.json").write_text(json.dumps({"scripts": {}, "runs": {}, "titles": {}, **fixture}))
@@ -507,7 +507,71 @@ class MergeGuardForgedStep(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("mg_budget", SCRIPTS / "merge-guard.py")
         mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
         hook = json.loads((SKILL / "hooks.json").read_text())["hooks"][0]
-        self.assertLessEqual(mg.FORGED_BUDGET_S * 1000 + 5000, hook["timeout_ms"])
+        self.assertLessEqual(mg.HOOK_BUDGET_S * 1000 + 5000, hook["timeout_ms"])
+
+    # 3.2.14: the gate's own GraphQL reads (pr_payload) share the budget; a slow one used to outlive the hook
+    def test_slow_gate_read_blocks_within_the_budget(self):
+        import importlib.util
+        import time
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("mg_slow", SCRIPTS / "merge-guard.py")
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        mg.HOOK_BUDGET_S = 1
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            (bindir / "fixture.json").write_text(json.dumps({"sleep": 5}))
+            with mock.patch.dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp):
+                started = time.monotonic()
+                msg = mg.check_one("gh -R o/r pr merge 7 --squash", cwd=tmp)
+            self.assertLess(time.monotonic() - started, 4)
+            self.assertTrue(msg.startswith("review-gate: gate check failed: gh api POST graphql did not finish "
+                                           "within the time budget"), msg)
+            self.assertTrue((bindir / "calls.log").read_text().startswith("api "))  # it reached gh, then timed out
+
+    def _stalled_gh_merge(self, command):
+        """Run check_one under a 1 s budget against a gh that stalls 5 s; returns (message, elapsed, calls)."""
+        import importlib.util
+        import time
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("mg_stall", SCRIPTS / "merge-guard.py")
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        mg.HOOK_BUDGET_S = 1
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            (bindir / "fixture.json").write_text(json.dumps({"sleep": 5}))
+            env = {k: v for k, v in os.environ.items() if k not in ("GH_REPO", "GH_HOST")}
+            env.update(PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp)
+            with mock.patch.dict(os.environ, env, clear=True):
+                started = time.monotonic()
+                msg = mg.check_one(command, cwd=tmp)
+                elapsed = time.monotonic() - started
+            return msg, elapsed, (bindir / "calls.log").read_text()
+
+    def test_stalled_repo_view_blocks_within_the_budget(self):
+        # Codex P1 on #122: no -R means `gh repo view`, which had no timeout at all.
+        msg, elapsed, calls = self._stalled_gh_merge("gh pr merge 7 --squash")
+        self.assertLess(elapsed, 4)
+        self.assertTrue(calls.startswith("repo view"), calls)
+        self.assertEqual(msg, "review-gate: gate check failed: gh repo view did not finish within the time "
+                              "budget (GitHub slow or unreachable); retry")
+
+    def test_stalled_selector_resolution_blocks_within_the_budget(self):
+        # Codex P1 on #122: `gh pr view <branch>` kept its own fixed 20 s, outside the shared budget.
+        msg, elapsed, calls = self._stalled_gh_merge("gh -R o/r pr merge feature-x --squash")
+        self.assertLess(elapsed, 4)
+        self.assertTrue(calls.startswith("pr view feature-x"), calls)
+        self.assertTrue(msg.startswith("review-gate blocked merge: resolving the PR from the merge selector "
+                                       "did not finish within 1 s"), msg)
+
+    def test_spent_deadline_fails_closed_before_calling_gh(self):
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location("gate_deadline", SCRIPTS / "check-review-gate.py")
+        gate = importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
+        with gate.gh_deadline(time.monotonic() - 1), self.assertRaisesRegex(RuntimeError, "time budget"):
+            gate.run_gh(["repos/o/r"], hostname="github.com")
+        with gate.gh_deadline(None):  # the workflow sets no deadline
+            self.assertIsNone(gate._GH_DEADLINE.get())
 
     def test_failed_listing_blocks(self):
         msg = self.guard({"check_runs": [], "listing_fails": True})

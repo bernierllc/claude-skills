@@ -164,7 +164,9 @@ for opener in ("<pre>", "<PRE class=x>", "<script>", "<style>", "<textarea>", "<
     reasons = g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []}))
     assert any("starting with <" in r for r in reasons), opener
 # `<` later in a line or escaped does not open a block (GitHub renderer, 2026-11-16): still allowed
-for line in ("a <div title='", "- [ ] <div title='", "\\<div title='", "&lt;div title='", "Uses `<PR_NUMBER>` here"):
+# 3.2.14 (nevar-content P2): digits are a marker only as `N.`/`N)`, so `2026 < 2027` and `1.5 < 2` are prose
+for line in ("a <div title='", "- [ ] <div title='", "\\<div title='", "&lt;div title='", "Uses `<PR_NUMBER>` here",
+             "2026 < 2027", "1.5 < 2", "3 <= 4", ". <x", ") <x", "> 2026 < 2027", "- 10 < 20"):
     assert g.evaluate(pr(body=f"{line}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews={"nodes": []})) == [], line
 # the heading: exactly one exact line, after a blank line or at the top
 for body in (f"{attestation}\n", f"{R}\n\n{attestation}\n\n{R}\n", f"## Review notes\n\n{attestation}\n",
@@ -218,7 +220,7 @@ for nl in ("\r\n", "\r"):
     assert g.evaluate(pr(body=f"Intro{nl}{R}{nl}{attestation}{nl}", headRefOid=head, reviews=_NR)), repr(nl)
 # a tab-indented fence, raw-HTML openers behind tab/list/ordered prefixes, and trailing space on the heading
 assert any("fences" in r for r in g.evaluate(pr(body=f"{R}\n\n\t```\n\n{attestation}\n", headRefOid=head, reviews=_NR)))
-for opener in ("\t<pre>", "1. <pre>", "1) <script>", "* <style>", "+ <textarea>"):
+for opener in ("\t<pre>", "1. <pre>", "1) <script>", "* <style>", "+ <textarea>", "> - 2. <pre>", ">><pre>", "-<pre>"):
     assert any("raw HTML" in r for r in g.evaluate(pr(body=f"{opener}\n\n{R}\n\n{attestation}\n", headRefOid=head, reviews=_NR))), opener
 assert g.evaluate(pr(body=f"{R}  \n\n{attestation}\n", headRefOid=head, reviews=_NR)) == []
 # the attestation names the full 40-hex head: any prefix (grindable) or a different head fails
