@@ -48,7 +48,6 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
 ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
-ENV_ARG = {"u": "unset", "C": "chdir", "S": "split-string"}  # env options that take an argument
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
@@ -210,26 +209,24 @@ def segments(cmd, raw=False):
                         break
                     if "v" in opt or "V" in opt:
                         argv = []
-            chdir = None
             if argv and argv[0] == "env":
-                argv.pop(0)
-                while argv and (argv[0].startswith("-") or ASSIGN.match(argv[0])):
-                    a = argv.pop(0)
-                    if ASSIGN.match(a):
-                        continue
-                    if a.startswith("--"):  # --chdir=DIR / --chdir DIR; --unset, --split-string take one too
-                        name, eq, val = a[2:].partition("=")
-                        if name in ENV_ARG.values() and not eq:
-                            val = argv.pop(0) if argv else ""
-                    else:  # a short cluster: the first argument-taking letter takes the rest of the word or the next
-                        j = next((k for k in range(1, len(a)) if a[k] in ENV_ARG), 0)
-                        name = ENV_ARG.get(a[j:j + 1], "")
-                        val = a[j + 1:] or (argv.pop(0) if j and argv else "")
-                    if name == "chdir":
-                        chdir = val
-            if argv:
-                # `env -C DIR cmd` is `(cd DIR && cmd)`: the subshell bounds scope the cd to that one command.
-                yield from ([["("], ["cd", chdir], argv, [")"]] if chdir else [argv])
+                # env's options are not parsed (a parser here regressed four review rounds running): every later
+                # word may start the command. A --chdir or a short option holding C before it makes the dir
+                # unknown, as `(cd ? && cmd)`, unless the only one is a plain `-C DIR`/`--chdir[=]DIR` right before
+                # it. A false positive only fails closed (comment_posts treats any cd as an unknown dir anyway).
+                for i in range(1, len(argv)):
+                    pre = argv[1:i]
+                    cds = [a for a in pre if a.startswith("--chdir") or re.match(r"-[^-]*C", a)]
+                    d = None
+                    if cds:
+                        d = "$ENV_CHDIR"
+                        if cds in (["-C"], ["--chdir"]) and pre[-2:-1] == cds:
+                            d = pre[-1]
+                        elif cds == pre[-1:] and cds[0].startswith("--chdir="):
+                            d = cds[0][8:]
+                    yield from ([["("], ["cd", d], argv[i:], [")"]] if d else [argv[i:]])
+            elif argv:
+                yield argv
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")

@@ -80,13 +80,15 @@ hooks dormant). It blocks:
   including every expansion (`$`, backtick, glob, brace, `<(...)`, zsh `=(...)` and `=cmd`, `$'...'`) and
   every `~` form (`~/`, `~+`, `~-`, `~user`). There is no cd tracking: when the command contains `cd`,
   `pushd`, `popd` or `chdir` as a word anywhere (after `builtin`/`command`/a backslash, inside `if`, a
-  function, a loop, a subshell or a pipeline) or runs `env -C`/`--chdir` in any spelling (`-Csub`, a cluster such as `-iC sub`), the directory is unknown, so a relative
+  function, a loop, a subshell or a pipeline) or runs `env` with `--chdir` or a short option holding `C` (`-Csub`, `-iC sub`, even `-uC`), the directory is unknown, so a relative
   body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
   1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
   contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
   including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
-  absolute path), and a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`). Out of scope: abbreviated env long options (`--ch=dir`) and wrappers that change directory other than `env -C` (`sudo -D`,
+  absolute path), and a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`). env options are not parsed: every word after `env` may start the command, so no option argument hides
+  `gh` (`env -S gh …`, `env -u gh gh …`, `env env -C sub gh …`). Out of scope: abbreviated env long options
+  (`--ch=dir`), an attached split string (`env -Sgh …`), BSD `env -P dir`, and wrappers that change directory other than `env -C` (`sudo -D`,
   `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
   attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.

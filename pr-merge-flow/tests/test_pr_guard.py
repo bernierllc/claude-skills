@@ -606,9 +606,14 @@ with _tf.TemporaryDirectory() as d:
         assert _blocked(c, d), c
     for c in ("env -iCsub PATH=/usr/bin gh pr comment 1 -F bad.md", "env -iC sub gh pr comment 1 -F bad.md"):
         assert _unread(c), c
-    # round 6 (J1): env options by table; only an argument-taking C changes dir, and no argument eats `gh`
-    keep, chdir = ("-uC", "-uCACHE", "-SC", "-iuC", "--unset=C", "--unset C", "-i", "X=1", "C=sub"), \
-                  ("-iC sub", "-iCsub", "-Csub", "-C sub", "--chdir=sub", "--chdir sub")
+    # rounds 6-7 (J1, K1): env options are not parsed. Every later word may start the command, so no option
+    # argument hides `gh`; a --chdir or short option holding C before it makes the dir unknown (conservative)
+    keep, chdir = ("--unset=C", "--unset C", "-i", "X=1", "C=sub", "-u gh", "-S", "-i -S"), \
+                  ("-iC sub", "-iCsub", "-Csub", "-C sub", "--chdir=sub", "--chdir sub", "env -C sub",
+                   "-uC", "-uCACHE", "-SC", "-iuC")
+    for c in (f"env -S 'gh' pr comment 1 -b '{M} review'", f"env -S gh pr review 1 --comment -b '{M}'",
+              f"env -u gh gh issue comment 1 -b '{M}'", f"env env -C sub gh api repos/o/r/issues/1/comments -f body='{M}'"):
+        assert _blocked(c, d), c
     for o in keep + chdir:
         assert _blocked(f'env {o} gh pr comment 1 -b "{M} review"', d), o
         assert g.check(f"env {o} gh pr comment 1 -F {d}/sub/ok.md", d) is None, o
