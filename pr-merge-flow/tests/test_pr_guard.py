@@ -554,6 +554,31 @@ with _tf.TemporaryDirectory() as d:
               'gh pr comment 1 --body "$MSG"', 'git commit -F "$MSG_FILE"'):
         assert g.check(c, d) is None, c
     assert _blocked(f'cd "$WT" && gh pr comment 1 -F {d}/sub/bad.md', d)
+    # Codex high on #123: every shell expansion form fails closed, not just $ and backtick (P1-1)
+    _any = lambda c, cwd=d: (g.check(c, cwd) or "").startswith("Blocked:")
+    for c in ("gh pr comment 123 --body-file sub/bad.?d", "gh pr comment 123 --body-file sub/b*.md",
+              "gh pr comment 123 --body-file sub/[b]ad.md", "gh pr comment 123 --body-file sub/bad.{md,txt}",
+              "gh pr review 123 --comment --body-file <(cat sub/bad.md)", "gh pr comment 123 -F <(cat sub/bad.md)",
+              "gh pr comment 123 --body-file $'sub/bad.\\x6dd'", "cd sub* && gh pr comment 1 -F bad.md"):
+        assert _any(c), c
+    # quoting makes the same characters literal: the file is read and scanned (P2-2)
+    Path(d, "cost$5.md").write_text(f"{M} review\n")
+    Path(d, "plain*.md").write_text("ok\n")
+    assert _blocked("gh pr comment 123 --body-file 'cost$5.md'", d)
+    assert _blocked('gh pr comment 123 --body-file "cost\\$5.md"', d)
+    assert g.check("gh pr comment 123 --body-file 'plain*.md'", d) is None
+    assert g.check('gh pr comment 123 --body-file "plain*.md"', d) is None
+    assert g.check("gh pr comment 123 --body-file ~/no-such-pr-guard-body.md", d) is None  # ~/ expands to a known path
+    # a value consumed by --body is text, never a flag (P1-2)
+    for c in ("gh pr comment 123 --body '--body-file=$BODY is the syntax'", "gh pr comment 123 -b '-F $X'",
+              "gh api repos/o/r/issues/1/comments -f body='--input $B'"):
+        assert g.check(c, d) is None, c
+    # a GET request posts nothing (P2-1)
+    for c in ('gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api --method=get repos/o/r/issues -F q=@"$F"',
+              'gh api -XGET repos/o/r/issues -F q=@"$F"'):
+        assert g.check(c, d) is None, c
+    assert _any('gh api -X GET repos/o/r/issues --input "$B"')
+    assert _any('gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"')
 
 print("ok")
 

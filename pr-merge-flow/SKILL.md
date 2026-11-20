@@ -74,9 +74,12 @@ hooks dormant). It blocks:
   file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
   `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
   be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
-  hook can't resolve before the shell runs (`--body-file "$BODY"`, `` -F `mktemp` ``, or a relative path
-  after `cd "$WT"`) is blocked too, with a message to write the body to a literal path (1.5.1): its
-  contents are unknown, so the check fails closed instead of skipping the scan. The mention is
+  hook can't resolve before the shell runs is blocked too, with a message to write the body to a literal
+  path (1.5.1): an unquoted `$`, backtick, glob (`* ? [`), brace, `<`/`>` (process substitution) or a
+  `$'...'` word in the path, or a relative path after such a `cd`. Its contents are unknown, so the check
+  fails closed instead of skipping the scan; quoted characters are literal, so `'cost$5.md'` is read and
+  scanned. A value consumed by `--body`/`-b` or another value flag is never read as a flag, and a
+  `gh api -X GET` without `--input` posts nothing, so neither is checked. The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word

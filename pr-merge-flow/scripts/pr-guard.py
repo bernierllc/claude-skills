@@ -51,7 +51,14 @@ ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
-UNHIDE = {v: k for k, v in HIDE.items()}
+# Shell expansion characters get the same treatment when quoted, so a raw word from segments(raw=True)
+# shows them only where the shell will expand them (see expands). Double quotes still expand $ and `.
+EXPANDS = "$`*?[{<>"
+META = {ord(c): 0xE010 + k for k, c in enumerate(EXPANDS)}
+ANSI = "\uE0FF"  # marks a $'...' word, which this parser decodes only approximately
+HIDE_LITERAL = {**HIDE, **META}
+HIDE_DQ = {k: v for k, v in HIDE_LITERAL.items() if chr(k) not in "$`"}
+UNHIDE = {**{v: k for k, v in HIDE_LITERAL.items()}, ord(ANSI): None}
 
 
 def strip_comments_and_heredocs(cmd, comments=None):
@@ -69,15 +76,17 @@ def strip_comments_and_heredocs(cmd, comments=None):
     while i < n:
         c = cmd[i]
         if quote:
-            out.append(c.translate(HIDE))
+            out.append(c.translate(HIDE_LITERAL if quote == "'" else HIDE_DQ))
             if c == "\\" and quote == '"' and i + 1 < n:
-                out.append(cmd[i + 1])
+                if cmd[i + 1] in "$`":  # bash drops this backslash; shlex keeps it (it only escapes " and \\)
+                    out.pop()
+                out.append(cmd[i + 1].translate(HIDE_LITERAL))
                 i += 1
             elif c == quote:
                 quote = None
             i += 1
         elif c == "\\" and i + 1 < n:
-            out.append("\\" + cmd[i + 1].translate(HIDE))
+            out.append("\\" + cmd[i + 1].translate(HIDE_LITERAL))
             i += 2
         elif cmd.startswith("$'", i):
             # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
@@ -88,7 +97,7 @@ def strip_comments_and_heredocs(cmd, comments=None):
                 i += 1
                 continue
             body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
-            out.append('"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
+            out.append(ANSI + '"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE_LITERAL) + '"')
             i += m.end()
         elif c in "'\"":
             quote = c
@@ -174,11 +183,12 @@ def runs_async(cmd):
     return False
 
 
-def segments(cmd):
+def segments(cmd, raw=False):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
-    backslash-newline continues the command, as in Bash.
+    backslash-newline continues the command, as in Bash. With raw, words keep their quoted
+    characters hidden, so expands() can tell what the shell will expand.
     """
     cmd = strip_comments_and_heredocs(cmd.replace("\\\n", " "))
     tokens = shell_tokens(cmd)
@@ -218,17 +228,24 @@ def segments(cmd):
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from ([c] for c in t if c in "()")
         else:
-            argv.append(t.translate(UNHIDE))
+            argv.append(t if raw else t.translate(UNHIDE))
 
 
-def walk(cmd, cwd):
+def expands(word):
+    """True when the shell, not the hook, decides what a raw word becomes: an unquoted $, backtick,
+    glob or brace character, a redirection or process substitution, or $'...' quoting. A leading ~
+    is not counted: expanduser resolves it the same way."""
+    return any(c in word for c in EXPANDS + ANSI)
+
+
+def walk(cmd, cwd, raw=False):
     """Yield (dir, argv) for each non-cd segment, tracking `cd DIR` and subshell bounds.
 
-    A dir containing `$` or a backtick can't be resolved statically; it is yielded
-    as-is so the caller can refuse or skip it.
+    A dir containing `$` or a backtick (with raw, anything expands() flags) can't be resolved
+    statically; it is yielded as-is so the caller can refuse or skip it.
     """
     stack = []
-    for argv in segments(cmd):
+    for argv in segments(cmd, raw):
         if argv == ["("]:
             stack.append(cwd)
         elif argv == [")"]:
@@ -243,7 +260,7 @@ def walk(cmd, cwd):
                 d = "$OLDPWD"
             elif d is None:
                 d = "$HOME"
-            cwd = d if "$" in d else os.path.join(cwd, os.path.expanduser(d))
+            cwd = d if (expands(d) if raw else "$" in d) else os.path.join(cwd, os.path.expanduser(d.translate(UNHIDE)))
         else:
             yield cwd, argv
 
@@ -361,10 +378,9 @@ MAX_BODY_FILE = 1 << 20
 
 
 def unresolvable(d, path):
-    """True when the shell, not the hook, decides which file `path` names: a $VAR or `cmd` in it, or a
-    relative path under a cd the hook couldn't resolve."""
-    shell = lambda t: "$" in t or "`" in t
-    return shell(path) or (shell(d) and not os.path.isabs(os.path.expanduser(path)))
+    """True when the shell, not the hook, decides which file the raw word `path` names: it expands,
+    or it is relative under a cd that does."""
+    return expands(path) or (expands(d) and not os.path.isabs(os.path.expanduser(path.translate(UNHIDE))))
 
 
 def _body_file(d, path):
@@ -372,16 +388,22 @@ def _body_file(d, path):
     if path == "-" or unresolvable(d, path):
         return None
     try:
-        with open(os.path.join(d, os.path.expanduser(path)), "rb") as f:
+        with open(os.path.join(d, os.path.expanduser(path.translate(UNHIDE))), "rb") as f:
             return f.read(MAX_BODY_FILE).decode("utf-8", "replace")
     except OSError:
         return None  # unreadable: the raw-command search in codex_mention_post still applies
 
 
+# gh flags of these commands that take a separate value; the value is never read as a flag.
+GH_VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-R", "--repo", "-X", "--method", "-f", "--raw-field",
+                  "--field", "-H", "--header", "--input", "-q", "--jq", "-t", "--template", "-p", "--preview",
+                  "--hostname", "--cache"}
+
+
 def comment_posts(cmd, cwd):
-    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, gh api):
-    the body text passed inline and the paths of files the body is read from."""
-    for d, argv in walk(cmd, cwd):
+    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, gh api other
+    than a GET without --input): the body text passed inline, and the raw words naming body files."""
+    for d, argv in walk(cmd, cwd, raw=True):
         words = gh_words(argv)
         if not words:
             continue
@@ -394,19 +416,29 @@ def comment_posts(cmd, cwd):
             continue
         api = pos[0] == "api"
         # gh api: only the request body (fields and --input) posts; a --jq filter or path does not
-        texts, files = ([] if api else list(argv)), []
-        for i, a in enumerate(argv):
+        texts, files, method, i = ([] if api else [a.translate(UNHIDE) for a in argv]), [], "", 0
+        flags_seen = set()
+        while i < len(argv):
+            a, i = argv[i], i + 1
             if re.match(r"-[A-Za-z].", a):  # pflag shorthand with an attached value: -Ffile, -fbody=x, -F=file
                 name, value = a[:2], a[2:].removeprefix("=")
+            elif a.startswith("--") and "=" in a:
+                name, _, value = a.partition("=")
+            elif a in GH_VALUE_FLAGS:
+                name, value, i = a, (argv[i] if i < len(argv) else ""), i + 1
             else:
-                name, eq, value = a.partition("=")
-                value = value if eq else (argv[i + 1] if i + 1 < len(argv) else "")
+                continue
+            flags_seen.add(name)
+            if name in ("-X", "--method"):
+                method = value.translate(UNHIDE).upper()
             if name in file_flags:
                 files.append(value)
             elif api and name in API_FIELD_FLAGS:
-                texts.append(value)
+                texts.append(value.translate(UNHIDE))
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(value.split("=@", 1)[1])
+        if api and method == "GET" and "--input" not in flags_seen:
+            continue  # fields become query parameters: a GET posts nothing
         yield d, texts, files
 
 
