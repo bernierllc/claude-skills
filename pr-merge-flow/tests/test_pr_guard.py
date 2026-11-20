@@ -540,8 +540,20 @@ with _tf.TemporaryDirectory() as d:
               f"gh api repos/o/r/issues/5/comments -fbody='{M} review'"):
         assert _blocked(c, d), c
     for c in ("gh pr comment 5 --body-file sub/ok.md", "gh api repos/o/r/issues/5/comments -F body=@sub/ok.md",
-              "gh pr comment 5 --body-file sub/missing.md", "gh pr comment 5 --body-file $F"):
+              "gh pr comment 5 --body-file sub/missing.md"):
         assert not _blocked(c, d), c
+    # 1.5.1, Codex on nevar-content #14: a body path the shell expands ($VAR, `cmd`, or relative under such a
+    # cd) can't be read here, so the check fails closed with a fix; an absolute path under such a cd still reads.
+    _unread = lambda c: (g.check(c, d) or "").startswith("Blocked: can't read the comment body file")
+    for c in ('gh pr comment 1 --body-file "$BODY"', "gh pr comment 1 -F $F", "gh pr comment 1 -F`mktemp`",
+              'gh issue comment 1 --body-file="${TMP}/b.md"', 'gh api repos/o/r/issues/1/comments -F body=@"$B"',
+              'gh api repos/o/r/issues/1/comments --input "$B"', 'cd "$WT" && gh pr comment 1 -F b.md'):
+        assert _unread(c), c
+        assert g.check(c + "  # codex-review-ok: Matt asked for a Codex pass", d) is None, c
+    for c in (f'cd "$WT" && gh pr comment 1 -F {d}/sub/ok.md', "gh pr comment 1 --body-file - <<'EOF'\nhi\nEOF",
+              'gh pr comment 1 --body "$MSG"', 'git commit -F "$MSG_FILE"'):
+        assert g.check(c, d) is None, c
+    assert _blocked(f'cd "$WT" && gh pr comment 1 -F {d}/sub/bad.md', d)
 
 print("ok")
 

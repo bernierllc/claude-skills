@@ -360,9 +360,16 @@ API_FIELD_FLAGS = ("-f", "--raw-field", "-F", "--field")
 MAX_BODY_FILE = 1 << 20
 
 
+def unresolvable(d, path):
+    """True when the shell, not the hook, decides which file `path` names: a $VAR or `cmd` in it, or a
+    relative path under a cd the hook couldn't resolve."""
+    shell = lambda t: "$" in t or "`" in t
+    return shell(path) or (shell(d) and not os.path.isabs(os.path.expanduser(path)))
+
+
 def _body_file(d, path):
-    """Text of a body file, or None when it can't be read (stdin, a $-path, missing, binary)."""
-    if path == "-" or "$" in path or "`" in path or "$" in d or "`" in d:
+    """Text of a body file, or None when it can't be read (stdin, an unresolvable path, missing, binary)."""
+    if path == "-" or unresolvable(d, path):
         return None
     try:
         with open(os.path.join(d, os.path.expanduser(path)), "rb") as f:
@@ -371,10 +378,9 @@ def _body_file(d, path):
         return None  # unreadable: the raw-command search in codex_mention_post still applies
 
 
-def codex_mention_post(cmd, cwd):
-    """True when the command posts a comment (gh pr/issue comment, gh pr review, gh api) whose body
-    mentions the Codex bot: in an argument, in a readable body file, or on stdin when the raw command
-    holds the mention (a heredoc fed to `--body-file -`, which strip_comments_and_heredocs drops)."""
+def comment_posts(cmd, cwd):
+    """Yield (dir, texts, files) for each comment post (gh pr/issue comment, gh pr review, gh api):
+    the body text passed inline and the paths of files the body is read from."""
     for d, argv in walk(cmd, cwd):
         words = gh_words(argv)
         if not words:
@@ -401,6 +407,24 @@ def codex_mention_post(cmd, cwd):
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(value.split("=@", 1)[1])
+        yield d, texts, files
+
+
+def unresolved_body_file(cmd, cwd):
+    """The first body-file path the hook can't resolve before the shell runs, else None. Its contents
+    are unknown, so the Codex check fails closed on it."""
+    for d, _, files in comment_posts(cmd, cwd):
+        for path in files:
+            if path != "-" and unresolvable(d, path):
+                return path
+    return None
+
+
+def codex_mention_post(cmd, cwd):
+    """True when the command posts a comment whose body mentions the Codex bot: in an argument, in a
+    readable body file, or on stdin when the raw command holds the mention (a heredoc fed to
+    `--body-file -`, which strip_comments_and_heredocs drops)."""
+    for d, texts, files in comment_posts(cmd, cwd):
         # A body file may be written earlier in this same command (`cat > b.md <<EOF … && gh … -F b.md`) or be
         # stdin (`-`, /dev/stdin, /dev/fd/0), so the hook can't read what will be posted: any mention anywhere
         # in the command blocks. Otherwise the file as it stands now is scanned.
@@ -678,6 +702,11 @@ def check(cmd, cwd):
                 "`Fallback review: <reviewer> on <sha> — verdict: <clean|findings fixed>` to the PR's "
                 "## Review section. Only when Matt explicitly asked for a Codex review here, add "
                 "`# codex-review-ok: <reason>` (the colon is optional) to the command.")
+    path = unresolved_body_file(cmd, cwd)
+    if path and not has_override(cmd, "codex-review-ok"):
+        return (f"Blocked: can't read the comment body file `{path}` before the shell expands it, so the hook "
+                "can't check it for a Codex bot mention. Write the body to a literal path (e.g. "
+                "`/tmp/pr-<n>-comment.md`) and pass that path to --body-file / -F / --input.")
     for d, ref, toks, repo in merge_calls(cmd, cwd):
         if repo is None:
             return ("Blocked: can't parse this merge (a short-flag cluster such as `-dR x` or `-st 5`). "

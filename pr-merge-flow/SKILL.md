@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.5.0
+version: 1.5.1
 author: Bernier LLC
 ---
 
@@ -73,7 +73,10 @@ hooks dormant). It blocks:
   The body is scanned in the arguments and in a readable `--body-file`/`-F`, `-F body=@file` or `--input`
   file (relative to the command's `cd`). When the body comes from a file or stdin (`-`, `/dev/stdin`,
   `/dev/fd/0`), the command is also blocked when the mention appears anywhere in it, because that file may
-  be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). The mention is
+  be written earlier in the same command (`cat > b.md <<EOF … && gh pr comment 5 -F b.md`). A body file the
+  hook can't resolve before the shell runs (`--body-file "$BODY"`, `` -F `mktemp` ``, or a relative path
+  after `cd "$WT"`) is blocked too, with a message to write the body to a literal path (1.5.1): its
+  contents are unknown, so the check fails closed instead of skipping the scan. The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
