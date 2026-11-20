@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Warn when a repo is missing review-gate wiring.
 
-Exit 0 always for v1 (warnings only) so AEC/CI can adopt gradually.
-Prints WARN / OK lines on stdout.
+Prints WARN / OK lines on stdout and exits 0. With --strict (3.2.14) it exits 1 when the workflow or a
+vendored script is missing or differs from this skill's copy: the local checks, which need no token. The
+label and ruleset checks stay warnings, since CI's GITHUB_TOKEN usually cannot read rulesets.
 """
 from __future__ import annotations
 
@@ -185,13 +186,15 @@ def ruleset_requires_conversation_resolution(detail: dict) -> bool:
     return False
 
 
-def main() -> int:
-    root = Path.cwd()
+def local_checks(root: Path) -> int:
+    """Workflow and vendored-script checks; returns how many WARNs they printed."""
+    problems = 0
     wf = root / ".github" / "workflows" / "review-gate.yml"
     template = Path(__file__).resolve().parents[1] / "templates" / "review-gate.yml"
     if wf.is_file() and template.is_file() and wf.read_bytes() != template.read_bytes():
         # 3.2.6: an older copy reuses one check run per head, so an edit-triggered suite can leave
         # the required check "expected" (BLOCKED with every check green).
+        problems += 1
         print(
             f"WARN {wf.relative_to(root)} differs from this skill's template; re-run "
             "install-workflow.py --force and merge it to the default branch"
@@ -199,6 +202,7 @@ def main() -> int:
     elif wf.is_file():
         print(f"OK workflow {wf.relative_to(root)}")
     else:
+        problems += 1
         print(
             "WARN missing .github/workflows/review-gate.yml — copy from "
             "skill review-gate/templates/review-gate.yml"
@@ -207,19 +211,35 @@ def main() -> int:
     for name in installer.VENDORED_SCRIPTS:
         script = root / "scripts" / name
         if not script.is_file():
+            problems += 1
             print(f"WARN missing scripts/{name}; re-run install-workflow.py and merge it to the default branch")
         elif script.read_bytes() != (SKILL_SCRIPTS / name).read_bytes():
-            # the installer keeps a newer or custom aec detector, so for that file this WARN can be expected
-            kept = (" (if yours is a newer agents-environment-config copy, the installer keeps it)"
+            # the installer keeps a newer or custom aec detector, so that WARN is expected and --strict passes it
+            problems += not (name == installer.VENDORED and installer.keeps_detector(script))
+            hint = (" (if yours is a newer agents-environment-config copy, the installer keeps it)"
                     if name == installer.VENDORED else "")
             print(f"WARN scripts/{name} differs from the skill; re-run install-workflow.py --force "
-                  f"and merge it to the default branch{kept}")
+                  f"and merge it to the default branch{hint}")
         else:
             print(f"OK vendored script {script.relative_to(root)}")
+    return problems
 
+
+def main(argv: list[str] | None = None) -> int:
+    strict = "--strict" in (sys.argv[1:] if argv is None else argv)
+    problems = local_checks(Path.cwd())
+    remote_checks()
+    if strict and problems:
+        print(f"FAIL --strict: {problems} workflow/vendored-script problem(s) above")
+        return 1
+    return 0
+
+
+def remote_checks() -> None:
+    """Label and ruleset checks through gh; warnings only."""
     if shutil.which("gh") is None:  # the local checks above still ran; the rest needs the GitHub CLI
         print("WARN gh (GitHub CLI) not found; skip label and ruleset checks")
-        return 0
+        return
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.
     repo = subprocess.run(
         ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
@@ -228,7 +248,7 @@ def main() -> int:
     )
     if repo.returncode != 0:
         print("WARN could not resolve repo via gh; skip ruleset check")
-        return 0
+        return
     full = repo.stdout.strip()
     labels = gh_json(["label", "list", "-R", full, "--search", MAIN_REVIEW_LABEL, "--json", "name"])
     if isinstance(labels, list) and any(lb.get("name") == MAIN_REVIEW_LABEL for lb in labels):
@@ -260,10 +280,10 @@ def main() -> int:
     rulesets = gh_json(["api", f"repos/{full}/rulesets"])
     if rulesets is None:
         print("WARN could not list rulesets (need admin:repo_hook or similar)")
-        return 0
+        return
     if not isinstance(rulesets, list):
         print("WARN unexpected rulesets payload")
-        return 0
+        return
 
     branch_state = {
         b: {"resolution": False, "gate": False, "seen": False} for b in MERGE_BRANCHES
@@ -355,7 +375,6 @@ def main() -> int:
                 f"WARN branch {branch!r} missing required status check "
                 f"{REVIEW_GATE_CONTEXT!r}"
             )
-    return 0
 
 
 if __name__ == "__main__":

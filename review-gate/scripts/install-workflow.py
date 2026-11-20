@@ -69,6 +69,11 @@ def _detector_compatible(path: Path) -> bool:
     return isinstance(entry, ast.Set) and bool(entry.elts)
 
 
+def keeps_detector(dest: Path) -> bool:
+    """True when dest, a detector differing from this skill's, is one --force keeps (newer or custom aec copy)."""
+    return hashlib.sha256(dest.read_bytes()).hexdigest() not in KNOWN_OLD and _detector_compatible(dest)
+
+
 def _backup(dest: Path) -> Path:
     """Save dest beside itself under a name no earlier backup holds (never overwrites one)."""
     data = dest.read_bytes()
@@ -88,9 +93,7 @@ def _copy(src: Path, dest: Path, force: bool) -> bool:
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
-    if (src.name == VENDORED and dest.is_file()
-            and hashlib.sha256(dest.read_bytes()).hexdigest() not in KNOWN_OLD
-            and _detector_compatible(dest)):
+    if src.name == VENDORED and dest.is_file() and keeps_detector(dest):
         print(f"KEPT {dest}: it differs from this skill's copy (vendored from aec) and is not a known "
               f"older version, so it was not overwritten. If yours is older, copy scripts/{VENDORED} "
               "from the newest agents-environment-config by hand.", file=sys.stderr)
@@ -112,8 +115,9 @@ def main() -> int:
     skill_root = Path(__file__).resolve().parents[1]
     force = "--force" in sys.argv
     workflow_src = skill_root / "templates" / "review-gate.yml"
+    doctor_src = skill_root / "templates" / "review-gate-doctor.yml"
     script_srcs = [skill_root / "scripts" / name for name in VENDORED_SCRIPTS]
-    for src in (workflow_src, *script_srcs):
+    for src in (workflow_src, doctor_src, *script_srcs):
         if not src.is_file():
             print(f"missing: {src}", file=sys.stderr)
             return 1
@@ -131,6 +135,8 @@ def main() -> int:
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
         _copy(src, root / "scripts" / src.name, force)
+    if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
+        _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0

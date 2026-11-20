@@ -3691,10 +3691,10 @@ def iter_merge_segments(
 
 FORGED_CHECK = Path(__file__).resolve().with_name("check-forged-review-gate.py")
 GATE_WORKFLOW = ".github/workflows/review-gate.yml"
-# hooks.json gives this blocking hook timeout_ms 25000, and a harness-killed hook does not block. The forged
-# step therefore finishes, or fails closed, by FORGED_BUDGET_S after the hook started (main sets the start;
-# a library caller gets the budget from its call).
-FORGED_BUDGET_S = 20.0
+# hooks.json gives this blocking hook timeout_ms 25000, and a harness-killed hook does not block. Every gh
+# call of a merge check (the gate's GraphQL reads and the forged step) therefore finishes, or fails closed, by
+# HOOK_BUDGET_S after the hook started (main sets the start; a library caller gets the budget from its call).
+HOOK_BUDGET_S = 20.0
 _HOOK_STARTED: float | None = None
 _NO_RUNS = "input contains no check runs"  # the detector's error for a well-formed listing with zero runs
 
@@ -3721,6 +3721,10 @@ def _is_empty_listing(listing: str) -> bool:
     return False
 
 
+def _deadline() -> float:
+    return (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + HOOK_BUDGET_S
+
+
 def forged_gate_check(
     owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
 ) -> str | None:
@@ -3732,7 +3736,7 @@ def forged_gate_check(
     not evaluate), or running out of the time budget all block. A well-formed empty listing blocks only
     where the repo has the gate workflow.
     """
-    deadline = (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + FORGED_BUDGET_S
+    deadline = _deadline()
     base = dict(env if env is not None else os.environ)
     host = ["--hostname", hostname] if hostname else []
 
@@ -3763,7 +3767,7 @@ def forged_gate_check(
             child["GH_HOST"] = hostname
         proc = run([sys.executable, str(FORGED_CHECK)], input=listing.stdout, env=child)
     except subprocess.TimeoutExpired:
-        return (f"review-gate blocked merge: the forged-check step did not finish within {FORGED_BUDGET_S:.0f} s "
+        return (f"review-gate blocked merge: the forged-check step did not finish within {HOOK_BUDGET_S:.0f} s "
                 "of the hook starting (GitHub slow or unreachable); retry the merge")
     if proc.returncode == 0:
         return None
@@ -3779,7 +3783,7 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     child_env = _child_gh_env(segment, scrub_gh_repo, cwd=cwd)
     try:
-        with gate.gh_subprocess_env(child_env):
+        with gate.gh_subprocess_env(child_env), gate.gh_deadline(_deadline()):
             hostname, owner, name = gate.parse_repo_with_host(
                 repo, cwd=cwd, env=child_env
             )

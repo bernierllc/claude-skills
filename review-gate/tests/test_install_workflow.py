@@ -172,8 +172,8 @@ class VendoredDetector(unittest.TestCase):
 DOCTOR = SKILL / "scripts" / "doctor-review-gate.py"
 
 
-def doctor_script_lines(repo, env=None):
-    proc = subprocess.run([sys.executable, str(DOCTOR)], cwd=repo, capture_output=True, text=True, env=env)
+def doctor_script_lines(repo, env=None, *args):
+    proc = subprocess.run([sys.executable, str(DOCTOR), *args], cwd=repo, capture_output=True, text=True, env=env)
     return proc, [line for line in proc.stdout.splitlines() if " scripts/" in line and "workflows" not in line]
 
 
@@ -236,6 +236,81 @@ def installer():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+
+class DoctorStrict(unittest.TestCase):
+    """3.2.14: --strict exits 1 on workflow or vendored-script drift; the default run still exits 0."""
+
+    def no_gh(self):
+        self._path = tempfile.TemporaryDirectory()
+        self.addCleanup(self._path.cleanup)
+        return {**os.environ, "PATH": self._path.name}  # local checks only, as in CI without a token
+
+    def test_checker_vendored_without_closer_permissions_fails_strict(self):
+        src = (SKILL / "scripts" / "check-review-gate.py").read_text()
+        start = src.index("def closer_permissions(")
+        stale = src[:start] + src[src.index("\ndef ", start + 1) + 1:]  # an old copy without the function
+        self.assertNotIn("def closer_permissions(", stale)
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            (Path(repo) / "scripts" / "check-review-gate.py").write_text(stale)
+            default, _ = doctor_script_lines(repo, self.no_gh())
+            strict, lines = doctor_script_lines(repo, self.no_gh(), "--strict")
+            self.assertEqual(default.returncode, 0, default.stdout)
+            self.assertEqual(strict.returncode, 1, strict.stdout)
+            self.assertIn("WARN scripts/check-review-gate.py differs from the skill; re-run "
+                          "install-workflow.py --force and merge it to the default branch", lines)
+            self.assertIn("FAIL --strict: 1 workflow/vendored-script problem(s) above", strict.stdout)
+
+    def test_fresh_install_passes_strict(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh(), "--strict")
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+
+    def test_missing_workflow_and_script_fail_strict(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            (Path(repo) / ".github" / "workflows" / "review-gate.yml").unlink()
+            (Path(repo) / "scripts" / "lint-review-body.py").unlink()
+            proc, _ = doctor_script_lines(repo, self.no_gh(), "--strict")
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("FAIL --strict: 2 ", proc.stdout)
+
+    def test_a_kept_newer_aec_detector_passes_strict(self):
+        # the installer keeps it, so --strict must not fail a repo for what --force would not change
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            (Path(repo) / "scripts" / "check-forged-gate-names.py").write_bytes(COMPATIBLE)
+            proc, lines = doctor_script_lines(repo, self.no_gh(), "--strict")
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertTrue(any(line.startswith("WARN scripts/check-forged-gate-names.py differs") for line in lines))
+
+
+class DoctorJob(unittest.TestCase):
+    """3.2.14: install-workflow.py --doctor-job writes an optional CI job running doctor --strict."""
+
+    def test_written_only_on_request(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            self.assertFalse((Path(repo) / ".github" / "workflows" / "review-gate-doctor.yml").exists())
+            install(repo, "--doctor-job")
+            written = (Path(repo) / ".github" / "workflows" / "review-gate-doctor.yml").read_bytes()
+            self.assertEqual(written, (SKILL / "templates" / "review-gate-doctor.yml").read_bytes())
+
+    def test_job_runs_strict_from_claude_skills_main_with_no_paths_filter(self):
+        import yaml
+        wf = yaml.safe_load((SKILL / "templates" / "review-gate-doctor.yml").read_text())
+        on = wf[True]  # YAML 1.1 reads the `on` key as True
+        self.assertEqual(on, "pull_request")  # no paths filter, no branch filter
+        self.assertEqual(wf["permissions"], {"contents": "read"})
+        steps = wf["jobs"]["doctor"]["steps"]
+        self.assertEqual(len(steps), 2)
+        run = steps[1]["run"]
+        self.assertIn("https://github.com/bernierllc/claude-skills", run)
+        self.assertTrue(run.endswith("/review-gate/scripts/doctor-review-gate.py\" --strict"), run)
+        self.assertNotIn("${{", run)  # nothing from the event is interpolated into the shell
 
 
 if __name__ == "__main__":
