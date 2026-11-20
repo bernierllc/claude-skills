@@ -93,6 +93,16 @@ def gh_deadline(deadline: float | None) -> Iterator[None]:
         _GH_DEADLINE.reset(token)
 
 
+def run_by_deadline(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
+    """subprocess.run cut off at the gh_deadline in force (none outside one); raises TimeoutExpired when spent.
+    Every gh subprocess on the merge-guard path goes through here, so one budget covers them all."""
+    deadline = _GH_DEADLINE.get()
+    timeout = None if deadline is None else deadline - time.monotonic()
+    if timeout is not None and timeout <= 0:
+        raise subprocess.TimeoutExpired(cmd, 0)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+
+
 def _describe_call(args: list[str]) -> str:
     """'<METHOD> <endpoint>' for an error message; field values (queries, bodies) are left out.
     Like gh, the method defaults to POST when fields are passed and no -X/--method is given."""
@@ -125,14 +135,8 @@ def run_gh(
     if repo:
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    deadline = _GH_DEADLINE.get()
-    timeout = None if deadline is None else deadline - time.monotonic()
     try:
-        if timeout is not None and timeout <= 0:
-            raise subprocess.TimeoutExpired(cmd, 0)
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, env=_GH_SUBPROCESS_ENV.get(), timeout=timeout
-        )
+        proc = run_by_deadline(cmd, env=_GH_SUBPROCESS_ENV.get())
     except subprocess.TimeoutExpired:
         # fails closed: every caller treats a raise as "cannot evaluate"
         raise RuntimeError(f"gh api {_describe_call(args)} did not finish within the time budget "
@@ -191,13 +195,12 @@ def parse_repo_with_host(
         "-q",
         ".owner.login + \"/\" + .name + \" \" + .url",
     ]
-    proc = subprocess.run(
-        view_cmd,
-        capture_output=True,
-        text=True,
-        cwd=cwd or None,
-        env=env,
-    )
+    try:
+        proc = run_by_deadline(view_cmd, cwd=cwd or None, env=env)
+    except subprocess.TimeoutExpired:
+        # fails closed like run_gh: callers treat a raise as "cannot evaluate"
+        raise RuntimeError("gh repo view did not finish within the time budget "
+                           "(GitHub slow or unreachable); retry") from None
     if proc.returncode != 0 or "/" not in proc.stdout:
         raise RuntimeError("could not resolve owner/repo; pass --repo OWNER/NAME")
     slug_and_url = proc.stdout.strip().split(None, 1)

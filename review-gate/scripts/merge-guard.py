@@ -3474,7 +3474,7 @@ def _child_gh_env(
 
 
 def resolve_pr_number(
-    cmd: str, cwd: str | None = None
+    cmd: str, cwd: str | None = None, deadline: float | None = None
 ) -> tuple[int | None, str | None, str | None, bool]:
     """Resolve gh pr merge selector → (number, repo, error, scrub_gh_repo).
 
@@ -3520,14 +3520,14 @@ def resolve_pr_number(
     if repo:
         args.extend(["-R", repo])
     try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            cwd=cwd or None,
-            env=child_env,
-            timeout=20,
-        )
+        # ``deadline``: check_one's hook-wide budget; a library caller gets a fresh one.
+        with gate.gh_deadline(deadline if deadline is not None else _deadline()):
+            proc = gate.run_by_deadline(args, cwd=cwd or None, env=child_env)
+    except subprocess.TimeoutExpired:
+        return None, repo, (
+            f"review-gate blocked merge: resolving the PR from the merge selector did not finish within "
+            f"{HOOK_BUDGET_S:.0f} s (GitHub slow or unreachable); retry"
+        ), scrub_gh_repo
     except (OSError, subprocess.SubprocessError) as e:
         return None, repo, f"review-gate: could not resolve PR via gh: {e}", scrub_gh_repo
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -3736,7 +3736,7 @@ def forged_gate_check(
     not evaluate), or running out of the time budget all block. A well-formed empty listing blocks only
     where the repo has the gate workflow.
     """
-    deadline = _deadline()
+    deadline = gate._GH_DEADLINE.get() or _deadline()  # check_one's budget when called from there
     base = dict(env if env is not None else os.environ)
     host = ["--hostname", hostname] if hostname else []
 
@@ -3776,14 +3776,15 @@ def forged_gate_check(
 
 
 def check_one(segment: str, cwd: str | None) -> str | None:
-    number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd)
+    deadline = _deadline()  # one budget for every gh call below, PR resolution included
+    number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd, deadline=deadline)
     if err:
         return err
     if number is None:
         return "review-gate: could not parse PR number from `gh pr merge` command"
     child_env = _child_gh_env(segment, scrub_gh_repo, cwd=cwd)
     try:
-        with gate.gh_subprocess_env(child_env), gate.gh_deadline(_deadline()):
+        with gate.gh_subprocess_env(child_env), gate.gh_deadline(deadline):
             hostname, owner, name = gate.parse_repo_with_host(
                 repo, cwd=cwd, env=child_env
             )
