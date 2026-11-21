@@ -2404,3 +2404,23 @@ try:
 finally:
     mg.gate.pr_payload = _orig_payload
 print("closer permission ok")
+
+# 3.2.19 (test_failure_prints_the_exact_rerun_command): the gate does not re-run when a thread is resolved
+# or a review lands, so a failure names the gh command that re-fires it (label toggle; ends with the label on main).
+import contextlib
+import io
+_orig_parse, _orig_payload = g.parse_repo_with_host, g.pr_payload
+try:
+    g.parse_repo_with_host = lambda repo, **k: ("github.com", "o", "r")
+    for base, want in (("main", "gh pr edit 7 -R o/r --remove-label review:high && gh pr edit 7 -R o/r --add-label review:high"),
+                       ("staging", "gh pr edit 7 -R o/r --add-label review:high && gh pr edit 7 -R o/r --remove-label review:high")):
+        g.pr_payload = lambda *a, _b=base, **k: pr(body="no review section", baseRefName=_b)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = g.main(["--pr", "7", "--repo", "o/r"])
+        assert rc == 1, buf.getvalue()
+        assert "does not re-run when a thread is resolved or a review lands" in buf.getvalue(), buf.getvalue()
+        assert want in buf.getvalue(), buf.getvalue()
+finally:
+    g.parse_repo_with_host, g.pr_payload = _orig_parse, _orig_payload
+print("rerun hint ok")

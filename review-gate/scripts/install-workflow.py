@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -111,6 +113,62 @@ def _copy(src: Path, dest: Path, force: bool) -> bool:
     return True
 
 
+VENDORED_SKILL = Path(".claude") / "skills" / "review-gate"  # a repo-tracked copy of this skill (aec project install)
+
+
+def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
+    """The SKILL.md frontmatter version as an int tuple, or None when it is missing or unreadable."""
+    try:
+        m = re.search(r"\A---\n(?:.*\n)*?version:\s*([0-9][0-9.]*)\s*\n", (skill_dir / "SKILL.md").read_text())
+    except OSError:
+        return None
+    return tuple(int(x) for x in m.group(1).strip(".").split(".")) if m else None
+
+
+def dotted(version: tuple[int, ...] | None) -> str:
+    return ".".join(map(str, version)) if version else "unknown"
+
+
+def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> None:
+    """Replace an OLDER repo-tracked copy of this skill as one unit (delete, then copy the whole directory),
+    the way `aec install skill` does, so no file from an old release is left beside new ones."""
+    dest = root / VENDORED_SKILL
+    if not dest.is_dir() or dest.resolve() == skill_root:
+        return
+    have, want = skill_version(dest), skill_version(skill_root)
+    if want is None or (have is not None and have >= want):
+        return  # current or newer: never downgrade a copy someone vendored on purpose
+    if not force:
+        print(f"stale: {VENDORED_SKILL} is {dotted(have)}, this release is {dotted(want)}; "
+              "pass --force to replace the whole directory")
+        return
+    shutil.rmtree(dest)
+    shutil.copytree(skill_root, dest, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+    print(f"refreshed {dest} ({dotted(have)} -> {dotted(want)}); commit the whole directory")
+
+
+PUBLIC_RUNBOOK = """\
+PUBLIC repo: GitHub's Actions event policy (Dec 2, 2026) blocks pull_request_target in public repos by
+default, and Review Gate runs on pull_request_target. Before requiring it:
+  1. In the org or repo Actions policy (Settings > Actions), allow .github/workflows/review-gate.yml to
+     run on pull_request_target for <owner>/<repo>.
+  2. Open a test PR and confirm a 'Review Gate - PR #<n>' run appears.
+  3. Only then add 'Review Gate' as a required status check."""
+
+
+def repo_visibility(root: Path) -> str | None:
+    """PUBLIC / PRIVATE / INTERNAL from gh, or None when gh is missing or cannot tell."""
+    if shutil.which("gh") is None:
+        return None
+    try:
+        out = subprocess.run(["gh", "repo", "view", "--json", "visibility", "-q", ".visibility"], cwd=root,
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"could not read repo visibility ({e})", file=sys.stderr)
+        return None
+    return out.stdout.strip().upper() or None if out.returncode == 0 else None
+
+
 def main() -> int:
     skill_root = Path(__file__).resolve().parents[1]
     force = "--force" in sys.argv
@@ -131,12 +189,18 @@ def main() -> int:
               "(your copy is backed up), or update it from the newest agents-environment-config.",
               file=sys.stderr)
         return 1
+    refresh_vendored_skill(skill_root, root, force)
     _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
         _copy(src, root / "scripts" / src.name, force)
     if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
         _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force)
+    visibility = repo_visibility(root)
+    if visibility == "PUBLIC":
+        print(PUBLIC_RUNBOOK)
+    elif visibility is None:
+        print("Could not read this repo's visibility with gh. If it is public:\n" + PUBLIC_RUNBOOK)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0

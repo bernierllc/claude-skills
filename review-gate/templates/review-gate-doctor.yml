@@ -1,17 +1,16 @@
 # Review Gate doctor: optional, written by `install-workflow.py --doctor-job`. Installed from
 # bernierllc/claude-skills skill `review-gate`.
 #
-# Fails when this repo's review-gate.yml or a vendored scripts/ file is missing or differs from the
-# review-gate skill on claude-skills main (doctor-review-gate.py --strict), for example a checker
-# vendored before closer_permissions existed. A claude-skills release that changes a vendored file
-# therefore turns this job red on every PR until the repo re-runs install-workflow.py --force.
+# Runs this repo's OWN vendored doctor (.claude/skills/review-gate, committed by `aec install skill
+# review-gate`) with --strict: fails when review-gate.yml or a vendored scripts/ file is missing or differs
+# from that copy of the skill. Nothing is cloned or downloaded at run time (3.2.19): the check depends only
+# on this repo's commit, so a claude-skills release never turns it red on its own. To catch a vendored copy
+# that is older than a release, run doctor-review-gate.py from that release; it fails on version parity.
 # Label and ruleset checks stay warnings: the job has no token that can read rulesets.
 #
 # NOT a required check. Making it one is the repo owner's branch-protection decision.
-# Cost: one ~10 s job per PR push (a shallow, blob-filtered clone of one directory plus a Python
-# run). Free on public repos; a private repo is billed 1 minute per run (per-job rounding).
-# No paths filter on purpose: drift comes from claude-skills, not from this PR's diff.
-# Safe on pull_request: the doctor only reads files (bytes and an AST parse); it never runs repo code.
+# Cost: one ~10 s job per PR push. Free on public repos; a private repo is billed 1 minute per run.
+# Safe on pull_request: read-only token, no secrets, and the doctor only reads files (bytes and an AST parse).
 name: Review Gate doctor
 
 on: pull_request
@@ -24,5 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-      - run: git clone -q --depth 1 --filter=blob:none --sparse https://github.com/bernierllc/claude-skills "$RUNNER_TEMP/cs" && git -C "$RUNNER_TEMP/cs" sparse-checkout set review-gate && python3 "$RUNNER_TEMP/cs/review-gate/scripts/doctor-review-gate.py" --strict
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: |
+          doctor=.claude/skills/review-gate/scripts/doctor-review-gate.py
+          if [ ! -f "$doctor" ]; then
+            echo "::error::$doctor is not committed. Vendor the skill with: aec install skill review-gate, then commit .claude/skills/review-gate"
+            exit 1
+          fi
+          python3 .claude/skills/review-gate/scripts/doctor-review-gate.py --strict

@@ -175,3 +175,13 @@ rc, out = lint_cli(_full + "Round 2 used a fallback review: same verdict.\n")
 assert rc == 0, out
 assert "FALLBACK_ATTESTATION" in Path(LINTER).read_text() and "re.compile" not in Path(LINTER).read_text()
 print("lint attestation tests passed")
+
+# 3.2.19 (test_lint_failure_says_the_footer_goes_under_notes): a code span or the generated footer in
+# ## Review still fails (rule 2, unchanged since 3.2.14); the failure now names where they go instead.
+rc, out = lint_cli(body("Use `x` here."))
+assert rc == 1 and "under a later ## Notes heading" in out, out
+rc, out = lint_cli(body("🤖 Generated with [Claude Code](https://claude.com/claude-code)"))
+assert rc == 1 and "under a later ## Notes heading" in out, out
+rc, out = lint_cli(OK)
+assert rc == 0 and "## Notes heading" not in out, out
+print("lint notes hint ok")
