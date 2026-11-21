@@ -616,11 +616,32 @@ with _tf.TemporaryDirectory() as d:
         assert _blocked(c, d), c
     for o in keep + chdir:
         assert _blocked(f'env {o} gh pr comment 1 -b "{M} review"', d), o
-        assert g.check(f"env {o} gh pr comment 1 -F {d}/sub/ok.md", d) is None, o
-    for o in keep:
+        if o not in ("X=1", "C=sub"):
+            assert _unread(f"env {o} gh pr comment 1 -F bad.md"), o
+    # 1.5.2 (plan step 2, rule B): only `env NAME=value…` keeps dir and root, and `env -C DIR`/`--chdir[=]DIR`
+    # keeps the root; any other option or word before gh is unknown, so even an absolute path is not read
+    for o in ("X=1", "C=sub"):
         assert g.check(f"env {o} gh pr comment 1 -F sub/ok.md", d) is None, o
-    for o in chdir:
-        assert _unread(f"env {o} gh pr comment 1 -F bad.md"), o
+    for o in ("X=1", "C=sub", "-C sub", "-Csub", "--chdir=sub", "--chdir sub", "-C sub X=1"):
+        assert g.check(f"env {o} gh pr comment 1 -F {d}/sub/ok.md", d) is None, o
+    for o in set(keep + chdir) - {"X=1", "C=sub", "-C sub", "-Csub", "--chdir=sub", "--chdir sub"}:
+        assert _unread(f"env {o} gh pr comment 1 -F {d}/sub/ok.md"), o
+    # plan step 2: wrappers. Pinned as blocked: a body file behind any wrapper or root/dir-changing word
+    for c in ("env -S 'sudo -R /x' gh pr comment 1 -F /body.md", "env sudo -R /x gh pr comment 1 -F /body.md",
+              "sudo env -C d gh pr comment 1 -F /abs/body.md", "sudo -R /x gh pr comment 1 -F /body.md",
+              "sudo -D other gh pr comment 1 -F body.md", "timeout -k 5 60 gh pr comment 1 -F /abs/body.md",
+              "sudo gh pr comment 1 -F body.md", 'nice gh pr comment 1 -F "$B"', f"sudo gh pr comment 1 -F {d}/sub/ok.md",
+              f"command -p gh pr comment 1 -F {d}/sub/ok.md", f"nohup gh pr comment 1 -F {d}/sub/ok.md",
+              f"time gh pr comment 1 -F {d}/sub/ok.md", f"exec gh pr comment 1 -F {d}/sub/ok.md",
+              f"xargs gh pr comment 1 -F {d}/sub/ok.md", f"command -p env gh pr comment 1 -F {d}/sub/ok.md"):
+        assert _unread(c), c
+    for c in (f"sudo gh pr comment 1 -b '{M}'", f"timeout 60 gh pr review 1 --comment -b '{M}'",
+              f"nice -n 5 gh issue comment 1 -b '{M}'", f"xargs gh api repos/o/r/issues/1/comments -f body='{M}'"):
+        assert _blocked(c, d), c
+    # pinned as read
+    for c in ("gh pr comment 1 -F sub/ok.md", "command gh pr comment 1 -F sub/ok.md", "env X=1 gh pr comment 1 -F sub/ok.md",
+              f"env -C sub gh pr comment 1 -F {d}/sub/ok.md", f"(sudo true) && gh pr comment 1 -F {d}/sub/ok.md"):
+        assert g.check(c, d) is None, c
     # an approximately decoded $'...' word stays unresolved after the =@ split (F5)
     assert _unread("gh api repos/o/r/issues/1/comments -F $'body=@sub/bad\\x2emd'")
     # a file too large to scan whole fails closed instead of scanning a prefix (F6)
@@ -631,13 +652,35 @@ with _tf.TemporaryDirectory() as d:
     for c in ("gh pr comment 123 --body '--body-file=$BODY is the syntax'", "gh pr comment 123 -b '-F $X'",
               "gh api repos/o/r/issues/1/comments -f body='--input $B'"):
         assert g.check(c, d) is None, c
-    # no GET exemption: any gh api body file is checked, as pflag parses short-flag clusters (F1)
+    # GET exemption (1.5.2, plan step 3): only when the effective method (the last -X/--method in any spelling)
+    # is the literal GET are body files skipped; pflag parses short-flag clusters (F1)
     for c in ("gh api repos/o/r/issues/123/comments -X GET -iXPOST -F body=@sub/bad.md",
               "gh api repos/o/r/issues/5/comments -iF body=@sub/bad.md", "gh api repos/o/r/issues/5/comments -iFbody=@sub/bad.md",
-              'gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api -X GET repos/o/r/issues --input "$B"',
-              'gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"', "gh pr comment 5 -eF sub/bad.md"):
+              'gh api -X POST repos/o/r/issues/1/comments -F body=@"$B"', "gh pr comment 5 -eF sub/bad.md",
+              'gh api -X "$M" repos/o/r/issues -F labels=@"$F"', 'gh api repos/o/r/issues -F labels=@"$F"',
+              'gh api -X get repos/o/r/issues -F labels=@"$F"', 'gh api --method=GET -XPOST repos/o/r/issues -F b=@"$F"',
+              'gh api -X GET --method POST repos/o/r/issues --input "$B"', "gh api -X GET -X$'POST' repos/o/r -F b=@sub/bad.md"):
         assert _any(c), c
-    assert g.check("gh api -X GET repos/o/r/issues -F q=@sub/ok.md", d) is None
+    # the two allowed flips (test_pr_guard_parity.py ALLOWED_FLIPS)
+    for c in ('gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', 'gh api -X GET repos/o/r/issues --input "$B"',
+              "gh api -X GET repos/o/r/issues -F q=@sub/ok.md"):
+        assert g.check(c, d) is None, c
+    # every spelling of an effective GET drops the body files; a clean file keeps these out of the flip list
+    _files = lambda c: [f for _, _, fs in g.comment_posts(c, d) for f in fs]
+    for m in ("-X GET", "-XGET", "--method=GET", "--method GET", "-iXGET", "-XPOST --method GET", "--method=POST -XGET"):
+        assert _files(f"gh api {m} repos/o/r/issues -F l=@sub/ok.md") == [], m
+    for m in ("", "-X POST", "-XGET -XPOST", "-X GET --method=POST", '-X "$M"', "-X get", "-X GET -iXPOST"):
+        assert _files(f"gh api {m} repos/o/r/issues -F l=@sub/ok.md") == ["sub/ok.md"], m
+    assert _blocked(f"gh api -X GET repos/o/r/issues -f q='{M}'", d)  # an inline field is still scanned
+    # single-quote continuation (1.5.2, plan step 3): the shell keeps backslash-newline inside single quotes, so a
+    # handle split there posts no mention; split in double quotes or unquoted, it joins and blocks
+    for k in range(1, len(M)):
+        a, b = M[:k], M[k:]
+        assert g.check(f"gh pr comment 1 --body '{a}\\\n{b} review'", d) is None, k
+        assert _blocked(f'gh pr comment 1 --body "{a}\\\n{b} review"', d), k
+        assert _blocked(f"gh pr comment 1 --body {a}\\\n{b}", d), k
+        # quoting the scan can't follow joins everything (fails closed)
+        assert _blocked(f"gh pr comment 1 --body \"$(echo '{a}\\\n{b}')\"", d), k
 
 print("ok")
 
@@ -652,9 +695,43 @@ assert forks("cd /some/fork && gh pr create --title x") == ["/some/fork"]
 assert forks("(cd /some/fork && gh pr create --title x) && gh pr create -R o/r --title y") == ["/some/fork"]
 assert forks("gh pr create --title x") == ["/hook"]
 assert forks('cd "$DIR" && gh pr create --title x') == []
+# Codex high P1 on PR #127: behind a wrapper the dir is unknown, so `gh pr create` needs -R (no fork lookup).
+for c in ("command -- gh pr create --title x --body x", "sudo gh pr create --title x", "env -i gh pr create --title x"):
+    assert "behind a wrapper" in (g.check(c, "/hook") or ""), c
+    assert forks(c.replace("gh pr create", "gh pr create -R o/r")) == [], c
+assert forks("env FOO=1 gh pr create --title x") == ["/hook"]  # env NAME=value keeps the dir known
+# Codex high P1 on PR #127 round 2: an argument that splits to `)` can't close a real subshell scope.
+assert forks("(cd /fork && env printf ' )'; gh pr create --title x --body x)") == ["/fork"]
+assert forks("(cd /fork && env printf ')'; gh pr create --title x --body x)") == ["/fork"]
 # Codex P2 on prevost #332: `env` and NAME=value prefixes don't hide the command.
-assert calls("GIT_DIR=x env -i FOO=1 git merge origin/main") == [("/r", "merge", ["origin/main"])]
-assert calls("env -u HOME git -C wt rebase origin/main") == [("/r/wt", "rebase", ["origin/main"])]
+# 1.5.2 rule B: env with an option, or any other wrapper, leaves the dir unknown (blocked as unresolved)
+assert calls("GIT_DIR=x env -i FOO=1 git merge origin/main") == [("$WRAPPER", "merge", ["origin/main"])]
+assert calls("env -u HOME git -C wt rebase origin/main") == [("$WRAPPER/wt", "rebase", ["origin/main"])]
+assert calls("GIT_DIR=x env FOO=1 git merge origin/main") == [("/r", "merge", ["origin/main"])]
+# Codex high P2 on PR #127: an absolute -C behind a wrapper keeps the unknown root (sudo -R chroots).
+assert calls("sudo -R /jail git -C /repo merge origin/main") == [("$WRAPPER//repo", "merge", ["origin/main"])]
+# Codex high P2 on PR #127: a quoted or attached split string is split and every word tried as the command.
+for c in ("env -S 'gh pr merge' 1 --admin", "env --split-string='gh pr merge' 1 --admin",
+          "env -Sgh pr merge 1 --admin", "env '-Sgh pr merge' 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
+assert _blocked(f"env -S 'gh pr comment 1' -b '{M} review'")
+assert _blocked(f"env -S 'gh pr comment 1 -b' '{M} review'")
+# round 2: an argument can't forge a scope bound or the wrapper marker (identity sentinels).
+assert calls("(cd wt && env printf ' )'; git merge origin/main)") == [("/r/wt", "merge", ["origin/main"])]
+assert calls("(cd wt && env printf ' ) ('; git merge origin/main); git merge origin/main") == [
+    ("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
+# round 2 P2: env -S reads `\_` as a separator.
+for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
+          "env --split-string='gh\\_pr\\_merge' 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
+assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
+assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
+_ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")
+for c in ("env git merge origin/main", "command git merge origin/main", "sudo git pull origin main",
+          "timeout 60 git rebase origin/staging"):
+    assert g.check(c, "/r") is not None, c
+g.pr_state = _ps
+assert "--match-head-commit" in (g.check("xargs gh pr merge", "/r") or "")
 assert g.draft_violation("GH_TOKEN=x env gh pr create --draft")
 assert "--admin" in merge("GH_TOKEN=x gh pr merge 5 --admin", rollup=ok)
 assert calls("echo a=b; git merge origin/main") == [("/r", "merge", ["origin/main"])]  # only a leading assignment
@@ -680,7 +757,8 @@ assert g.check("git -C wt/$w merge origin/staging # sync-base: need abc123", "/r
 for pre in ("command ", "command -p ", "command -- ", "command -p -- "):
     assert "--admin" in merge(pre + "gh pr merge 5 --admin --squash", rollup=ok), pre
     assert g.draft_violation(pre + "gh pr create --draft"), pre
-    assert calls(pre + "git merge origin/main") == [("/r", "merge", ["origin/main"])], pre
+    # 1.5.2 rule B: only a plain `command` keeps the dir known
+    assert calls(pre + "git merge origin/main") == [("/r" if pre == "command " else "$WRAPPER", "merge", ["origin/main"])], pre
 # `command -v`/`-V` only look the name up; nothing runs.
 assert calls("command -v git merge origin/main") == []
 assert not g.draft_violation("command -V gh pr create --draft")

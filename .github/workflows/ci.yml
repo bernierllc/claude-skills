@@ -82,6 +82,10 @@ jobs:
       - name: pr-merge-flow guard tests
         run: python3 pr-merge-flow/tests/test_pr_guard.py
 
+      - name: pr-merge-flow guard parity with the previous release
+        # Fails when a command the last released guard blocked is now allowed (plans/pr-guard-shell-parsing-design.md).
+        run: python3 pr-merge-flow/tests/test_pr_guard_parity.py
+
       - name: review-gate tests
         # Every test script in the directory, so a new one cannot be left out of CI.
         # PyYAML parses the template as GitHub does (run-name test); setup-python ships without it.
