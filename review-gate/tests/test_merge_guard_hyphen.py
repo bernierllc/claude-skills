@@ -160,5 +160,54 @@ class QuotedMentions(unittest.TestCase):
                 self.assertIn("git commit -F <file>", err)
 
 
+
+class BoundedWork(unittest.TestCase):
+    """3.2.18 (Codex P1): the hook is killed at timeout_ms and Claude Code then drops the denial. No command may
+    keep the guard busy: an 80 KB command used to take 6-47 s (the commit-hint regex, array_assembled_merge)."""
+
+    def test_huge_commands_deny_well_under_a_second(self):
+        import time
+        for label, cmd in {
+            "git spam after a merge": "gh pr merge 7 # " + "git " * 20000,
+            "git spam before a merge": "git " * 20000 + "; gh pr merge 7",
+            "long commit message naming a merge": 'git commit -m "gh pr merge 5 ' + "x" * 80000 + '"',
+            "long merge argument": "gh pr merge 7 --body '" + "y" * 80000 + "'",
+        }.items():
+            with self.subTest(case=label):
+                started = time.monotonic()
+                rc, err = hook(cmd)
+                self.assertLess(time.monotonic() - started, 1.0, label)
+                self.assertEqual(rc, 2, err)
+
+    def test_normal_size_denials_are_unchanged(self):
+        rc, err = hook("gh pr merge 5 --squash")
+        self.assertEqual(rc, 2, err)
+        self.assertNotIn("git commit -F <file>", err)
+        self.assertNotIn("too long", err)
+        rc, err = hook('git commit -m "docs: explain gh pr merge --squash"')
+        self.assertEqual(rc, 2, err)
+        self.assertIn("git commit -F <file>", err)
+
+    def test_huge_commands_without_merge_pass(self):
+        self.assertEqual(hook("echo '" + "z" * 80000 + "'")[0], 0)
+
+
+class DirPathSymlink(unittest.TestCase):
+    """3.2.18 (Codex P2): `<link>/..` must mean the parent of the link's target, as the shell resolves it, not the
+    lexical parent of the link; otherwise the guard checks a different checkout than the command runs in."""
+
+    def test_dir_path_resolves_symlinks_before_dotdot(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mg_symlink", GUARD)
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_a = Path(tmp) / "repoA"; (repo_a / "sub").mkdir(parents=True)
+            (Path(tmp) / "elsewhere").mkdir()
+            link = Path(tmp) / "elsewhere" / "link"; link.symlink_to(repo_a / "sub")
+            got = mg.payload_cwd({"cwd": "/tmp/session"}, {"dir_path": f"{link}/../"})
+            self.assertEqual(os.path.realpath(got), os.path.realpath(repo_a))
+            self.assertEqual(got, os.path.realpath(repo_a))  # already resolved: later joins cannot collapse `..`
+
+
 if __name__ == "__main__":
     unittest.main()

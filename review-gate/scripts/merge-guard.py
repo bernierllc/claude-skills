@@ -3565,7 +3565,9 @@ def payload_cwd(payload: dict, inp: dict) -> str:
         inp.get("cwd"),
     ):
         if candidate:
-            return str(candidate)
+            # 3.2.18: resolve symlinks before `..`, as the shell does; a lexical collapse of `<link>/..` names
+            # the link's parent, a different checkout from the one the command runs in.
+            return os.path.realpath(str(candidate))
     return os.getcwd()
 
 
@@ -3803,7 +3805,22 @@ COMMIT_MESSAGE_HINT = (
     " A commit message that names `gh pr merge` is blocked because commit hooks can run it:"
     " write the message to a file and use `git commit -F <file>`."
 )
-_GIT_COMMIT = re.compile(r"\bgit\b[^;&|\n]*\bcommit\b")
+MAX_SCANNED_CHARS = 16_000
+OVERSIZED_COMMAND = (
+    "review-gate: command too long to check within the hook timeout ({n} characters after heredoc bodies,"
+    " limit {limit}) and it may name `gh pr merge`; move long text to a file (`--body-file`, `git commit -F`)"
+)
+_MAY_NAME_MERGE = re.compile(r"gh|merge|\\[0-7xuU]", re.I)
+
+
+def names_git_commit(cmd: str) -> bool:
+    """`git … commit` within one shell segment, in linear time (3.2.18: the regex form backtracked
+    quadratically, and on a huge command it ran after the deny until the hook timeout dropped the denial)."""
+    for segment in re.split(r"[;&|\n]", cmd):
+        git = re.search(r"\bgit\b", segment)
+        if git and re.search(r"\bcommit\b", segment[git.end():]):
+            return True
+    return False
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
@@ -3815,6 +3832,10 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "`gh -R owner/repo pr merge <n>` without embedding it in a heredoc"
         )
     cmd = strip_heredoc_bodies(cmd)
+    # 3.2.18: the checks below are superlinear (80 KB took 6-50 s), and a hook killed at its timeout loses its
+    # denial. An oversized command that may name a merge is denied unread; one that cannot is allowed.
+    if len(cmd) > MAX_SCANNED_CHARS:
+        return OVERSIZED_COMMAND.format(n=len(cmd), limit=MAX_SCANNED_CHARS) if _MAY_NAME_MERGE.search(cmd) else None
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     # `a=(gh … pr merge); "${a[@]}"` — array-assembled merges bypass token checks.
     if array_assembled_merge(cmd) or any(array_assembled_merge(p) for p in parts):
@@ -4057,9 +4078,10 @@ def main() -> int:
     if not isinstance(cmd, str) or not cmd:
         return 0
     cwd = payload_cwd(payload, inp)
+    hint = COMMIT_MESSAGE_HINT if names_git_commit(cmd) else ""  # decided before the deny, in linear time
     err = check_command(cmd, cwd)
-    if err and _GIT_COMMIT.search(cmd):
-        err += COMMIT_MESSAGE_HINT
+    if err:
+        err += hint
     if err:
         print(err, file=sys.stderr)
         return 2
