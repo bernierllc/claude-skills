@@ -6,6 +6,7 @@ Override: include `# review-gate-ok: <reason>` in the Bash command.
 """
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -166,10 +167,17 @@ def _consume_merge_argv_flag(
 
 
 def _shell_tokens(cmd: str) -> list[str]:
+    return list(_shell_tokens_once(cmd))  # a fresh list: callers may mutate it
+
+
+@functools.lru_cache(maxsize=256)
+def _shell_tokens_once(cmd: str) -> tuple[str, ...]:
+    """One pure-Python shlex pass per distinct text (3.2.18): the checks re-split the same command dozens of times,
+    which took seconds on an 80 KB command and let the hook timeout drop its denial."""
     try:
-        return shlex.split(cmd, posix=True)
+        return tuple(shlex.split(cmd, posix=True))
     except ValueError:
-        return cmd.split()
+        return tuple(cmd.split())
 
 
 def shell_comments(cmd: str) -> list[str]:
@@ -1483,7 +1491,7 @@ def quote_smashed_merge(cmd: str) -> bool:
     return False
 
 
-_ARRAY_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")
+_ARRAY_ASSIGN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*\+?=\(")
 _ARRAY_EXPAND_TOKEN_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[(@|\*)\]\}$")
 _PR_MERGE_LOOSE_RE = re.compile(r"(?<![\w-])pr(?![\w-]).*(?<![\w-])merge(?![\w-])", re.S | re.I)
 
@@ -3805,14 +3813,6 @@ COMMIT_MESSAGE_HINT = (
     " A commit message that names `gh pr merge` is blocked because commit hooks can run it:"
     " write the message to a file and use `git commit -F <file>`."
 )
-MAX_SCANNED_CHARS = 16_000
-OVERSIZED_COMMAND = (
-    "review-gate: command too long to check within the hook timeout ({n} characters after heredoc bodies,"
-    " limit {limit}) and it may name `gh pr merge`; move long text to a file (`--body-file`, `git commit -F`)"
-)
-_MAY_NAME_MERGE = re.compile(r"gh|merge|\\[0-7xuU]", re.I)
-
-
 def names_git_commit(cmd: str) -> bool:
     """`git … commit` within one shell segment, in linear time (3.2.18: the regex form backtracked
     quadratically, and on a huge command it ran after the deny until the hook timeout dropped the denial)."""
@@ -3832,12 +3832,6 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
             "`gh -R owner/repo pr merge <n>` without embedding it in a heredoc"
         )
     cmd = strip_heredoc_bodies(cmd)
-    # 3.2.18: the checks below are superlinear (80 KB took 6-50 s), and a hook killed at its timeout loses its
-    # denial. An oversized command that may name a merge is denied unread; one that cannot is allowed. It is
-    # read raw (escapes) and dequoted (linear), the form the checks below match: `g''h`, `mer\\ge` are a merge.
-    if len(cmd) > MAX_SCANNED_CHARS:
-        may_merge = _MAY_NAME_MERGE.search(cmd) or _MAY_NAME_MERGE.search(_dequote_shell_text(cmd))
-        return OVERSIZED_COMMAND.format(n=len(cmd), limit=MAX_SCANNED_CHARS) if may_merge else None
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     # `a=(gh … pr merge); "${a[@]}"` — array-assembled merges bypass token checks.
     if array_assembled_merge(cmd) or any(array_assembled_merge(p) for p in parts):

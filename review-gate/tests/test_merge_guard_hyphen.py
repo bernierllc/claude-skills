@@ -193,6 +193,11 @@ class BoundedWork(unittest.TestCase):
         started = time.monotonic()
         self.assertEqual(hook("echo '" + "z" * 80000 + "'")[0], 0)
         self.assertLess(time.monotonic() - started, 1.0)
+        # No size shortcut: every command is normalized and checked in full, so a long PR body is still allowed.
+        started = time.monotonic()
+        rc, err = hook("gh pr create --title t --body '" + "word " * 16000 + "'")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(rc, 0, err)
 
     def test_huge_commands_hiding_a_merge_in_quotes_or_backslashes_deny(self):
         # Codex P1 on f9f4dce: the size check read raw text, so a quote- or backslash-split `gh … merge` past
