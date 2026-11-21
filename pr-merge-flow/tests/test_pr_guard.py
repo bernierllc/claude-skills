@@ -725,16 +725,24 @@ for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --adm
           "env --split-string='gh\\_pr\\_merge' 1 --admin"):
     assert "--admin" in merge(c, rollup=ok), c
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
-# 1.5.3 (nevar-content #16 review P2): env -S stops reading the string at `\c`, so `gh\c` runs gh.
+# 1.5.5 (nevar-content #17 review): env -S strings with `$` or a non-`\\_` escape fail closed, whatever they run.
+OPAQUE = "has a `$` or a backslash escape"
 for c in ("env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\cjunk' pr merge 1 --admin",
-          "env '-Sgh\\c' pr merge 1 --admin", "env --split-string='gh\\_pr\\c' merge 1 --admin"):
-    assert "--admin" in merge(c, rollup=ok), c
-assert g.wrapped_words("gh\\c x y") == ["gh"]
-# 1.5.3 (#129 review P1): `\\\\c` is an escaped backslash and `'\\c'` is literal in single quotes, so neither ends the string.
-for c in ("env -S 'env X=\\\\c gh pr merge 1 --admin'", "env -S 'env X=\\\\c gh pr merge 1 --auto'",
-          "env -S \"env X='\\c' gh pr merge 1 --admin\""):
-    flag = "--auto" if "--auto" in c else "--admin"
-    assert flag in merge(c, rollup=ok), c
+          "env '-Sgh\\c' pr merge 1 --admin", "env --split-string='gh\\_pr\\c' merge 1 --admin",
+          "env -S 'env X=\\\\c gh pr merge 1 --admin'", "env -S 'env X=\\\\c gh pr merge 1 --auto'",
+          "env -S \"env X='\\c' gh pr merge 1 --admin\"", "env -S \"env X='\\c' gh\\c\" pr merge 1 --admin",
+          "env -S 'env X=\\\\c gh\\c ignored' pr merge 17 --admin",
+          "env -S \"env X='\\c' gh\\c ignored\" pr merge 17 --admin",
+          "env -S 'env X=\\\\c gh\\c ignored' pr comment 17 --body-file /tmp/body.md",
+          "env -S '${EMPTY}gh\\c ignored' pr merge 17 --admin", "env -S '${GHCMD}' pr merge 17 --admin",
+          "/usr/bin/env -iS'gh\\c' pr merge 1 --admin", "env --sp='gh\\c' pr merge 1 --admin",
+          "sudo env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\tpr' merge 1 --admin"):
+    assert OPAQUE in merge(c, rollup=ok), c
+for c in ("env FOO=1 gh pr view 1", "env -S 'gh\\_pr\\_view' 1", "env -u X gh pr view 1",
+          "git commit -S -m 'a\\nb'", "echo env; printf '\\c'"):
+    assert g.opaque_split_string(c) is None, c
+assert merge("env FOO=1 gh pr view 1", rollup=ok) is None
+assert merge("gh pr merge 5 --squash --match-head-commit " + "a" * 40 + " -R owner/repo", rollup=ok) is None
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
 _ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")
 for c in ("env git merge origin/main", "command git merge origin/main", "sudo git pull origin main",

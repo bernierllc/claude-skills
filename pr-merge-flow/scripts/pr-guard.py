@@ -187,13 +187,11 @@ def runs_async(cmd):
     return False
 
 
-def wrapped_words(w, cut=True):
+def wrapped_words(w):
     """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
     would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag. `\\_` is a separator
-    to env -S (`'gh\\_pr\\_merge'`), so it splits too. With cut, everything from `\\c` on is dropped, as env -S does
-    (`'gh\\c'` runs gh). Callers check both cuts: an escaped `\\\\c` or a single-quoted `'\\c'` does not end the string."""
+    to env -S (`'gh\\_pr\\_merge'`), so it splits too. Any other escape or a `$` is refused by opaque_split_string."""
     w = w.replace("\\_", " ")
-    w = w.split("\\c")[0] if cut else w
     try:
         sp = shlex.split(w)
     except ValueError:
@@ -247,10 +245,9 @@ def segments(cmd, raw=False):
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
                     yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, argv[i:], CLOSE] if d else [argv[i:]])
-                    # ponytail: both cuts instead of modelling env -S escapes and quotes; checking more only fails closed.
-                    for sp in dict.fromkeys(tuple(wrapped_words(argv[i], cut)) for cut in (True, False)):
-                        for j in range(len(sp) if list(sp) != argv[i:i + 1] else 0):
-                            yield from [OPEN, CD_WRAPPED, list(sp[j:]) + argv[i + 1:], CLOSE]
+                    sp = wrapped_words(argv[i])
+                    for j in range(len(sp) if sp != argv[i:i + 1] else 0):
+                        yield from [OPEN, CD_WRAPPED, sp[j:] + argv[i + 1:], CLOSE]
             elif argv:
                 yield argv
             argv = []
@@ -787,6 +784,30 @@ def not_green(ref, repo="", cwd=None):
     return ", ".join(bad)
 
 
+def opaque_split_string(cmd):
+    """An `env -S`/`--split-string` string the guard can't split as env does, or None. env -S expands `${VAR}`,
+    ends the string at `\\c`, reads `\\\\` as one backslash and changes both inside quotes; re-implementing that
+    lost a block four times (1.5.2-1.5.4). Only plain words, quotes and `\\_` are split (wrapped_words); a `$` or
+    any other backslash fails closed. Every word after `env` up to the next operator counts as a possible option."""
+    toks = shell_tokens(strip_comments_and_heredocs(cmd)) or cmd.split()
+    env = False
+    for k, t in enumerate(toks):
+        if t and set(t) <= OPERATORS:
+            env = False
+        elif t == "env" or t.endswith("/env"):
+            env = True
+        elif env:
+            # -S, a short cluster ending in S (`-iS`), or a prefix of --split-string (getopt takes `--sp`).
+            m = re.fullmatch(r"-[A-Za-z]*S(.*)|--([a-z-]+)(?:=(.*))?", t, re.S)
+            if not m or (m.group(2) and not "split-string".startswith(m.group(2))):
+                continue
+            v = m.group(1) if m.group(2) is None else m.group(3)
+            v = v if v else (toks[k + 1] if k + 1 < len(toks) else "")
+            if "$" in v or re.search(r"\\(?!_)", v):
+                return v
+    return None
+
+
 def polls(cmd):
     segs = list(segments(cmd))
     return (any(a[0] == "sleep" for a in segs)
@@ -820,6 +841,10 @@ def check(cmd, cwd):
     # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
     # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
     raw, cmd = cmd, join_continuations(cmd)
+    if opaque_split_string(cmd) is not None:
+        return ("Blocked: this `env -S` / `--split-string` string has a `$` or a backslash escape other than `\\_`, "
+                "so the guard can't tell what it runs (env expands `${VAR}` and reads `\\c`, `\\\\` and quotes its own "
+                "way). Run the command without `env -S`, e.g. `env NAME=value gh …`.")
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")
