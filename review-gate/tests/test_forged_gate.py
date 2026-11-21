@@ -75,15 +75,20 @@ if "/check-runs" in path and "/commits/" in path:
         print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": page2}))
     sys.exit(0)
 if "/contents/.github/workflows/review-gate.yml?ref=" in path:  # the wrapper's stale-main check (3.2.16)
-    text = fixture.get("workflows", {}).get(path.split("?ref=", 1)[1])
+    ref = path.split("?ref=", 1)[1]
+    if ref in fixture.get("workflow_raw", {}):
+        print(json.dumps(fixture["workflow_raw"][ref])); sys.exit(0)
+    text = fixture.get("workflows", {}).get(ref)
     if text is None:
         sys.exit(1)
     print(json.dumps({"sha": __import__("hashlib").sha1(text.encode()).hexdigest(),
-                      "content": base64.b64encode(text.encode()).decode()})); sys.exit(0)
-if "/commits/" in path and path.split("?")[0].endswith("/pulls"):
-    if fixture.get("head_pulls") is None:  # null: that lookup fails
+                      "content": base64.encodebytes(text.encode()).decode()})); sys.exit(0)  # newline-wrapped, as GitHub
+if "/pulls?" in path:  # the wrapper's head-branch PR listing (3.2.16), one page
+    if "branch_pulls_raw" in fixture:
+        print(fixture["branch_pulls_raw"]); sys.exit(0)
+    if fixture.get("branch_pulls") is None:  # null: that lookup fails
         sys.exit(1)
-    print(json.dumps([{"number": n} for n in fixture["head_pulls"]])); sys.exit(0)
+    print(json.dumps([fixture["branch_pulls"]])); sys.exit(0)
 if "/pulls/" in path:
     if fixture.get("pull") is None:  # null: that lookup fails
         sys.exit(1)
@@ -145,6 +150,10 @@ PRE_RUN_NAME = re.sub(r"(?m)^run-name:.*\n", "", TEMPLATE.read_text())
 def pull(base="main", head_ref="chore/revendor-review-gate", head_repo="o/r", default="main"):
     return {"number": 7, "created_at": "2026-11-20T10:00:00Z", "base": {"ref": base, "repo": {"full_name": "o/r", "default_branch": default}},
             "head": {"ref": head_ref, "sha": HEAD_SHA, "repo": {"full_name": head_repo}}}
+
+
+def other_pr(number, sha="c" * 40, created_at="2026-11-18T10:00:00Z", closed_at="2026-11-19T10:00:00Z"):
+    return {"number": number, "head": {"sha": sha}, "created_at": created_at, "closed_at": closed_at}
 
 
 def run_heads(head_branch="chore/revendor-review-gate", head_repo="o/r", head_sha=HEAD_SHA,
@@ -398,7 +407,7 @@ class WrapperDetector(unittest.TestCase):
                 "scripts": {}, "check_runs": check_runs, "runs": runs,
                 "titles": {i: run_title(7) for i in runs},
                 # A current main: its review-gate.yml sets run-name, so a title mismatch is never a stale main.
-                "pull": pull(), "workflows": {"main": TEMPLATE.read_text()}, "head_pulls": [7],
+                "pull": pull(), "workflows": {"main": TEMPLATE.read_text()}, "branch_pulls": [{**other_pr(7, HEAD_SHA, "2026-11-20T10:00:00Z", None)}],
                 "run_heads": {i: run_heads() for i in runs}, **(fixture or {})}))
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, REPO="o/r", PR_NUMBER="7")
             for key, value in env_over.items():
@@ -460,6 +469,9 @@ class WrapperDetector(unittest.TestCase):
             "other path": dict(pair=".github/workflows/forge.yml\tpull_request_target"),
             "other event": dict(pair=f"{RG_PATH}\tpull_request"),
             "fork PR branch": dict(run_heads={"530": run_heads(head_repo="fork/r")}),
+            "fork PR, run from the same fork": dict(pull=pull(head_repo="fork/r"),
+                                                     run_heads={"530": run_heads(head_repo="fork/r")}),
+            "fork PR, fork deleted": dict(pull={**pull(), "head": {**pull()["head"], "repo": None}}),
             "head branch is the base": dict(pull=pull(head_ref="main"), run_heads={"530": run_heads(head_branch="main")}),
             "other head branch": dict(run_heads={"530": run_heads(head_branch="other")}),
             "other head sha": dict(run_heads={"530": run_heads(head_sha="b" * 40)}),
@@ -467,7 +479,14 @@ class WrapperDetector(unittest.TestCase):
             "base copy differs": dict(pull=pull(base="staging"),
                                       workflows={"main": PRE_RUN_NAME, "staging": PRE_RUN_NAME + "# edited\n"}),
             "main sets run-name": dict(workflows={"main": TEMPLATE.read_text()}),
-            "another PR on the head": dict(head_pulls=[7, 9]),
+            "another PR on the head": dict(branch_pulls=[other_pr(7, HEAD_SHA, closed_at=None),
+                                                         other_pr(9, HEAD_SHA, closed_at=None)]),
+            # Codex P1: commits/{sha}/pulls omits closed-unmerged PRs; a later one closed on this sha still counts.
+            "later PR closed unmerged on this sha": dict(branch_pulls=[
+                other_pr(7, HEAD_SHA, closed_at=None),
+                other_pr(9, HEAD_SHA, "2026-11-20T10:00:01Z", "2026-11-20T10:00:03Z")]),
+            "PR on this branch open at the run, since moved on": dict(branch_pulls=[
+                other_pr(7, HEAD_SHA, closed_at=None), other_pr(9, "d" * 40, "2026-11-20T09:00:00Z", None)]),
         }
         for label, kwargs in cases.items():
             with self.subTest(label):
@@ -475,8 +494,15 @@ class WrapperDetector(unittest.TestCase):
                 self.assertEqual(rc, 1, err)
                 self.assertIn("forged check 'Review Gate'", err)
 
+    def test_stale_main_ignores_an_older_closed_pr_from_the_same_branch(self):
+        rc, err = self.stale(branch_pulls=[other_pr(7, HEAD_SHA, "2026-11-20T10:00:00Z", None), other_pr(3)])
+        self.assertEqual(rc, 0, err)
+
     def test_stale_main_unreadable_lookups_exit_2(self):
-        for kwargs in ({"pull": None}, {"workflows": {}}, {"run_heads": {}}, {"head_pulls": None}):
+        for kwargs in ({"pull": None}, {"workflows": {}}, {"run_heads": {}}, {"branch_pulls": None},
+                       {"branch_pulls_raw": "{}"}, {"branch_pulls_raw": "[{}]"},
+                       {"workflow_raw": {"main": {"sha": "e" * 40, "content": ""}}},
+                       {"workflow_raw": {"main": {"sha": "e" * 40, "content": "!!!!"}}}):
             with self.subTest(kwargs=str(kwargs)):
                 rc, err = self.stale(**kwargs)
                 self.assertEqual(rc, 2, err)

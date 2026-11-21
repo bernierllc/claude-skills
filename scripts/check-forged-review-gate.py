@@ -30,9 +30,10 @@ job is named `Review Gate`) titles the gate's run with the PR title, so the re-v
 run-name could never pass. When the title neither is RUN_TITLE nor names another PR, the trusted-pair
 job is still this PR's when ALL hold: the default branch's review-gate.yml has no run-name (so this
 self-disables once main is re-vendored); a non-default base carries the same blob; the run's head sha,
-branch, repository and creation time match this PR (head branch not the base, run not older than the PR);
-and `commits/{sha}/pulls` names no other PR. A PR author controls none of the default-branch workflow, the
-event or path of a pull_request_target run, nor the run's head fields, which GitHub sets from the PR.
+branch, repository and creation time match this PR (head in this repo, never a fork; head branch not the base;
+run not older than the PR); and no other PR from that head branch, in any state, has this head sha or was open
+when the run was created. A PR author controls none of the default-branch workflow, the event or path of a
+pull_request_target run, nor the run's head fields, which GitHub sets from the PR.
 
 DELETE THIS WRAPPER when Option A or B of the aec plan lands (a required workflow or a distinct
 publisher app, making the required checks unforgeable through the Checks API). The detector is then
@@ -51,6 +52,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 
@@ -72,17 +74,36 @@ def stale_main_run(repo, pr, run_id, path):
     """None when run `run_id` is PR #pr's gate run under a default-branch workflow without run-name; else why not."""
     pull = json.loads(_gh(f"repos/{repo}/pulls/{pr}"))
     base, default, head = pull["base"]["ref"], pull["base"]["repo"]["default_branch"], pull["head"]
+    head_repo = (head.get("repo") or {}).get("full_name")  # null when the fork was deleted
+    if not head_repo or head_repo.lower() != repo.lower():
+        return f"the PR head is in {head_repo or 'a deleted fork'}, not {repo}: fork PRs never use this fallback"
     main_wf = json.loads(_gh(f"repos/{repo}/contents/{path}?ref={default}"))
-    if re.search(r"(?m)^run-name\s*:", base64.b64decode(main_wf["content"]).decode()):
+    try:  # GitHub wraps the base64 in newlines; anything else that is not base64 is not a workflow we can read
+        main_text = base64.b64decode("".join(main_wf["content"].split()), validate=True).decode()
+    except (ValueError, AttributeError) as exc:
+        raise Ambiguous(f"{default}'s {path} content is not readable base64: {exc}") from exc
+    if not main_text.strip():
+        raise Ambiguous(f"{default}'s {path} came back empty")
+    if re.search(r"(?m)^run-name\s*:", main_text):
         return f"{default}'s {path} sets run-name, so this PR's run is titled by it"
     if base != default and json.loads(_gh(f"repos/{repo}/contents/{path}?ref={base}"))["sha"] != main_wf["sha"]:
         return f"base {base}'s {path} differs from {default}'s"
     run = json.loads(_gh(f"repos/{repo}/actions/runs/{run_id}"))
     got = (run["head_sha"], run["head_branch"], run["head_repository"]["full_name"])
-    want = (head["sha"], head["ref"], head["repo"]["full_name"])
+    want = (head["sha"], head["ref"], head_repo)
     if got != want or head["ref"] == base or run["created_at"] < pull["created_at"]:
         return f"run {run_id} head {got} at {run['created_at']} is not this PR's head {want} into {base}"
-    others = sorted({p["number"] for p in json.loads(_gh(f"repos/{repo}/commits/{head['sha']}/pulls"))} - {int(pr)})
+    # The only way to rule out another PR's run: `commits/{sha}/pulls` omits closed-unmerged PRs, and the run
+    # does not name its PR, so every PR from this head branch, in any state, is listed. Another one that has this
+    # head sha (a closed PR's head is frozen, and labeling it still runs the gate) or was open when the run was
+    # created could have triggered it. An older PR closed before the run, on another sha, could not.
+    query = urllib.parse.urlencode({"state": "all", "head": f"{repo.split('/')[0]}:{head['ref']}", "per_page": 100})
+    pages = json.loads(_gh(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp"))
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise Ambiguous(f"the PR listing for {head['ref']} is not a list of pages")
+    others = sorted(p["number"] for page in pages for p in page if p["number"] != int(pr) and (
+        p["head"]["sha"] == head["sha"]
+        or p["created_at"] <= run["created_at"] and (p["closed_at"] is None or p["closed_at"] >= run["created_at"])))
     if others:
         return (f"this head sha is also PR #{others[0]}'s head. Push a new commit to this PR (an empty commit "
                 "works) so it has a head of its own")
