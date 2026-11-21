@@ -700,6 +700,9 @@ for c in ("command -- gh pr create --title x --body x", "sudo gh pr create --tit
     assert "behind a wrapper" in (g.check(c, "/hook") or ""), c
     assert forks(c.replace("gh pr create", "gh pr create -R o/r")) == [], c
 assert forks("env FOO=1 gh pr create --title x") == ["/hook"]  # env NAME=value keeps the dir known
+# Codex high P1 on PR #127 round 2: an argument that splits to `)` can't close a real subshell scope.
+assert forks("(cd /fork && env printf ' )'; gh pr create --title x --body x)") == ["/fork"]
+assert forks("(cd /fork && env printf ')'; gh pr create --title x --body x)") == ["/fork"]
 # Codex P2 on prevost #332: `env` and NAME=value prefixes don't hide the command.
 # 1.5.2 rule B: env with an option, or any other wrapper, leaves the dir unknown (blocked as unresolved)
 assert calls("GIT_DIR=x env -i FOO=1 git merge origin/main") == [("$WRAPPER", "merge", ["origin/main"])]
@@ -713,6 +716,14 @@ for c in ("env -S 'gh pr merge' 1 --admin", "env --split-string='gh pr merge' 1 
     assert "--admin" in merge(c, rollup=ok), c
 assert _blocked(f"env -S 'gh pr comment 1' -b '{M} review'")
 assert _blocked(f"env -S 'gh pr comment 1 -b' '{M} review'")
+# round 2: an argument can't forge a scope bound or the wrapper marker (identity sentinels).
+assert calls("(cd wt && env printf ' )'; git merge origin/main)") == [("/r/wt", "merge", ["origin/main"])]
+assert calls("(cd wt && env printf ' ) ('; git merge origin/main); git merge origin/main") == [
+    ("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
+# round 2 P2: env -S reads `\_` as a separator.
+for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
+          "env --split-string='gh\\_pr\\_merge' 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
 _ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")

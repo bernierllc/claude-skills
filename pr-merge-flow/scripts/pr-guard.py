@@ -52,6 +52,9 @@ ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # review rounds running): every later word is tried as the command, and it runs in an unknown directory and root.
 WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec"}
 WRAPPED = "$WRAPPER"  # the cd target segments() gives a command behind a wrapper: dir and root unknown
+# Scope markers segments() yields: compared by identity (`is`), never by value, so an argument that splits to
+# `)` or `cd $WRAPPER` (`env printf ' )'`) is an ordinary command and can't close or open a real scope.
+OPEN, CLOSE, CD_WRAPPED = ["("], [")"], ["cd", WRAPPED]
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
@@ -186,7 +189,9 @@ def runs_async(cmd):
 
 def wrapped_words(w):
     """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
-    would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag."""
+    would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag. `\\_` is a separator
+    to env -S (`'gh\\_pr\\_merge'`), so it splits too."""
+    w = w.replace("\\_", " ")
     try:
         sp = shlex.split(w)
     except ValueError:
@@ -239,15 +244,15 @@ def segments(cmd, raw=False):
                         k = 2 if pre[:1] in (["-C"], ["--chdir"]) and len(pre) > 1 else 1 if m else 0
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
-                    yield from ([["("], ["cd", d], argv[i:], [")"]] if d else [argv[i:]])
+                    yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, argv[i:], CLOSE] if d else [argv[i:]])
                     sp = wrapped_words(argv[i])
                     for j in range(len(sp) if sp != argv[i:i + 1] else 0):
-                        yield from [["("], ["cd", WRAPPED], sp[j:] + argv[i + 1:], [")"]]
+                        yield from [OPEN, CD_WRAPPED, sp[j:] + argv[i + 1:], CLOSE]
             elif argv:
                 yield argv
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
-            yield from ([c] for c in t if c in "()")
+            yield from (OPEN if c == "(" else CLOSE for c in t if c in "()")
         else:
             argv.append(t if raw else t.translate(UNHIDE))
 
@@ -269,9 +274,9 @@ def walk(cmd, cwd):
     """
     stack = []
     for argv in segments(cmd):
-        if argv == ["("]:
+        if argv is OPEN:
             stack.append(cwd)
-        elif argv == [")"]:
+        elif argv is CLOSE:
             cwd = stack.pop() if stack else cwd
         elif argv[0] in ("cd", "pushd", "popd"):
             # cd [-L|-P [-e]] [-@] [--] dir: the operand is the first non-option word. A bare `cd` ($HOME),
@@ -433,15 +438,15 @@ def comment_posts(cmd, cwd):
     unknown (None), so only an absolute body path resolves.
     """
     segs = list(segments(cmd, raw=True))
-    d = None if CHDIR.search(cmd) or any(a[0] == "cd" and a[1:] != [WRAPPED] for a in segs) else cwd
+    d = None if CHDIR.search(cmd) or any(a[0] == "cd" and a is not CD_WRAPPED for a in segs) else cwd
     stack, wrapped = [], False  # wrapped: behind a wrapper (see WRAPPERS), so no body path resolves
     for raw in segs:
-        if raw in (["("], [")"]):
-            wrapped = stack.pop() if raw == [")"] and stack else wrapped
-            if raw == ["("]:
+        if raw is OPEN or raw is CLOSE:
+            wrapped = stack.pop() if raw is CLOSE and stack else wrapped
+            if raw is OPEN:
                 stack.append(wrapped)
             continue
-        if raw == ["cd", WRAPPED]:
+        if raw is CD_WRAPPED:
             wrapped = True
             continue
         argv = [a.translate(UNHIDE) for a in raw]

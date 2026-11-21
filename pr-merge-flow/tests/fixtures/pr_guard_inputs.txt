@@ -50,3 +50,6 @@
 ["/r", "command -- gh pr create --title x --body x"]
 ["/r", "sudo -R /jail git -C /repo merge origin/main"]
 ["/r", "env -S 'gh pr merge' 1 --admin"]
+["/safe", "(cd /fork && env printf ' )'; gh pr create --title x --body x)"]
+["/r", "(cd wt && env printf ' )'; git merge origin/main)"]
+["/r", "env -S 'gh\\_pr\\_merge' 1 --admin"]

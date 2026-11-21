@@ -94,7 +94,8 @@ hooks dormant). It blocks:
   split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
   `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
   `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); a quoted or attached split string
-  (`env -S 'gh pr merge' …`, `-Sgh`, `--split-string=gh pr merge`) is split and each of its words tried too. Their options are not parsed, so the command's
+  (`env -S 'gh pr merge' …`, `-Sgh`, `--split-string=gh pr merge`, and env's `\_` separator) is split and each of its
+  words tried too; a word that splits to `(` or `)` is never read as a subshell bound. Their options are not parsed, so the command's
   directory and root are known only behind no prefix, a plain `command`, or `env NAME=value…`; `env -C DIR` /
   `--chdir[=]DIR` keeps the root, so only an absolute plain body path is read. Behind anything else (any wrapper,
   any option such as `env -i`/`-u`/`-S`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
