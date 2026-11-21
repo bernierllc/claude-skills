@@ -6,6 +6,7 @@ import ast
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -162,8 +163,19 @@ def _replace_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
 def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
     """Replace an OLDER repo-tracked copy of this skill as one unit, the way `aec install skill` does, so no
     file from an old release is left beside new ones. The old tree is moved aside only once the complete new
-    one exists, and is restored if the swap fails. False (with the reason on stderr) when it refused or failed."""
+    one exists, and is restored if the swap fails; a run cut off mid-swap is undone by the next run. False (with
+    the reason on stderr) when it refused or failed."""
     dest = root / VENDORED_SKILL
+    backup = dest.with_name(dest.name + ".old")  # a fixed name, so the next run finds a swap that was cut off
+    if backup.exists() or backup.is_symlink():
+        problem = "it is a symlink" if backup.is_symlink() else _replace_problem(skill_root, root, dest)
+        if problem or dest.exists() or dest.is_symlink():
+            # refuse rather than delete: fewer lines than a guarded delete, and it may hold the only local edits
+            print(f"error: {backup} is left from an earlier refresh{f' ({problem})' if problem else ''}; keep the "
+                  f"right copy at {dest}, delete the other, then rerun. Nothing was changed.", file=sys.stderr)
+            return False
+        backup.rename(dest)
+        print(f"recovered {dest} from {backup}, left by an interrupted refresh")
     if not dest.is_dir() or dest.resolve() == skill_root:
         return True
     try:
@@ -181,12 +193,13 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
         print(f"stale: {VENDORED_SKILL} is {dotted(have)} (hooks.json {hooks_version(dest)}), this release is "
               f"{dotted(want)}; pass --force to replace the whole directory")
         return True
+    # Check-then-use: valid for a trusted, static filesystem under the repo root. The staging and backup names
+    # below are fixed siblings of this confined dest, so they are covered by the same check.
     problem = _replace_problem(skill_root, root, dest)
     if problem:
         print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
         return False
     new = Path(tempfile.mkdtemp(prefix=f".{dest.name}.new-", dir=dest.parent))
-    backup = new.with_name(new.name.replace(".new-", ".old-"))
     try:
         shutil.copytree(skill_root, new, ignore=shutil.ignore_patterns(".*", "__pycache__"), dirs_exist_ok=True)
     except (OSError, shutil.Error) as e:
@@ -195,13 +208,21 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
         return False
     try:
         dest.rename(backup)
-        try:
-            new.rename(dest)
-        except OSError:
-            backup.rename(dest)
-            raise
     except OSError as e:
-        shutil.rmtree(new, ignore_errors=True)  # our own temp copy; dest is the old tree again
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy; dest was never moved
+        print(f"error: could not move {dest} aside ({e}); it is unchanged", file=sys.stderr)
+        return False
+    try:
+        new.rename(dest)
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy
+        try:
+            backup.rename(dest)
+        except OSError as e2:
+            print(f"error: could not swap in the new copy ({e}) or move the old one back ({e2}); {dest} is ABSENT and "
+                  f"the old copy is at {backup}. Restore it: mv {shlex.quote(str(backup))} {shlex.quote(str(dest))} "
+                  "(the next run of this installer also does that)", file=sys.stderr)
+            return False
         print(f"error: could not swap in the new copy ({e}); {dest} is unchanged", file=sys.stderr)
         return False
     try:

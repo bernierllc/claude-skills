@@ -5,6 +5,7 @@ Row: https://app.notion.com/p/41a4efecc95a81388f71da096a699f71 (origin: nevar-in
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -364,6 +365,29 @@ def vendor(repo, version=None):
     return dest
 
 
+# Runs the real installer with --force and a fault at the swap: just before the staged copy is renamed
+# into place, either SIGKILL the process or make .claude/skills read-only (so that rename and the
+# rename back both fail). An audit hook is the fault point; no installer code is replaced.
+SWAP_FAULT = """
+import os, runpy, signal, sys
+installer, action, parent = sys.argv[1:4]
+def hook(event, args):
+    if event == "os.rename" and ".new-" in os.fsdecode(args[0]):
+        if action == "kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        os.chmod(parent, 0o555)
+sys.addaudithook(hook)
+sys.argv = [installer, "--force"]
+runpy.run_path(installer, run_name="__main__")
+"""
+
+
+def install_at_swap(repo, action):
+    parent = Path(repo) / ".claude" / "skills"
+    return subprocess.run([sys.executable, "-c", SWAP_FAULT, str(INSTALLER), action, str(parent)],
+                          cwd=repo, capture_output=True, text=True)
+
+
 def tree(d):
     d = Path(d)
     return {p.relative_to(d).as_posix(): p.read_bytes() for p in sorted(d.rglob("*"))
@@ -437,6 +461,45 @@ class VendoredSkillRefresh(unittest.TestCase):
             self.assertEqual(tree(dest), before)
             self.assertIn("could not copy", proc.stderr)
             self.assertEqual([p.name for p in dest.parent.iterdir()], ["review-gate"])  # no temp dir left behind
+
+    def test_a_refresh_killed_between_the_renames_is_recovered_by_the_next_run(self):
+        # #138 P1 round 2: SIGKILL after the old copy moved aside and before the new one moved in
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            killed = install_at_swap(repo, "kill")
+            self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stdout + killed.stderr)
+            self.assertFalse(dest.exists())  # the window under test
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("recovered", proc.stdout)
+            self.assertEqual(tree(dest), tree(SKILL))
+            self.assertFalse(dest.with_name("review-gate.old").exists())
+
+    def test_a_leftover_backup_beside_a_present_copy_is_refused_and_both_survive(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            backup = shutil.copytree(dest, dest.with_name("review-gate.old"))
+            before = tree(dest)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("review-gate.old is left from an earlier refresh", proc.stderr)
+            self.assertEqual((tree(dest), tree(backup)), (before, before))
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes into a read-only directory")
+    def test_a_failed_rollback_says_the_copy_is_absent_and_names_the_backup(self):
+        # #138 P1 round 2: never "unchanged" when neither rename back worked
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            try:
+                proc = install_at_swap(repo, "readonly")
+            finally:
+                dest.parent.chmod(0o755)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertNotIn("unchanged", proc.stderr)
+            self.assertIn("ABSENT", proc.stderr)
+            self.assertRegex(proc.stderr, r"mv \S+/review-gate\.old \S+/review-gate\b")
+            self.assertFalse(dest.exists())
+            self.assertTrue(dest.with_name("review-gate.old").is_dir())
 
     def test_a_symlinked_skills_parent_is_refused_and_the_external_copy_survives(self):
         # #138 P1: a shared install reached through .claude/skills -> elsewhere must never be deleted
