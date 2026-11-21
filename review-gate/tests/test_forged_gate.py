@@ -74,6 +74,25 @@ if "/check-runs" in path and "/commits/" in path:
     if page2 and "--paginate" in args:
         print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": page2}))
     sys.exit(0)
+if "/contents/.github/workflows/review-gate.yml?ref=" in path:  # the wrapper's stale-main check (3.2.16)
+    text = fixture.get("workflows", {}).get(path.split("?ref=", 1)[1])
+    if text is None:
+        sys.exit(1)
+    print(json.dumps({"sha": __import__("hashlib").sha1(text.encode()).hexdigest(),
+                      "content": base64.b64encode(text.encode()).decode()})); sys.exit(0)
+if "/commits/" in path and path.split("?")[0].endswith("/pulls"):
+    if fixture.get("head_pulls") is None:  # null: that lookup fails
+        sys.exit(1)
+    print(json.dumps([{"number": n} for n in fixture["head_pulls"]])); sys.exit(0)
+if "/pulls/" in path:
+    if fixture.get("pull") is None:  # null: that lookup fails
+        sys.exit(1)
+    print(json.dumps(fixture["pull"])); sys.exit(0)
+if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's run head-field lookup (3.2.16)
+    run_id = path.rsplit("/", 1)[1]
+    if run_id not in fixture.get("run_heads", {}):
+        sys.exit(1)
+    print(json.dumps(fixture["run_heads"][run_id])); sys.exit(0)
 if "/actions/runs/" in path and ".display_title" in args:  # the wrapper's run-title provenance lookup
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture.get("titles", {}):
@@ -118,6 +137,20 @@ def run_title(pr):
 
 
 RG_PATH = ".github/workflows/review-gate.yml"
+HEAD_SHA = "a" * 40
+# A review-gate.yml from before 3.2.7's run-name: its pull_request_target runs are titled with the PR title.
+PRE_RUN_NAME = re.sub(r"(?m)^run-name:.*\n", "", TEMPLATE.read_text())
+
+
+def pull(base="main", head_ref="chore/revendor-review-gate", head_repo="o/r", default="main"):
+    return {"number": 7, "created_at": "2026-11-20T10:00:00Z", "base": {"ref": base, "repo": {"full_name": "o/r", "default_branch": default}},
+            "head": {"ref": head_ref, "sha": HEAD_SHA, "repo": {"full_name": head_repo}}}
+
+
+def run_heads(head_branch="chore/revendor-review-gate", head_repo="o/r", head_sha=HEAD_SHA,
+              created_at="2026-11-20T10:00:05Z"):
+    return {"head_sha": head_sha, "head_branch": head_branch, "head_repository": {"full_name": head_repo},
+            "created_at": created_at}
 
 
 class ForgedGateWorkflow(unittest.TestCase):
@@ -363,7 +396,10 @@ class WrapperDetector(unittest.TestCase):
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
             (bindir / "fixture.json").write_text(json.dumps({
                 "scripts": {}, "check_runs": check_runs, "runs": runs,
-                "titles": {i: run_title(7) for i in runs}, **(fixture or {})}))
+                "titles": {i: run_title(7) for i in runs},
+                # A current main: its review-gate.yml sets run-name, so a title mismatch is never a stale main.
+                "pull": pull(), "workflows": {"main": TEMPLATE.read_text()}, "head_pulls": [7],
+                "run_heads": {i: run_heads() for i in runs}, **(fixture or {})}))
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, REPO="o/r", PR_NUMBER="7")
             for key, value in env_over.items():
                 if value is None:
@@ -403,6 +439,47 @@ class WrapperDetector(unittest.TestCase):
                 else:
                     self.assertIn("from an untrusted Actions job", err)
                     self.assertNotIn("is also PR #", err)
+
+    # Defect 4 (3.2.16): a re-vendor PR whose base main still runs a review-gate.yml without run-name.
+    # GitHub then titles the gate's own run with the PR title, so the title cannot name the PR.
+    STALE = {"titles": {"530": "chore: re-vendor review-gate 3.2.16"}, "workflows": {"main": PRE_RUN_NAME}}
+
+    def stale(self, pair=TRUSTED_RUN, **fixture):
+        return self.wrapper([job("Review Gate", 530)], {"530": pair}, fixture={**self.STALE, **fixture})
+
+    def test_stale_main_gate_job_exits_0(self):
+        rc, err = self.stale()
+        self.assertEqual(rc, 0, err)
+
+    def test_stale_main_into_a_non_default_base_with_the_default_copy_exits_0(self):
+        rc, err = self.stale(pull=pull(base="staging"), workflows={"main": PRE_RUN_NAME, "staging": PRE_RUN_NAME})
+        self.assertEqual(rc, 0, err)
+
+    def test_stale_main_forgeries_still_exit_1(self):
+        cases = {
+            "other path": dict(pair=".github/workflows/forge.yml\tpull_request_target"),
+            "other event": dict(pair=f"{RG_PATH}\tpull_request"),
+            "fork PR branch": dict(run_heads={"530": run_heads(head_repo="fork/r")}),
+            "head branch is the base": dict(pull=pull(head_ref="main"), run_heads={"530": run_heads(head_branch="main")}),
+            "other head branch": dict(run_heads={"530": run_heads(head_branch="other")}),
+            "other head sha": dict(run_heads={"530": run_heads(head_sha="b" * 40)}),
+            "run older than the PR": dict(run_heads={"530": run_heads(created_at="2026-11-19T10:00:00Z")}),
+            "base copy differs": dict(pull=pull(base="staging"),
+                                      workflows={"main": PRE_RUN_NAME, "staging": PRE_RUN_NAME + "# edited\n"}),
+            "main sets run-name": dict(workflows={"main": TEMPLATE.read_text()}),
+            "another PR on the head": dict(head_pulls=[7, 9]),
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                rc, err = self.stale(**kwargs)
+                self.assertEqual(rc, 1, err)
+                self.assertIn("forged check 'Review Gate'", err)
+
+    def test_stale_main_unreadable_lookups_exit_2(self):
+        for kwargs in ({"pull": None}, {"workflows": {}}, {"run_heads": {}}, {"head_pulls": None}):
+            with self.subTest(kwargs=str(kwargs)):
+                rc, err = self.stale(**kwargs)
+                self.assertEqual(rc, 2, err)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
