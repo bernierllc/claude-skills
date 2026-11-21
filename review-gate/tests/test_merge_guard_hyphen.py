@@ -100,18 +100,23 @@ class HyphenatedMentions(unittest.TestCase):
 
 
 class QuotedMentions(unittest.TestCase):
-    """`gh pr merge` as quoted data for grep or a commit message runs nothing (CS-REVIEW-GATE-FIXES)."""
+    """`gh pr merge` quoted as data still blocks; no inert-mention allowlist (#130 round 1, CS-REVIEW-GATE-FIXES)."""
 
-    def test_data_only_mentions_pass(self):
-        for cmd in ['git commit -m "vendor pr-merge-flow"',
-                    "grep pr merge",
-                    'git commit -m "docs: explain gh pr merge --squash"',
-                    'git add -A && git commit -m "x" -m "never run gh pr merge 5 by hand"',
-                    'grep -rn "gh pr merge" review-gate/SKILL.md',
-                    "cd review-gate && grep -c 'gh pr merge' SKILL.md"]:
+    def test_hyphenated_names_pass(self):
+        for cmd in ['git commit -m "vendor pr-merge-flow"', "grep pr merge"]:
             with self.subTest(cmd=cmd):
                 rc, err = hook(cmd)
                 self.assertEqual(rc, 0, err)
+
+    def test_quoted_data_mentions_block(self):
+        # Kept from 3.2.14: an allowlist for these lost blocks (#130 Codex P1-a/P1-b), so it was dropped.
+        for cmd in ['grep -rn "gh pr merge" review-gate/SKILL.md',
+                    "cd review-gate && grep -c 'gh pr merge' SKILL.md",
+                    'grep -e "gh pr merge 5 --admin" -e "gh pr merge 5 --auto" file',
+                    'git add "notes on gh pr merge.md"']:
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 2, f"not blocked: {cmd}\n{err}")
 
     def test_runnable_forms_still_block(self):
         for cmd in ['gh pr merge "$@"',
@@ -131,10 +136,28 @@ class QuotedMentions(unittest.TestCase):
                     "grep () { bash -c 'gh pr merge 5'; }; grep x",
                     "bash -c 'grep x; gh pr merge 5'",
                     "rg --pre sh 'gh pr merge 5' notes",
-                    "echo 'gh pr merge 5' && grep x"]:
+                    "echo 'gh pr merge 5' && grep x",
+                    # #130 Codex P1-a: an escaped quote switches quoting, hiding $( ) and backticks from the scan.
+                    'git commit -m "\\"\'$(gh pr merge 5 --admin)"\\\'',
+                    'git commit -m "\\"\'`gh pr merge 5 --auto`"\\\'',
+                    'grep -e "\\"\'`gh pr merge 5 --auto`"\\\' file',
+                    'grep "\\"\'$(gh pr merge 5 --admin)"\\\' file']:
             with self.subTest(cmd=cmd):
                 rc, err = hook(cmd)
                 self.assertEqual(rc, 2, f"not blocked: {cmd}\n{err}")
+
+    def test_commit_message_mentions_block_and_name_the_file_escape(self):
+        # #130 Codex P1-b: commit hooks (commit-msg, post-commit) can run the message text.
+        for cmd in ['git commit --amend -m "gh pr merge 5 --admin"',
+                    'git commit --amend -m "gh pr merge 5 --auto"',
+                    'cd /tmp && git commit --amend -m "gh pr merge 5 --admin"',
+                    'git commit -m "docs: explain gh pr merge --squash"',
+                    'git add -A && git commit -m "x" -m "never run gh pr merge 5 by hand"',
+                    "git commit -m '$(gh pr merge 5)'"]:
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 2, f"not blocked: {cmd}\n{err}")
+                self.assertIn("git commit -F <file>", err)
 
 
 if __name__ == "__main__":
