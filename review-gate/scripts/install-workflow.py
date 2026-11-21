@@ -94,8 +94,14 @@ def _backup(dest: Path) -> Path:
     raise SystemExit(f"error: 1000 backups of {dest} already exist; clean them up first")
 
 
-def _copy(src: Path, dest: Path, force: bool) -> bool:
-    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector."""
+def _copy(src: Path, dest: Path, force: bool, skill_root: Path, root: Path) -> bool:
+    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector.
+    Exits 1 before touching anything when dest, or a directory above it, is a symlink or leaves the repo: the
+    exists/is_file/copy2 calls below follow links, so with or without --force they would read or write a path
+    outside the repo (3.2.21)."""
+    problem = _dest_problem(skill_root, root, dest)
+    if problem:
+        raise SystemExit(f"error: refusing to write {dest}: {problem}. Nothing was written there.")
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
@@ -143,8 +149,9 @@ def dotted(version: tuple[int, ...] | None) -> str:
     return ".".join(map(str, version)) if version else "unknown"
 
 
-def _replace_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
-    """Why `dest` may not be deleted, mirroring aec's install chokepoint (aec/lib/filesystem.py
+def _dest_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
+    """Why `dest` may not be written or deleted (every destination this installer touches goes through here),
+    mirroring aec's install chokepoint (aec/lib/filesystem.py
     check_install_paths + confine.escapes, and remove_installed_item's never-delete-the-source guard): no
     symlink from below the repo root down to dest (stricter than aec for dest itself: a vendored copy is a
     tracked directory, so a link there is refused, not replaced), dest inside the repo, no source overlap."""
@@ -152,7 +159,7 @@ def _replace_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
     for part in dest.relative_to(root).parts:
         node = node / part
         if node.is_symlink():
-            return f"{node} is a symlink, so the copy it reaches is not this repo's"
+            return f"{node} is a symlink, so what it reaches is not this repo's"
     real, src = dest.resolve(), skill_root.resolve()
     if root.resolve() not in real.parents:
         return f"{real} is outside {root.resolve()}"
@@ -169,7 +176,7 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
     dest = root / VENDORED_SKILL
     backup = dest.with_name(dest.name + ".old")  # a fixed name, so the next run finds a swap that was cut off
     if backup.exists() or backup.is_symlink():
-        problem = "it is a symlink" if backup.is_symlink() else _replace_problem(skill_root, root, dest)
+        problem = "it is a symlink" if backup.is_symlink() else _dest_problem(skill_root, root, dest)
         if problem or dest.exists() or dest.is_symlink():
             # refuse rather than delete: fewer lines than a guarded delete, and it may hold the only local edits
             print(f"error: {backup} is left from an earlier refresh{f' ({problem})' if problem else ''}; keep the "
@@ -177,16 +184,19 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
             return False
         backup.rename(dest)
         print(f"recovered {dest} from {backup}, left by an interrupted refresh")
-    if not dest.is_dir() or dest.resolve() == skill_root:
-        return True
-    # Confinement before any version-based return (3.2.20): a symlinked or out-of-repo copy that reports a
-    # current or newer version must not read as "vendored", with or without --force. Check-then-use: valid for
+    if not dest.exists() and not dest.is_symlink():
+        return True  # nothing vendored here, so nothing to confine
+    # Confinement before ANY return (3.2.20 for the version compare, 3.2.21 for the equal-to-skill-root and
+    # not-a-directory returns): a symlinked or out-of-repo copy, even one that is this very skill or reports a
+    # current or newer version, must not read as "vendored", with or without --force. Check-then-use: valid for
     # a trusted, static filesystem under the repo root. The staging and backup names below are fixed siblings
     # of this confined dest, so they are covered by the same check.
-    problem = _replace_problem(skill_root, root, dest)
+    problem = _dest_problem(skill_root, root, dest)
     if problem:
         print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
         return False
+    if not dest.is_dir() or dest.resolve() == skill_root:
+        return True
     try:
         have, want = skill_version(dest), skill_version(skill_root)
     except ValueError as e:
@@ -281,12 +291,12 @@ def main() -> int:
         return 1
     if not refresh_vendored_skill(skill_root, root, force):
         return 1
-    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
+    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force, skill_root, root)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
-        _copy(src, root / "scripts" / src.name, force)
+        _copy(src, root / "scripts" / src.name, force, skill_root, root)
     if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
-        _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force)
+        _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force, skill_root, root)
     visibility = repo_visibility(root)
     if visibility == "PUBLIC":
         print(PUBLIC_RUNBOOK)

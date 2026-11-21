@@ -578,6 +578,95 @@ class VendoredSkillRefresh(unittest.TestCase):
                     self.assertEqual(tree(dest), before)
 
 
+class SymlinkedDestinations(unittest.TestCase):
+    """3.2.21: the installer never writes through a symlink, and never trusts one before an early return."""
+
+    # (destination relative to the repo, extra installer flags that make the installer write it)
+    DESTINATIONS = (
+        (Path(".github") / "workflows" / "review-gate.yml", ()),
+        (Path("scripts") / "check-review-gate.py", ()),
+        (Path("scripts") / "check-forged-gate-names.py", ()),
+        (Path(".github") / "workflows" / "review-gate-doctor.yml", ("--doctor-job",)),
+    )
+
+    def test_a_symlinked_destination_is_refused_with_and_without_force_and_its_target_is_untouched(self):
+        for rel, extra in self.DESTINATIONS:
+            template = (SKILL / "templates" / rel.name) if rel.suffix == ".yml" else (SKILL / "scripts" / rel.name)
+            other = COMPATIBLE if rel.name == "check-forged-gate-names.py" else b"other bytes\n"  # a detector main() accepts
+            # outside with other bytes, outside with the bytes the installer would write, and inside the repo
+            for target, content in (("outside", other), ("outside", template.read_bytes()), ("inside", other)):
+                for flags in ((), ("--force",)):
+                    with self.subTest(dest=str(rel), target=target, same=content == template.read_bytes(), flags=flags), \
+                            tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                        linked = Path(repo) / rel
+                        linked.parent.mkdir(parents=True, exist_ok=True)
+                        real = (Path(side) if target == "outside" else Path(repo)) / "linked-target.txt"
+                        real.write_bytes(content)
+                        linked.symlink_to(real)
+                        proc = install(repo, *flags, *extra)
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        self.assertIn("refusing to write", proc.stderr)
+                        self.assertIn("symlink", proc.stderr)
+                        self.assertEqual(real.read_bytes(), content)
+                        self.assertTrue(linked.is_symlink())
+
+    def test_a_dangling_symlinked_destination_is_not_written_through(self):
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                outside = Path(side) / "not-yet.yml"
+                linked = Path(repo) / ".github" / "workflows" / "review-gate.yml"
+                linked.parent.mkdir(parents=True)
+                linked.symlink_to(outside)
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertFalse(outside.exists())
+
+    def test_a_symlinked_parent_directory_is_refused_and_nothing_lands_outside(self):
+        for parent in (Path("scripts"), Path(".github")):
+            for flags in ((), ("--force",)):
+                with self.subTest(parent=str(parent), flags=flags), \
+                        tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                    (Path(repo) / parent).symlink_to(side)
+                    proc = install(repo, *flags)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to write", proc.stderr)
+                    self.assertEqual(list(Path(side).iterdir()), [])
+
+    def test_a_vendored_copy_symlinked_to_the_running_skill_is_refused_and_the_skill_is_untouched(self):
+        # 3.2.21: dest.resolve() == skill_root returned True before the symlink check, so this reported success
+        before = tree(SKILL)
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as repo:
+                (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+                link = Path(repo) / ".claude" / "skills" / "review-gate"
+                link.symlink_to(SKILL)
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("refusing to replace", proc.stderr)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(tree(SKILL), before)
+
+    def test_real_files_still_install_and_a_forced_reinstall_stays_real(self):
+        with tempfile.TemporaryDirectory() as repo:
+            for flags in ((), ("--force",), ("--force", "--doctor-job")):
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            for rel, _ in self.DESTINATIONS:
+                self.assertTrue((Path(repo) / rel).is_file() and not (Path(repo) / rel).is_symlink(), rel)
+
+    def test_an_installer_run_from_its_own_vendored_copy_still_installs(self):
+        # the equal-to-skill-root early return survives, now behind the symlink check: a REAL vendored directory
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo)
+            vendored_installer = Path(repo) / ".claude" / "skills" / "review-gate" / "scripts" / "install-workflow.py"
+            before = tree(vendored_installer.parents[1])
+            proc = subprocess.run([sys.executable, str(vendored_installer), "--force"], cwd=repo,
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(tree(vendored_installer.parents[1]), before)
+            self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
+
+
 class DoctorVersionParity(unittest.TestCase):
     """3.2.19: doctor FAILS when the vendored skill is older than the release it runs from."""
 
