@@ -424,7 +424,7 @@ class WrapperDetector(unittest.TestCase):
 
     def test_trusted_pair_job_of_another_pr_exits_1(self):
         # A closed-unmerged child's run on this head: no PR listing shows it, its run title does.
-        for title in ("Review Gate - PR #8", "Review Gate - PR #77"):
+        for title in ("Review Gate - PR #8", "Review Gate - PR #77", " Review Gate - PR #8 "):  # stripped, as before
             with self.subTest(title=title):
                 rc, err = self.wrapper([job("Review Gate", 517)], {"517": TRUSTED_RUN},
                                        fixture={"titles": {"517": title}})
@@ -432,7 +432,7 @@ class WrapperDetector(unittest.TestCase):
                 self.assertIn("not 'Review Gate - PR #7'", err)
                 # 3.2.13: another PR's real run title names that PR and the fix
                 self.assertIn("shared head sha, not this PR's run: ", err)
-                self.assertIn(f"this head sha is also PR #{title.rsplit('#', 1)[1]}'s head, and that PR's Review Gate "
+                self.assertIn(f"this head sha is also PR #{title.strip().rsplit('#', 1)[1]}'s head, and that PR's Review Gate "
                               "run is listed on it. Push a new commit to this PR (an empty commit works) so it "
                               "has a head of its own", err)
 

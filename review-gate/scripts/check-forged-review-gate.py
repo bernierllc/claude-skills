@@ -119,7 +119,7 @@ def run_provenance(repo, pr, run_id):
 
 def foreign_run(repo, pr, run_id):
     """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
-    title = _text(_api_json(f"repos/{repo}/actions/runs/{run_id}"), "display_title")
+    title = _text(_api_json(f"repos/{repo}/actions/runs/{run_id}"), "display_title").strip()
     other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
     if other and other.group(1) != pr:  # a real gate run of another PR on this same head sha: name the fix (3.2.13)
         return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: this head sha is also "
