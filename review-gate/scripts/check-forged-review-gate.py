@@ -41,6 +41,7 @@ env: REPO (required), PR_NUMBER (needed to accept the gate's own job).
 stdin: `set -o pipefail; gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate`
 Exit 0: none forged. 1: forged (listed on stderr). 2: could not evaluate (fails closed).
 """
+import functools
 import importlib.util
 import json
 import os
@@ -65,6 +66,13 @@ def _gh(*args):
         raise Ambiguous(f"gh api {args[0]} failed: {exc.stderr.strip()}") from exc
 
 
+@functools.lru_cache(maxsize=None)
+def _api_json(*args):
+    """One `gh api` read per distinct call per invocation (#134: the merge guard's 20 s budget). A failure is
+    not cached: it raises Ambiguous, which ends the invocation with exit 2."""
+    return json.loads(_gh(*args))
+
+
 def _text(obj, *keys):
     """obj[k1][k2]... as a non-empty string; anything else is Ambiguous (null == null must never match)."""
     for key in keys:
@@ -76,10 +84,10 @@ def _text(obj, *keys):
 
 def run_provenance(repo, pr, run_id):
     """None when workflow run `run_id` was triggered by PR #pr; else why not."""
-    pull = json.loads(_gh(f"repos/{repo}/pulls/{pr}"))
+    pull = _api_json(f"repos/{repo}/pulls/{pr}")
     want = (_text(pull, "head", "sha"), _text(pull, "head", "ref"), _text(pull, "head", "repo", "full_name"))
     opened = _text(pull, "created_at")
-    run = json.loads(_gh(f"repos/{repo}/actions/runs/{run_id}"))
+    run = _api_json(f"repos/{repo}/actions/runs/{run_id}")
     got = (_text(run, "head_sha"), _text(run, "head_branch"), _text(run, "head_repository", "full_name"))
     started = _text(run, "created_at")
     if got != want or started < opened:
@@ -89,7 +97,7 @@ def run_provenance(repo, pr, run_id):
     # has this head sha (a closed PR's head is frozen, and labeling it still runs the gate) or was open when the
     # run was created could have triggered it. An older PR closed before the run, on another sha, could not.
     query = urllib.parse.urlencode({"state": "all", "head": f"{want[2].split('/')[0]}:{want[1]}", "per_page": 100})
-    pages = json.loads(_gh(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp"))
+    pages = _api_json(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp")
     if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
         raise Ambiguous(f"the PR listing for {want[1]} is not a list of pages")
     others = []
@@ -111,7 +119,7 @@ def run_provenance(repo, pr, run_id):
 
 def foreign_run(repo, pr, run_id):
     """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
-    title = _gh(f"repos/{repo}/actions/runs/{run_id}", "--jq", ".display_title").strip()
+    title = _text(_api_json(f"repos/{repo}/actions/runs/{run_id}"), "display_title").strip()
     other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
     if other and other.group(1) != pr:  # a real gate run of another PR on this same head sha: name the fix (3.2.13)
         return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: this head sha is also "
@@ -137,7 +145,7 @@ def main():
         print("::error::REPO is required", file=sys.stderr)
         return 2
     try:
-        lookup = detector._gh_run_lookup(repo)
+        lookup = functools.lru_cache(maxsize=None)(detector._gh_run_lookup(repo))  # a rerun's jobs share a run
         flagged = []
         for check_run in detector._load_check_runs(sys.stdin.read()):
             seen = []

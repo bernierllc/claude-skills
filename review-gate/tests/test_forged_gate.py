@@ -84,16 +84,13 @@ if "/pulls/" in path:
     if fixture.get("pull") is None:  # null: that lookup fails
         sys.exit(1)
     print(json.dumps(fixture["pull"])); sys.exit(0)
-if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's run head-field lookup (3.2.16)
+if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's one run read: head fields and title (3.2.17)
     run_id = path.rsplit("/", 1)[1]
-    if run_id not in fixture.get("run_heads", {}):
+    heads, title = fixture.get("run_heads", {}).get(run_id), fixture.get("titles", {}).get(run_id)
+    if heads is None and title is None:
         sys.exit(1)
-    print(json.dumps(fixture["run_heads"][run_id])); sys.exit(0)
-if "/actions/runs/" in path and ".display_title" in args:  # the wrapper's run-title provenance lookup
-    run_id = path.rsplit("/", 1)[1]
-    if run_id not in fixture.get("titles", {}):
-        sys.exit(1)
-    print(fixture["titles"][run_id]); sys.exit(0)
+    # a missing piece is absent from the run JSON, which must fail closed where the wrapper reads it
+    print(json.dumps({**(heads or {}), **({"display_title": title} if title else {})})); sys.exit(0)
 if "/actions/runs/" in path:
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture["runs"]:
@@ -271,8 +268,8 @@ class ForgedGateWorkflow(unittest.TestCase):
                             fixture={"titles": {"600": run_title(7), "517": run_title(8)}})
         self.assertEqual(rc, 1, out)
         self.assertIn("'Review Gate - PR #8', not 'Review Gate - PR #7'", out)
-        # 517 is rejected on its title alone: no PR listing to fool (the listing checks only this PR's own run, 600)
-        self.assertNotIn("api repos/o/r/actions/runs/517", self.calls)
+        # 517 is rejected on its title alone, read with its head fields in the run's one fetch (3.2.17, #134)
+        self.assertEqual(self.calls.count("api repos/o/r/actions/runs/517"), 1, self.calls)
 
     def test_failed_listing_fails_closed(self):
         rc, out = self.gate([], listing_fails=True)
@@ -413,6 +410,7 @@ class WrapperDetector(unittest.TestCase):
                 stdin = json.dumps({"total_count": len(check_runs), "check_runs": check_runs})
             proc = subprocess.run([sys.executable, str(SCRIPTS / "check-forged-review-gate.py")], input=stdin,
                                   env=env, capture_output=True, text=True)
+            self.calls = (bindir / "calls.log").read_text().splitlines() if (bindir / "calls.log").exists() else []
             return proc.returncode, proc.stderr
 
     def test_gate_job_from_the_trusted_pair_exits_0(self):
@@ -426,7 +424,7 @@ class WrapperDetector(unittest.TestCase):
 
     def test_trusted_pair_job_of_another_pr_exits_1(self):
         # A closed-unmerged child's run on this head: no PR listing shows it, its run title does.
-        for title in ("Review Gate - PR #8", "Review Gate - PR #77"):
+        for title in ("Review Gate - PR #8", "Review Gate - PR #77", " Review Gate - PR #8 "):  # stripped, as before
             with self.subTest(title=title):
                 rc, err = self.wrapper([job("Review Gate", 517)], {"517": TRUSTED_RUN},
                                        fixture={"titles": {"517": title}})
@@ -434,7 +432,7 @@ class WrapperDetector(unittest.TestCase):
                 self.assertIn("not 'Review Gate - PR #7'", err)
                 # 3.2.13: another PR's real run title names that PR and the fix
                 self.assertIn("shared head sha, not this PR's run: ", err)
-                self.assertIn(f"this head sha is also PR #{title.rsplit('#', 1)[1]}'s head, and that PR's Review Gate "
+                self.assertIn(f"this head sha is also PR #{title.strip().rsplit('#', 1)[1]}'s head, and that PR's Review Gate "
                               "run is listed on it. Push a new commit to this PR (an empty commit works) so it "
                               "has a head of its own", err)
 
@@ -510,6 +508,22 @@ class WrapperDetector(unittest.TestCase):
                 with self.subTest(title=title, case=label):
                     rc, err = self.gate_run(title, **kwargs)
                     self.assertEqual(rc, 2, err)
+
+    # #134: every gate run on a head used to refetch the PR, the branch PR listing and its run (~4 calls each),
+    # inside merge-guard's 20 s budget. One PR read, one listing read, and each distinct run read once.
+    def test_many_gate_runs_fetch_the_pr_and_listing_once(self):
+        ids = [str(540 + n) for n in range(12)]
+        jobs = [job("Review Gate", int(i)) for i in ids] + [job("Review Gate", int(ids[0]))]  # a rerun's 2nd job
+        rc, err = self.wrapper(jobs, {i: TRUSTED_RUN for i in ids})
+        self.assertEqual(rc, 0, err)
+        count = lambda pattern: sum(1 for c in self.calls if re.search(pattern, c))
+        self.assertEqual(count(r"repos/o/r/pulls/7\b"), 1, self.calls)
+        self.assertEqual(count(r"repos/o/r/pulls\?"), 1, self.calls)
+        for i in ids:
+            with self.subTest(run=i):
+                self.assertEqual(count(rf"actions/runs/{i}$"), 1, self.calls)  # head fields and title together
+                self.assertEqual(count(rf"actions/runs/{i} --jq"), 1, self.calls)  # the vendored path/event lookup
+        self.assertEqual(len(self.calls), 2 * len(ids) + 2, self.calls)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
