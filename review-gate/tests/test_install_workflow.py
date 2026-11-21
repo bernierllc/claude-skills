@@ -6,11 +6,14 @@ import importlib.util
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SKILL = Path(__file__).resolve().parents[1]
 # Only the claude-skills repo has its mirrors (scripts/, .github/) and this manifest beside the skill; an
@@ -418,6 +421,27 @@ sys.exit(mod.main())
 """
 
 
+# LSTAT_RUNNER plus Windows junction metadata: lstat of the repo-relative path in argv[2] reports a directory with
+# FILE_ATTRIBUTE_REPARSE_POINT set and S_ISLNK false. Only the OS boundary is faked; the installer runs as shipped.
+REPARSE_RUNNER = """
+import importlib.util, os, stat, sys, types
+installer, junction, *args = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("install_workflow", installer)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod._fd_walk_supported = lambda: False
+target, real = os.path.join(os.getcwd(), junction), os.lstat
+def lstat(path, *a, **k):
+    st = real(path, *a, **k)
+    if os.fspath(path) == target:
+        return types.SimpleNamespace(st_mode=st.st_mode, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return st
+os.lstat = lstat
+sys.argv = [installer, *args]
+sys.exit(mod.main())
+"""
+
+
 def tree(d):
     d = Path(d)
     return {p.relative_to(d).as_posix(): p.read_bytes() for p in sorted(d.rglob("*"))
@@ -558,8 +582,11 @@ class SymlinkedDestinations(unittest.TestCase):
     """3.2.21: the installer never writes through a symlink, and never trusts one before an early return.
     Runs once per walk implementation: the fd walk (POSIX) and the lstat walk (native Windows, 3.2.22)."""
 
+    def launch(self, script, repo, *args):
+        return subprocess.run([sys.executable, str(script), *args], cwd=repo, capture_output=True, text=True)
+
     def install(self, repo, *args):
-        return install(repo, *args)
+        return self.launch(INSTALLER, repo, *args)
 
     # (destination relative to the repo, extra installer flags that make the installer write it)
     DESTINATIONS = (
@@ -808,8 +835,7 @@ class SymlinkedDestinations(unittest.TestCase):
             vendor(repo)
             vendored_installer = Path(repo) / ".claude" / "skills" / "review-gate" / "scripts" / "install-workflow.py"
             before = tree(vendored_installer.parents[1])
-            proc = subprocess.run([sys.executable, str(vendored_installer), "--force"], cwd=repo,
-                                  capture_output=True, text=True)
+            proc = self.launch(vendored_installer, repo, "--force")  # LstatWalk subclass launches it through LSTAT_RUNNER
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(tree(vendored_installer.parents[1]), before)
             self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
@@ -820,9 +846,69 @@ class SymlinkedDestinationsLstatWalk(SymlinkedDestinations):
     """The same tests with the fd walk made unavailable, as on native Windows: every refusal must be identical."""
     WALK = "_first_symlink_lstat"
 
-    def install(self, repo, *args):
-        return subprocess.run([sys.executable, "-c", LSTAT_RUNNER, str(INSTALLER), *args],
+    def launch(self, script, repo, *args):
+        return subprocess.run([sys.executable, "-c", LSTAT_RUNNER, str(script), *args],
                               cwd=repo, capture_output=True, text=True)
+
+
+def junction_stat(real_stat):
+    """What native Windows reports for an NTFS junction: a directory (not S_ISLNK) with the reparse attribute set.
+    Only the OS boundary (lstat) is emulated; the directory itself is real."""
+    return types.SimpleNamespace(st_mode=real_stat.st_mode, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+class WindowsReparsePointLstatWalk(unittest.TestCase):
+    """3.2.22 Codex P1: before Python 3.12 there is no os.path.isjunction, so a junction (S_ISLNK false) passed the
+    lstat walk. An intra-repo junction let --force delete shared untracked files and an absent-vendor run exit 0."""
+
+    JUNCTIONS = (Path(".claude"), Path(".claude") / "skills", Path(".claude") / "skills" / "review-gate")
+
+    def test_the_walk_refuses_a_reparse_point_anywhere_down_the_path_and_accepts_a_plain_directory(self):
+        mod = installer()
+        mod._fd_walk_supported = lambda: False  # as on native Windows, so _dest_problem takes the lstat walk
+        real = os.lstat
+        for linked in self.JUNCTIONS:
+            with self.subTest(linked=str(linked)), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                dest = root / ".claude" / "skills" / "review-gate"
+                dest.mkdir(parents=True)
+                junction = root / linked
+                plain = types.SimpleNamespace(st_mode=real(junction).st_mode, st_file_attributes=0)  # Windows, not a link
+
+                def fake(path, *a, _junction=junction, **k):
+                    return junction_stat(real(path, *a, **k)) if Path(path) == _junction else real(path, *a, **k)
+
+                with mock.patch.object(os, "lstat", fake):
+                    self.assertEqual(mod._first_symlink_lstat(root, dest), junction)
+                    self.assertEqual(mod._dest_problem(SKILL, root, dest),
+                                     f"{junction} is a symlink, so what it reaches is not this repo's")
+                with mock.patch.object(os, "lstat", lambda path, *a, **k: plain if Path(path) == junction else real(path, *a, **k)):
+                    self.assertIsNone(mod._first_symlink_lstat(root, dest))
+
+    def test_a_junction_is_refused_by_the_real_installer_and_nothing_is_deleted_or_written(self):
+        def snapshot(d):  # every path, dotfiles included, with file bytes
+            return {p.relative_to(d).as_posix(): (p.read_bytes() if p.is_file() else None) for p in sorted(Path(d).rglob("*"))}
+
+        for linked in self.JUNCTIONS:
+            for vendored in (False, True):  # absent review-gate dir, and an older copy (plus untracked notes) present
+                if linked.name == "review-gate" and not vendored:
+                    continue  # nothing there to be a junction
+                for flags in ((), ("--force",)):
+                    with self.subTest(linked=str(linked), vendored=vendored, flags=flags), \
+                            tempfile.TemporaryDirectory() as repo:
+                        if vendored:
+                            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+                            (dest / "untracked-local-notes.md").write_text("keep me\n")
+                        else:
+                            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+                        before = snapshot(repo)
+                        proc = subprocess.run(
+                            [sys.executable, "-c", REPARSE_RUNNER, str(INSTALLER), str(linked), *flags],
+                            cwd=repo, capture_output=True, text=True)
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        self.assertIn("refusing to replace", proc.stderr)
+                        self.assertIn(f"{Path(repo).resolve() / linked} is a symlink", proc.stderr)
+                        self.assertEqual(snapshot(repo), before)  # nothing deleted, nothing written (no .github, no scripts)
 
 
 class NoFdWalkPlatform(unittest.TestCase):

@@ -191,28 +191,30 @@ def _first_symlink(root: Path, dest: Path) -> Path | None:
     steered through a link swapped in mid-walk; elsewhere the same walk runs by lstat, per path component.
     shortcut: the writes after the walk (mkdir, mkstemp, rename, copytree) address paths on every platform, so a link
     planted between this check and a write is not closed; upgrade by doing those through the same dir fds. The
-    lstat walk is not race-safe either, and sees a Windows junction only where `os.path.isjunction` exists (3.12+);
-    on an older Python a junction passes as a directory, so upgrade Python there."""
+    lstat walk is not race-safe either."""
     if not _fd_walk_supported():
         return _first_symlink_lstat(root, dest)
     return _first_symlink_fd(root, dest)
 
 
 def _first_symlink_lstat(root: Path, dest: Path) -> Path | None:
-    """`_first_symlink` by path: lstat each component below `root`, refusing a symlink (or junction) and stopping at
-    the first absent component or the first non-directory, exactly where the fd walk stops."""
-    is_junction = getattr(os.path, "isjunction", None)
+    """`_first_symlink` by path: lstat each component below `root`, refusing a symlink or a Windows reparse point
+    (an NTFS junction reads as a plain directory to S_ISLNK, but carries FILE_ATTRIBUTE_REPARSE_POINT in
+    `st_file_attributes`, which exists on every Python that has Windows stat; POSIX stat results lack it, so there
+    only S_ISLNK applies) and stopping at the first absent component or the first non-directory, exactly where the
+    fd walk stops."""
     node = root
     parts = dest.relative_to(root).parts
     for i, part in enumerate(parts):
         node = node / part
         try:
-            mode = os.lstat(node).st_mode
+            st = os.lstat(node)
         except FileNotFoundError:
             return None
         except OSError:
             return node  # cannot be inspected (permissions, a name the OS rejects): refuse rather than assume clean
-        if stat.S_ISLNK(mode) or (is_junction is not None and is_junction(node)):
+        mode = st.st_mode
+        if stat.S_ISLNK(mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             return node
         if i == len(parts) - 1 or not stat.S_ISDIR(mode):
             return None
