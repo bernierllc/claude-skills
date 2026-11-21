@@ -27,7 +27,8 @@ which the PR author writes, so `Review Gate - PR #<n>` can be typed into any PR.
 (RUN_TITLE) only picks the 3.2.13 shared-head message; it never accepts. Every other run is accepted only when
 the run's head sha, branch and repository equal this PR's head (forks included: GitHub sets both from the
 PR), the run is not older than the PR, and no other PR from that head repo and branch, in any state, has this
-head sha or was open when the run was created. Each field must be a non-empty string; anything missing or
+head sha or was open when the run was created. That listing must contain this PR on this head ref and sha
+(3.2.18): an empty listing proves nothing. Each field must be a non-empty string; anything missing or
 mistyped exits 2. A PR author controls none of the event or path of a pull_request_target run, nor its head
 fields. Any other Actions job named `Review Gate` is forged.
 
@@ -93,28 +94,47 @@ def run_provenance(repo, pr, run_id):
     if got != want or started < opened:
         return f"run {run_id} head {got} at {started} is not this PR's head {want} (opened {opened})"
     # The only way to rule out another PR's run: the run does not name its PR, and `commits/{sha}/pulls` omits
-    # closed-unmerged PRs, so every PR from this head repo and branch, in any state, is listed. Another one that
-    # has this head sha (a closed PR's head is frozen, and labeling it still runs the gate) or was open when the
-    # run was created could have triggered it. An older PR closed before the run, on another sha, could not.
+    # closed-unmerged PRs, so every PR from this head repo and branch, in any state, is listed.
     query = urllib.parse.urlencode({"state": "all", "head": f"{want[2].split('/')[0]}:{want[1]}", "per_page": 100})
-    pages = _api_json(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp")
+    return branch_verdict(int(pr), want[0], want[1], started,
+                          _api_json(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp"))
+
+
+def branch_verdict(pr, sha, ref, started, pages):
+    """None when the branch listing proves no other PR could have triggered a run created at `started`; else why.
+
+    One fail-closed shape (3.2.18): the listing must positively contain PR #pr on this head ref and sha, and
+    every other entry must be well formed. Anything else (an empty listing, this PR missing or moved) proves
+    nothing, so it is Ambiguous (exit 2), never "no competitor". Another PR that has this head sha (a closed PR's
+    head is frozen, and labeling it still runs the gate) or was open when the run was created could have
+    triggered it; an older PR closed before the run, on another sha, could not.
+    """
     if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise Ambiguous(f"the PR listing for {want[1]} is not a list of pages")
-    others = []
+        raise Ambiguous(f"the PR listing for {ref} is not a list of pages")
+    found, others = False, []
     for listed in (item for page in pages for item in page):
         number = listed.get("number") if isinstance(listed, dict) else None
         if not isinstance(number, int) or isinstance(number, bool):
-            raise Ambiguous(f"a PR in the listing for {want[1]} has no number ({listed!r})")
-        if number == int(pr):
+            raise Ambiguous(f"a PR in the listing for {ref} has no number ({listed!r})")
+        if number == pr:
+            found = (_text(listed, "head", "sha"), _text(listed, "head", "ref")) == (sha, ref)
+            if not found:
+                raise Ambiguous(f"PR #{pr} is listed on branch {ref} with another head; retry")
             continue
         closed = None if listed.get("closed_at") is None else _text(listed, "closed_at")
-        if _text(listed, "head", "sha") == want[0] or (
+        if _text(listed, "head", "sha") == sha or (
                 _text(listed, "created_at") <= started and (closed is None or closed >= started)):
-            others.append(number)
-    if others:
-        return (f"this head sha is also PR #{min(others)}'s head. Push a new commit to this PR (an empty commit "
-                "works) so it has a head of its own")
-    return None
+            others.append((closed is not None, number))  # open PRs sort first: their remedy is the one that works
+    if not found:
+        raise Ambiguous(f"the PR listing for {ref} does not contain PR #{pr}, so it proves nothing")
+    if not others:
+        return None
+    closed, number = min(others)
+    if not closed:  # a new commit on a shared branch becomes the other open PR's head too
+        return (f"PR #{number} is also open from head branch {ref!r}, so a new commit becomes its head too. "
+                f"Close PR #{number} or open each PR from its own head branch")
+    return (f"this head sha is also PR #{number}'s head. Push a new commit to this PR (an empty commit "
+            "works) so it has a head of its own")  # true only here: the closed PR's head is frozen
 
 
 def foreign_run(repo, pr, run_id):
@@ -145,7 +165,9 @@ def main():
         print("::error::REPO is required", file=sys.stderr)
         return 2
     try:
-        lookup = functools.lru_cache(maxsize=None)(detector._gh_run_lookup(repo))  # a rerun's jobs share a run
+        def lookup(run_id):  # the run read provenance reuses (3.2.18: one read per run, not two)
+            run = _api_json(f"repos/{repo}/actions/runs/{run_id}")
+            return _text(run, "path").split("@", 1)[0], _text(run, "event")  # `path@ref` for required workflows
         flagged = []
         for check_run in detector._load_check_runs(sys.stdin.read()):
             seen = []
@@ -170,7 +192,7 @@ def main():
         print(f"::error::could not evaluate check runs, failing closed: {exc}", file=sys.stderr)
         return 2
     for name, where, why in bad:
-        kind = "shared head sha, not this PR's run" if "is also PR #" in why else "from an untrusted Actions job"
+        kind = "shared head sha, not this PR's run" if re.search(r"is also (PR #|open)", why) else "from an untrusted Actions job"
         print(f"::error::forged check '{name}' {kind}: {where} ({why})", file=sys.stderr)
     return 1 if bad else 0
 

@@ -87,10 +87,12 @@ if "/pulls/" in path:
 if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's one run read: head fields and title (3.2.17)
     run_id = path.rsplit("/", 1)[1]
     heads, title = fixture.get("run_heads", {}).get(run_id), fixture.get("titles", {}).get(run_id)
-    if heads is None and title is None:
+    pair = fixture.get("runs", {}).get(run_id)
+    if heads is None and title is None and pair is None:
         sys.exit(1)
     # a missing piece is absent from the run JSON, which must fail closed where the wrapper reads it
-    print(json.dumps({**(heads or {}), **({"display_title": title} if title else {})})); sys.exit(0)
+    print(json.dumps({**(dict(zip(("path", "event"), pair.split("\t"))) if pair else {}), **(heads or {}),
+                      **({"display_title": title} if title else {})})); sys.exit(0)
 if "/actions/runs/" in path:
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture["runs"]:
@@ -139,7 +141,7 @@ def pull(head_ref="chore/revendor-review-gate", head_repo="o/r", head_sha=HEAD_S
 
 
 # The gate's own run, as the provenance check reads it: PR #7's head, and #7 alone on its head branch.
-PROVENANCE = {"pull": pull(), "branch_pulls": [{"number": 7, "head": {"sha": HEAD_SHA},
+PROVENANCE = {"pull": pull(), "branch_pulls": [{"number": 7, "head": {"sha": HEAD_SHA, "ref": "chore/revendor-review-gate"},
                                                 "created_at": "2026-11-20T10:00:00Z", "closed_at": None}]}
 
 
@@ -480,8 +482,43 @@ class WrapperDetector(unittest.TestCase):
                     rc, err = self.gate_run(title, **kwargs)
                     self.assertEqual(rc, 1, err)
                     self.assertIn("forged check 'Review Gate'", err)
-                    if label.startswith(("another", "later", "PR on")):
+                    if label.startswith("later"):  # closed: its head is frozen, so a new commit does help
                         self.assertIn("this head sha is also PR #9's head. Push a new commit", err)
+                    if label.startswith(("another", "PR on")):  # open: a new commit is its head too
+                        self.assertIn("PR #9 is also open from head branch", err)
+
+    # 3.2.18 (Codex P1): an empty listing proved nothing, yet read as "no competing PR". The listing must
+    # positively contain this PR, on this head ref and sha, or the run cannot be attributed to it.
+    def test_listing_without_this_pr_exits_2(self):
+        me = PROVENANCE["branch_pulls"][0]
+        cases = {
+            "no pages": dict(branch_pulls_raw="[]"),
+            "one empty page": dict(branch_pulls=[]),
+            "only another PR": dict(branch_pulls=[other_pr(3)]),
+            "malformed JSON": dict(branch_pulls_raw="[[{"),
+            "this PR on another sha": dict(branch_pulls=[{**me, "head": {**me["head"], "sha": "e" * 40}}]),
+            "this PR on another ref": dict(branch_pulls=[{**me, "head": {**me["head"], "ref": "other"}}]),
+            "this PR without a ref": dict(branch_pulls=[{**me, "head": {"sha": HEAD_SHA}}]),
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(case=label):
+                rc, err = self.gate_run(**kwargs)
+                self.assertEqual(rc, 2, err)
+        rc, err = self.gate_run(branch_pulls=[me])  # a valid listing holding only this PR still passes
+        self.assertEqual(rc, 0, err)
+
+    # 3.2.18 (Codex P2): with two OPEN PRs on one head branch, a new commit becomes both PRs' head, so the
+    # push-a-commit advice never helps. It holds only when the other PR is closed (its head is frozen).
+    def test_open_pr_on_the_same_branch_names_close_or_split(self):
+        for sha in (HEAD_SHA, "d" * 40):
+            with self.subTest(sha=sha):
+                rc, err = self.gate_run(branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                      other_pr(9, sha, "2026-11-20T09:00:00Z", None)])
+                self.assertEqual(rc, 1, err)
+                self.assertIn("shared head sha, not this PR's run: ", err)
+                self.assertIn("PR #9 is also open from head branch 'chore/revendor-review-gate', so a new commit "
+                              "becomes its head too. Close PR #9 or open each PR from its own head branch", err)
+                self.assertNotIn("Push a new commit", err)
 
     def test_missing_or_mistyped_provenance_exits_2(self):
         # Codex P2 r4649920164: null == null matched, and a null pull.head raised AttributeError (exit 1).
@@ -521,9 +558,9 @@ class WrapperDetector(unittest.TestCase):
         self.assertEqual(count(r"repos/o/r/pulls\?"), 1, self.calls)
         for i in ids:
             with self.subTest(run=i):
-                self.assertEqual(count(rf"actions/runs/{i}$"), 1, self.calls)  # head fields and title together
-                self.assertEqual(count(rf"actions/runs/{i} --jq"), 1, self.calls)  # the vendored path/event lookup
-        self.assertEqual(len(self.calls), 2 * len(ids) + 2, self.calls)
+                # 3.2.18 (Codex P2): one read per run gives path, event, head fields and title together
+                self.assertEqual(count(rf"actions/runs/{i}\b"), 1, self.calls)
+        self.assertEqual(len(self.calls), len(ids) + 2, self.calls)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
