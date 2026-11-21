@@ -24,8 +24,33 @@ assert calls("git log origin/staging..HEAD") == []
 assert calls("gh pr merge 5 --merge") == []
 
 # Gemini run_shell_command passes its execution dir as tool_input.dir_path; it wins over the session cwd
-assert g.payload_cwd({"cwd": "/tmp/session", "tool_input": {"dir_path": "/tmp/exec"}}) == "/tmp/exec"
-assert g.payload_cwd({"cwd": "/tmp/session", "tool_input": {}}) == "/tmp/session"
+assert g.payload_cwd({"cwd": "/tmp/session"}, {"dir_path": "/tmp/exec"}) == "/tmp/exec"
+assert g.payload_cwd({"cwd": "/tmp/session"}, {}) == "/tmp/session"
+
+
+def run_main(payload):
+    """main() on a hook payload with check() recorded: (exit code, [(cmd, cwd)] check() was handed)."""
+    import io, json, sys
+    seen, real, stdin, stderr = [], g.check, sys.stdin, sys.stderr
+    g.check = lambda cmd, cwd: seen.append((cmd, cwd)) or "blocked"
+    sys.stdin, sys.stderr = io.StringIO(json.dumps(payload)), io.StringIO()
+    try:
+        return g.main(), seen
+    finally:
+        g.check, sys.stdin, sys.stderr = real, stdin, stderr
+
+
+# Every payload shape and routed shell-tool name reaches check() (1.5.4 only checked tool_name == "Bash").
+for shape in ({"tool_name": "Bash", "tool_input": {"command": "gh pr merge 5 --auto"}},
+              {"toolName": "Bash", "input": {"command": "gh pr merge 5 --auto"}},
+              {"tool_name": "mcp__x__Bash", "tool_input": {"command": "gh pr merge 5 --auto"}},
+              {"tool_name": "run_shell_command", "tool_input": {"command": "gh pr merge 5 --auto", "dir_path": "/w"}},
+              {"tool_name": "Bash", "tool_input": {"cmd": "gh pr merge 5 --auto"}}):
+    assert run_main({"cwd": "/s", **shape}) == (2, [("gh pr merge 5 --auto", shape[next(k for k in shape if "nput" in k)]
+                                                     .get("dir_path", "/s"))]), shape
+# A non-shell tool (no command) is ignored; so is unreadable input.
+assert run_main({"tool_name": "Edit", "tool_input": {"file_path": "/s/x.py", "old_string": "a"}, "cwd": "/s"}) == (0, [])
+assert run_main([1]) == (0, [])
 
 assert g.names_base(["origin", "staging"], "staging")
 assert g.names_base(["origin/staging"], "staging")

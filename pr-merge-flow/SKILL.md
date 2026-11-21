@@ -128,7 +128,10 @@ the hook sees it is out of scope: `bash -c`, `eval`, variables and command subst
 fails when a block is lost, unless the input is listed in its `ALLOWED_FLIPS` with a reason. It reads the
 claude-skills repo's `origin/main` history, so a vendored copy (any checkout where this skill's parent dir is not
 the claude-skills repo root) skips it instead of failing (1.5.5). The guard checks the directory the command runs
-in: `tool_input.dir_path` (Gemini `run_shell_command`) first, then the session `cwd` (1.5.5).
+in: `tool_input.dir_path` (Gemini `run_shell_command`) first, then the session `cwd` (1.5.5). It checks every
+routed tool that carries a command (`tool_input` or `input`, `command` or `cmd`), whatever the harness names it
+(`Bash`, `mcp__…__Bash`, `run_shell_command`), the same way review-gate's merge guard does; 1.5.4 and earlier
+checked only `tool_name == "Bash"` (1.5.5).
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.

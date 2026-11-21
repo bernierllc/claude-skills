@@ -893,19 +893,24 @@ def check(cmd, cwd):
     return None
 
 
-def payload_cwd(data):
+def payload_cwd(payload, inp):
     """The dir the command runs in: Gemini run_shell_command passes it as tool_input.dir_path, ahead of the session cwd."""
-    return (data.get("tool_input") or {}).get("dir_path") or data.get("cwd") or os.getcwd()
+    return inp.get("dir_path") or payload.get("cwd") or os.getcwd()
 
 
 def main():
+    # Same payload handling as review-gate's merge-guard.py: any routed tool carrying a command is checked,
+    # whatever the harness names it (`Bash`, `mcp__…__Bash`, `run_shell_command`) and whether the payload says
+    # tool_input or input; the old `tool_name == "Bash"` allow-list let every other shape through unchecked.
     try:
         data = json.load(sys.stdin)
-    except ValueError:
+        inp = data.get("tool_input") or data.get("input") or {}
+        cmd = inp.get("command") or inp.get("cmd") or ""
+    except (ValueError, AttributeError):
+        return 0  # best-effort quota guard (see SKILL.md): unreadable input is not a shell command
+    if not isinstance(cmd, str) or not cmd:
         return 0
-    if data.get("tool_name") != "Bash":
-        return 0
-    msg = check(data.get("tool_input", {}).get("command", ""), payload_cwd(data))
+    msg = check(cmd, payload_cwd(data, inp))
     if msg:
         print(msg, file=sys.stderr)
         return 2
