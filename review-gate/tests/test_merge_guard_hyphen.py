@@ -211,6 +211,55 @@ class BoundedWork(unittest.TestCase):
                 self.assertEqual(rc, 2, err)
 
 
+class OneNormalizationPath(unittest.TestCase):
+    """3.2.18 (Codex high on 921eff6): the guard decided on text it had not normalized. Bash joins
+    backslash-newline and decodes ANSI-C `$'...'` before it runs a word, so the guard must too, first, and its
+    loose `gh … pr … merge` scan must stay linear so no input outlives the hook timeout."""
+
+    SPELLINGS = {"ansi-c": "$'\\x67\\x68' pr $'mer\\x67e' 7", "continuation": "g\\\nh pr mer\\\nge 7"}
+
+    def test_executable_spellings_deny_with_and_without_padding(self):
+        for label, tail in self.SPELLINGS.items():
+            for pad in ("", ": '" + "z" * 16001 + "'; "):
+                with self.subTest(case=label, padded=bool(pad)):
+                    rc, err = hook(pad + tail)
+                    self.assertEqual(rc, 2, err)
+
+    def test_repeated_gh_pr_words_deny_quickly(self):
+        import time
+        for n in (500, 2000, 13333):  # ~3 KB, ~12 KB, ~80 KB
+            cmd = "gh pr " * n + "; g''h pr mer''ge 7"
+            with self.subTest(chars=len(cmd)):
+                started = time.monotonic()
+                rc, err = hook(cmd)
+                self.assertLess(time.monotonic() - started, 5.0)
+                self.assertEqual(rc, 2, err)
+
+    def test_benign_commands_still_pass(self):
+        # Quoted `gh pr merge` text stays blocked by design (QuotedMentions, #130); these are the benign shapes.
+        for cmd in ("gh pr view 7", "gh pr checks 7 \\\n  --watch=false", "echo 'see pr-merge-flow'",
+                    "echo $'tab\\there'", "ls \\\n  -la", "echo $'it\\'s'"):
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 0, err)
+
+    def test_deadline_denies_instead_of_timing_out(self):
+        import importlib.util, io
+        spec = importlib.util.spec_from_file_location("mg_deadline", GUARD)
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        mg.CHECK_DEADLINE_S = 0.01
+        mg.check_command = lambda cmd, cwd=None: __import__("time").sleep(5)
+        stdin, stderr = sys.stdin, sys.stderr
+        sys.stdin, sys.stderr = io.StringIO(json.dumps({"tool_input": {"command": "gh pr view 7"}})), io.StringIO()
+        try:
+            rc = mg.main()
+            msg = sys.stderr.getvalue()
+        finally:
+            sys.stdin, sys.stderr = stdin, stderr
+        self.assertEqual(rc, 2)
+        self.assertIn("did not finish", msg)
+
+
 class DirPathSymlink(unittest.TestCase):
     """3.2.18 (Codex P2): `<link>/..` must mean the parent of the link's target, as the shell resolves it, not the
     lexical parent of the link; otherwise the guard checks a different checkout than the command runs in."""
