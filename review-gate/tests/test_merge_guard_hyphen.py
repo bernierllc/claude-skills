@@ -160,5 +160,122 @@ class QuotedMentions(unittest.TestCase):
                 self.assertIn("git commit -F <file>", err)
 
 
+
+class BoundedWork(unittest.TestCase):
+    """3.2.18 (Codex P1): the hook is killed at timeout_ms and Claude Code then drops the denial. No command may
+    keep the guard busy: an 80 KB command used to take 6-47 s (the commit-hint regex, array_assembled_merge)."""
+
+    def test_huge_commands_deny_well_under_a_second(self):
+        import time
+        for label, cmd in {
+            "git spam after a merge": "gh pr merge 7 # " + "git " * 20000,
+            "git spam before a merge": "git " * 20000 + "; gh pr merge 7",
+            "long commit message naming a merge": 'git commit -m "gh pr merge 5 ' + "x" * 80000 + '"',
+            "long merge argument": "gh pr merge 7 --body '" + "y" * 80000 + "'",
+        }.items():
+            with self.subTest(case=label):
+                started = time.monotonic()
+                rc, err = hook(cmd)
+                self.assertLess(time.monotonic() - started, 1.0, label)
+                self.assertEqual(rc, 2, err)
+
+    def test_normal_size_denials_are_unchanged(self):
+        rc, err = hook("gh pr merge 5 --squash")
+        self.assertEqual(rc, 2, err)
+        self.assertNotIn("git commit -F <file>", err)
+        self.assertNotIn("too long", err)
+        rc, err = hook('git commit -m "docs: explain gh pr merge --squash"')
+        self.assertEqual(rc, 2, err)
+        self.assertIn("git commit -F <file>", err)
+
+    def test_huge_commands_without_merge_pass(self):
+        import time
+        started = time.monotonic()
+        self.assertEqual(hook("echo '" + "z" * 80000 + "'")[0], 0)
+        self.assertLess(time.monotonic() - started, 1.0)
+        # No size shortcut: every command is normalized and checked in full, so a long PR body is still allowed.
+        started = time.monotonic()
+        rc, err = hook("gh pr create --title t --body '" + "word " * 16000 + "'")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(rc, 0, err)
+
+    def test_huge_commands_hiding_a_merge_in_quotes_or_backslashes_deny(self):
+        # Codex P1 on f9f4dce: the size check read raw text, so a quote- or backslash-split `gh … merge` past
+        # the limit was allowed although the normal checks deny it. It must read the same dequoted form.
+        import time
+        for label, tail in {"quotes": "g''h pr mer''ge 7 --squash", "backslashes": "g\\h pr mer\\ge 7 --squash"}.items():
+            with self.subTest(case=label):
+                started = time.monotonic()
+                rc, err = hook(": '" + "z" * 16001 + "'; " + tail)
+                self.assertLess(time.monotonic() - started, 1.0, label)
+                self.assertEqual(rc, 2, err)
+
+
+class OneNormalizationPath(unittest.TestCase):
+    """3.2.18 (Codex high on 921eff6): the guard decided on text it had not normalized. Bash joins
+    backslash-newline and decodes ANSI-C `$'...'` before it runs a word, so the guard must too, first, and its
+    loose `gh … pr … merge` scan must stay linear so no input outlives the hook timeout."""
+
+    SPELLINGS = {"ansi-c": "$'\\x67\\x68' pr $'mer\\x67e' 7", "continuation": "g\\\nh pr mer\\\nge 7"}
+
+    def test_executable_spellings_deny_with_and_without_padding(self):
+        for label, tail in self.SPELLINGS.items():
+            for pad in ("", ": '" + "z" * 16001 + "'; "):
+                with self.subTest(case=label, padded=bool(pad)):
+                    rc, err = hook(pad + tail)
+                    self.assertEqual(rc, 2, err)
+
+    def test_repeated_gh_pr_words_deny_quickly(self):
+        import time
+        for n in (500, 2000, 13333):  # ~3 KB, ~12 KB, ~80 KB
+            cmd = "gh pr " * n + "; g''h pr mer''ge 7"
+            with self.subTest(chars=len(cmd)):
+                started = time.monotonic()
+                rc, err = hook(cmd)
+                self.assertLess(time.monotonic() - started, 5.0)
+                self.assertEqual(rc, 2, err)
+
+    def test_benign_commands_still_pass(self):
+        # Quoted `gh pr merge` text stays blocked by design (QuotedMentions, #130); these are the benign shapes.
+        for cmd in ("gh pr view 7", "gh pr checks 7 \\\n  --watch=false", "echo 'see pr-merge-flow'",
+                    "echo $'tab\\there'", "ls \\\n  -la", "echo $'it\\'s'"):
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 0, err)
+
+    def test_deadline_denies_instead_of_timing_out(self):
+        import importlib.util, io
+        spec = importlib.util.spec_from_file_location("mg_deadline", GUARD)
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        mg.CHECK_DEADLINE_S = 0.01
+        mg.check_command = lambda cmd, cwd=None: __import__("time").sleep(5)
+        stdin, stderr = sys.stdin, sys.stderr
+        sys.stdin, sys.stderr = io.StringIO(json.dumps({"tool_input": {"command": "gh pr view 7"}})), io.StringIO()
+        try:
+            rc = mg.main()
+            msg = sys.stderr.getvalue()
+        finally:
+            sys.stdin, sys.stderr = stdin, stderr
+        self.assertEqual(rc, 2)
+        self.assertIn("did not finish", msg)
+
+
+class DirPathSymlink(unittest.TestCase):
+    """3.2.18 (Codex P2): `<link>/..` must mean the parent of the link's target, as the shell resolves it, not the
+    lexical parent of the link; otherwise the guard checks a different checkout than the command runs in."""
+
+    def test_dir_path_resolves_symlinks_before_dotdot(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mg_symlink", GUARD)
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_a = Path(tmp) / "repoA"; (repo_a / "sub").mkdir(parents=True)
+            (Path(tmp) / "elsewhere").mkdir()
+            link = Path(tmp) / "elsewhere" / "link"; link.symlink_to(repo_a / "sub")
+            got = mg.payload_cwd({"cwd": "/tmp/session"}, {"dir_path": f"{link}/../"})
+            self.assertEqual(os.path.realpath(got), os.path.realpath(repo_a))
+            self.assertEqual(got, os.path.realpath(repo_a))  # already resolved: later joins cannot collapse `..`
+
+
 if __name__ == "__main__":
     unittest.main()
