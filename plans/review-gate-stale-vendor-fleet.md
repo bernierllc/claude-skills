@@ -30,8 +30,8 @@ Bootstrap order: `pull_request_target` runs the workflow from the default branch
 
 ## Done when
 
-- None of the repos above has `cancel-in-progress: true` in its default-branch `review-gate.yml`. The Contents API returns the file base64-encoded, so decode it: `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate.yml --jq .content | base64 -d | grep -c cancel-in-progress` must print 0, and a retrieval or decode error counts as a failure, not a pass. This only proves the concurrency group is gone; freshness is proved by the doctor job below.
-- Each repo runs the doctor job and its newest run on the default branch is green, meaning the workflow and the vendored scripts match the skill.
+- None of the repos above has a top-level `concurrency:` group in its default-branch `review-gate.yml`. The Contents API returns the file base64-encoded, so decode it: `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate.yml --jq .content | base64 -d | grep -c '^concurrency:'` must print 0, and a retrieval or decode error counts as a failure, not a pass. Do not grep for `cancel-in-progress`: the current template mentions it in a comment (line 54), so a correct copy would fail. This only proves the concurrency group is gone; freshness is proved by the doctor job below.
+- Each repo runs the doctor job, and its newest run on the first PR opened against the default branch after the re-vendor merge is green. The doctor template triggers only on `pull_request`, so no default-branch run exists; the owner also confirms the installed default-branch `review-gate.yml` matches the skill. Green means the workflow and the vendored scripts match the skill, except one supported case: the doctor accepts a differing, compatible detector script that `installer.keeps_detector()` preserves, so a repo with a custom detector can pass while differing from the skill. The repo's Tracker row records whether it has one.
 - A cancelled or superseded `Review Gate` run no longer blocks a PR in any of them.
 
 ## Owners and routing
