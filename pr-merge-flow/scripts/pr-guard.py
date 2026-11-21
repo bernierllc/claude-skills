@@ -187,11 +187,13 @@ def runs_async(cmd):
     return False
 
 
-def wrapped_words(w):
+def wrapped_words(w, cut=True):
     """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
     would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag. `\\_` is a separator
-    to env -S (`'gh\\_pr\\_merge'`), so it splits too, and env -S ignores everything after `\\c` (`'gh\\c'` runs gh)."""
-    w = w.replace("\\_", " ").split("\\c")[0]
+    to env -S (`'gh\\_pr\\_merge'`), so it splits too. With cut, everything from `\\c` on is dropped, as env -S does
+    (`'gh\\c'` runs gh). Callers check both cuts: an escaped `\\\\c` or a single-quoted `'\\c'` does not end the string."""
+    w = w.replace("\\_", " ")
+    w = w.split("\\c")[0] if cut else w
     try:
         sp = shlex.split(w)
     except ValueError:
@@ -245,9 +247,10 @@ def segments(cmd, raw=False):
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
                     yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, argv[i:], CLOSE] if d else [argv[i:]])
-                    sp = wrapped_words(argv[i])
-                    for j in range(len(sp) if sp != argv[i:i + 1] else 0):
-                        yield from [OPEN, CD_WRAPPED, sp[j:] + argv[i + 1:], CLOSE]
+                    # ponytail: both cuts instead of modelling env -S escapes and quotes; checking more only fails closed.
+                    for sp in dict.fromkeys(tuple(wrapped_words(argv[i], cut)) for cut in (True, False)):
+                        for j in range(len(sp) if list(sp) != argv[i:i + 1] else 0):
+                            yield from [OPEN, CD_WRAPPED, list(sp[j:]) + argv[i + 1:], CLOSE]
             elif argv:
                 yield argv
             argv = []
