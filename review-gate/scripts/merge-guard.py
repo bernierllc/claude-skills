@@ -3558,6 +3558,7 @@ def resolve_pr_number(
 def payload_cwd(payload: dict, inp: dict) -> str:
     """AEC puts cwd at the top level; some harnesses nest it under tool_input."""
     for candidate in (
+        inp.get("dir_path"),  # Gemini run_shell_command: the dir the command runs in
         payload.get("cwd"),
         payload.get("working_directory"),
         inp.get("working_directory"),
@@ -3796,6 +3797,13 @@ def check_one(segment: str, cwd: str | None) -> str | None:
     except Exception as e:  # noqa: BLE001
         # Fail closed: infra / GraphQL errors must not silently allow merges.
         return f"review-gate: gate check failed: {e}"
+
+
+COMMIT_MESSAGE_HINT = (
+    " A commit message that names `gh pr merge` is blocked because commit hooks can run it:"
+    " write the message to a file and use `git commit -F <file>`."
+)
+_GIT_COMMIT = re.compile(r"\bgit\b[^;&|\n]*\bcommit\b")
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
@@ -4050,6 +4058,8 @@ def main() -> int:
         return 0
     cwd = payload_cwd(payload, inp)
     err = check_command(cmd, cwd)
+    if err and _GIT_COMMIT.search(cmd):
+        err += COMMIT_MESSAGE_HINT
     if err:
         print(err, file=sys.stderr)
         return 2
