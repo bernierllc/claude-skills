@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.5.1
+version: 1.5.2
 author: Bernier LLC
 ---
 
@@ -84,19 +84,30 @@ hooks dormant). It blocks:
   body path fails closed and only an absolute plain path (starting with `/`) is scanned. A body file over
   1 MiB is blocked as too large to scan, never scanned in part. Conservative blocks, by design: a quoted
   path with special characters (`'plain*.md'`), `~/body.md`, any relative body path in a command that
-  contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file,
-  including a read-only `gh api -X GET … -F labels=@"$F"` (GET is not exempt; workaround: a plain
-  absolute path), a mention split by a backslash-newline inside single quotes (`'@co\<newline>dex'`), and a
-  `gh …` that is only an argument after `env` (`env echo gh pr merge 1`), since every word after `env` is
-  tried as the command. env options are not parsed: every word after `env` may start the command, so no option argument hides
-  `gh` (`env -S gh …`, `env -u gh gh …`, `env env -C sub gh …`). Out of scope: abbreviated env long options
-  (`--ch=dir`), an attached split string (`env -Sgh …`), BSD `env -P dir`, and wrappers that change directory other than `env -C` (`sudo -D`,
-  `bash -c 'cd …'`). A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
+  contains `cd` (workaround: an absolute path), and any `gh api` call with an unresolvable body file
+  unless its effective method is a literal `GET` (1.5.2): the last `-X`/`--method` in any spelling (`-X GET`,
+  `-XGET`, `--method=GET`, `-iXGET`). A variable, `get`, or no `-X` (gh then POSTs when fields are given) is not
+  GET. Inline `-f`/`-F` values are scanned even for GET. A mention split by a backslash-newline inside single
+  quotes (`'@co\<newline>dex'`) is not a mention, since the shell keeps both characters there (1.5.2); in double
+  quotes or unquoted the line joins and it blocks. When the command holds quoting a flat scan can't follow (a
+  heredoc, `$(...)`, a backtick, `$'...'`, a quote in a comment) every backslash-newline is joined, so such a
+  split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
+  `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
+  `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`). Their options are not parsed, so the command's
+  directory and root are known only behind no prefix, a plain `command`, or `env NAME=value…`; `env -C DIR` /
+  `--chdir[=]DIR` keeps the root, so only an absolute plain body path is read. Behind anything else (any wrapper,
+  any option such as `env -i`/`-u`/`-S`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
+  and a base sync or merge there runs in an unresolved directory (blocked; workaround: run `gh`/`git` without
+  the wrapper, or pass `-R owner/repo` to `gh pr merge`). `env -i`/`env -u` before a body file are new false
+  blocks (accepted). WONTFIX: a `gh …` that is only an argument after a wrapper (`env echo gh pr merge 1`) is
+  checked as a command, since telling `echo` from a wrapper is the wrapper knowledge the guard avoids; rare,
+  fails closed, workaround: drop the `env`. Out of scope: an attached split string (`env -Sgh …`) and
+  `bash -c 'cd …'`. A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
   attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
   a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
-  (an absolute path, `time`/`nohup`, `bash -c`, `xargs`); `gh pr create`/`edit` and `gh issue create`
+  (an absolute path, `bash -c`); `gh pr create`/`edit` and `gh issue create`
   bodies; a comment line ending in a backslash, which folds the next line into the comment; and a heredoc
   nested in `$(...)` inside quotes. A heredoc that feeds no posting command (`cat > notes.md`) is never blocked;
 - a `sleep` plus a status query (`gh pr checks|view|status`, `gh run view|watch|list`) in one
@@ -107,9 +118,12 @@ The sync and draft rules fail open when there's no open PR, `gh` is unavailable,
 
 **Best-effort guard:** this is a quota guard, not a security boundary. It catches the
 commands agents habitually run, not a determined evasion. Backslash-newline is joined first,
-as the shell does (the mention scan also reads the unjoined text), then comments and heredoc bodies are dropped, and input `shlex` can't parse
-is split on every operator character. Any shell form that rewrites the command after the hook
-sees it is out of scope: wrappers, `bash -c`, `eval`, variables and command substitution.
+as the shell does, outside single quotes (the mention scan also reads the unjoined text), then comments and heredoc
+bodies are dropped, and input `shlex` can't parse is split on every operator character. Wrappers fail closed
+(every later word is tried as the command, in an unknown directory). Any shell form that rewrites the command after
+the hook sees it is out of scope: `bash -c`, `eval`, variables and command substitution. A parity test
+(`tests/test_pr_guard_parity.py`, in CI) replays every test and fixture input against the previous release and
+fails when a block is lost, unless the input is listed in its `ALLOWED_FLIPS` with a reason.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.

@@ -48,6 +48,10 @@ FLAGS_WITH_VALUE = {"-m", "-F", "-X", "-s", "--message", "--file", "--strategy",
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"}
 OPERATORS = set(";&|\n()")
 ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
+# Words that run a later word as a command. Their options aren't parsed (an env option parser regressed four
+# review rounds running): every later word is tried as the command, and it runs in an unknown directory and root.
+WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec"}
+WRAPPED = "$WRAPPER"  # the cd target segments() gives a command behind a wrapper: dir and root unknown
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
@@ -200,30 +204,30 @@ def segments(cmd, raw=False):
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
                 argv.pop(0)
-            # `command [-p] [--] cmd …` runs cmd; `command -v/-V cmd` only looks it up.
+            # `command [-p] [--] cmd …` runs cmd; `command -v/-V cmd` only looks it up. Only a plain `command`
+            # keeps the dir and root known (an option such as -p is outside the allowlist below).
+            opted = False
             while argv and argv[0] == "command":
                 argv.pop(0)
                 while argv and argv[0].startswith("-"):
-                    opt = argv.pop(0)
+                    opt, opted = argv.pop(0), True
                     if opt == "--":
                         break
                     if "v" in opt or "V" in opt:
                         argv = []
-            if argv and argv[0] == "env":
-                # env's options are not parsed (a parser here regressed four review rounds running): every later
-                # word may start the command. A --chdir or a short option holding C before it makes the dir
-                # unknown, as `(cd ? && cmd)`, unless the only one is a plain `-C DIR`/`--chdir[=]DIR` right before
-                # it. A false positive only fails closed (comment_posts treats any cd as an unknown dir anyway).
-                for i in range(1, len(argv)):
-                    pre = argv[1:i]
-                    cds = [a for a in pre if a.startswith("--chdir") or re.match(r"-[^-]*C", a)]
-                    d = None
-                    if cds:
-                        d = "$ENV_CHDIR"
-                        if cds in (["-C"], ["--chdir"]) and pre[-2:-1] == cds:
-                            d = pre[-1]
-                        elif cds == pre[-1:] and cds[0].startswith("--chdir="):
-                            d = cds[0][8:]
+            if argv and (argv[0] in WRAPPERS or opted):
+                # Every later word may be the command (a false block from trying an argument is the accepted
+                # cost). Its dir and root are known only behind `env NAME=value…`; `env -C DIR`/`--chdir[=]DIR`
+                # then NAME=value… knows the root, not the dir. Anything else is unknown (WRAPPED): a wrapper
+                # name, any option (env -S/-i/-u, sudo -D/-R), a split string with a space in it.
+                for i in range(0 if opted else 1, len(argv)):
+                    pre = argv[1:i] if argv[0] == "env" and not opted else None
+                    d = WRAPPED
+                    if pre is not None:
+                        m = re.fullmatch(r"-C(.+)|--chdir=(.+)", pre[0]) if pre else None
+                        k = 2 if pre[:1] in (["-C"], ["--chdir"]) and len(pre) > 1 else 1 if m else 0
+                        if all(ASSIGN.match(a) for a in pre[k:]):
+                            d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
                     yield from ([["("], ["cd", d], argv[i:], [")"]] if d else [argv[i:]])
             elif argv:
                 yield argv
@@ -413,8 +417,17 @@ def comment_posts(cmd, cwd):
     unknown (None), so only an absolute body path resolves.
     """
     segs = list(segments(cmd, raw=True))
-    d = None if CHDIR.search(cmd) or any(a[0] == "cd" for a in segs) else cwd
+    d = None if CHDIR.search(cmd) or any(a[0] == "cd" and a[1:] != [WRAPPED] for a in segs) else cwd
+    stack, wrapped = [], False  # wrapped: behind a wrapper (see WRAPPERS), so no body path resolves
     for raw in segs:
+        if raw in (["("], [")"]):
+            wrapped = stack.pop() if raw == [")"] and stack else wrapped
+            if raw == ["("]:
+                stack.append(wrapped)
+            continue
+        if raw == ["cd", WRAPPED]:
+            wrapped = True
+            continue
         argv = [a.translate(UNHIDE) for a in raw]
         words = gh_words(argv)
         if not words:
@@ -428,7 +441,7 @@ def comment_posts(cmd, cwd):
             continue
         api = pos[0] == "api"
         # gh api: only the request body (fields and --input) posts; a --jq filter or path does not
-        texts, files, i = ([] if api else list(argv)), [], 0
+        texts, files, i, method = ([] if api else list(argv)), [], 0, None
         while i < len(argv):
             a, odd, i = argv[i], raw[i] != argv[i], i + 1
             nxt = (argv[i], raw[i] != argv[i]) if i < len(argv) else ("", False)
@@ -449,13 +462,17 @@ def comment_posts(cmd, cwd):
                     (value, odd), i = nxt, i + 1
             else:
                 continue
-            mark = ANSI if odd else ""  # a $'...' in the word: the path is never literal()
+            mark = ANSI if odd or wrapped else ""  # a $'...' in the word, or a wrapper: never literal()
+            if name in ("-X", "--method"):
+                method = None if odd else value  # pflag: the last one wins
             if name in file_flags:
                 files.append(mark + value)
             elif not api or name in API_FIELD_FLAGS:  # an attached value (-b@x) is scanned on its own
                 texts.append(value)
                 if name in ("-F", "--field") and "=@" in value:  # -F body=@file reads the field from a file
                     files.append(mark + value.split("=@", 1)[1])
+        if api and method == "GET":
+            files = []  # a read: gh sends fields as query parameters and posts no comment
         yield d, texts, files
 
 
@@ -469,7 +486,8 @@ def body_file_block(cmd, cwd):
                         "so the hook can't check it for a Codex bot mention. Write the body to a plain path (letters, "
                         "digits, `_ . / + , : @ % = -`, no `~`, quotes or expansions; e.g. `/tmp/pr-<n>-comment.md`) "
                         "and pass that path to --body-file / -F / --input. In a command that changes directory "
-                        "(cd, pushd, env -C), use an absolute path.")
+                        "(cd, pushd, env -C), use an absolute path. Behind a wrapper (sudo, timeout, nice, "
+                        "env -i/-S, command -p…) no path is read: run gh directly.")
             try:
                 big = os.path.getsize(os.path.join(d or "/", path)) > MAX_BODY_FILE
             except OSError:
@@ -751,11 +769,33 @@ def polls(cmd):
             and any(STATUS_QUERY.match(" ".join(a)) for a in segs))
 
 
+def join_continuations(cmd):
+    """Delete backslash-newline as the shell does before running: everywhere except inside single quotes.
+
+    ponytail: a flat quote scan. When it can't follow the quoting (a heredoc, `$(...)`, a backtick, `$'...'`, a
+    quote in a comment), every backslash-newline is joined: that only means more is checked.
+    """
+    if re.search(r"<<|`|\$\(|\$'", cmd) or any(re.search(r"['\"]", c) for c in shell_comments(cmd)):
+        return cmd.replace("\\\n", "")
+    out, i, quote = [], 0, None
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "\\" and quote != "'" and i + 1 < len(cmd):
+            out.append("" if cmd[i + 1] == "\n" else cmd[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"" and quote in (None, c):
+            quote = None if quote else c
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def check(cmd, cwd):
     """Return a block message, or None to allow."""
     # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
     # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
-    raw, cmd = cmd, cmd.replace("\\\n", "")
+    raw, cmd = cmd, join_continuations(cmd)
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")
