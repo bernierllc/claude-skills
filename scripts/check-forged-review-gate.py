@@ -19,21 +19,17 @@ the PR HEAD, in its own workflow run's suite (email_demo #1068: job 133165097976
 118647401541), not on the base as 3.2.0-3.2.7 assumed. A Checks API POST cannot pick a suite and lands in
 the head's oldest one, which the required-status rule does not read (BLOCKED "expected", #104), so the
 job is the only placement that holds. Another PR's gate job reaches this head when a PR shares the head
-sha (open, merged, or closed: `commits/{sha}/pulls` omits closed-unmerged PRs, so a PR listing cannot
-rule them out). So a trusted-pair job is accepted only when its workflow run is THIS PR's: the run's
-display_title is the workflow's run-name, `Review Gate - PR #<n>` (RUN_TITLE), fixed from the event when
-the run is created and set only by the trusted default-branch workflow (confirmed live, nevar-auth #23).
-Any other Actions job named `Review Gate` is forged.
+sha. So a trusted-pair job is accepted only when its workflow run is THIS PR's, by provenance (3.2.16):
 
-STALE MAIN (3.2.16): a default branch whose review-gate.yml predates run-name (a pre-3.2.0 workflow whose
-job is named `Review Gate`) titles the gate's run with the PR title, so the re-vendor PR that brings
-run-name could never pass. When the title neither is RUN_TITLE nor names another PR, the trusted-pair
-job is still this PR's when ALL hold: the default branch's review-gate.yml has no run-name (so this
-self-disables once main is re-vendored); a non-default base carries the same blob; the run's head sha,
-branch, repository and creation time match this PR (head in this repo, never a fork; head branch not the base;
-run not older than the PR); and no other PR from that head branch, in any state, has this head sha or was open
-when the run was created. A PR author controls none of the default-branch workflow, the event or path of a
-pull_request_target run, nor the run's head fields, which GitHub sets from the PR.
+ONE PROVENANCE PATH, run-name or not. The run title is not trust: a default branch whose review-gate.yml
+predates run-name (a pre-3.2.0 workflow whose job is named `Review Gate`) titles the run with the PR title,
+which the PR author writes, so `Review Gate - PR #<n>` can be typed into any PR. A title naming another PR
+(RUN_TITLE) only picks the 3.2.13 shared-head message; it never accepts. Every other run is accepted only when
+the run's head sha, branch and repository equal this PR's head (forks included: GitHub sets both from the
+PR), the run is not older than the PR, and no other PR from that head repo and branch, in any state, has this
+head sha or was open when the run was created. Each field must be a non-empty string; anything missing or
+mistyped exits 2. A PR author controls none of the event or path of a pull_request_target run, nor its head
+fields. Any other Actions job named `Review Gate` is forged.
 
 DELETE THIS WRAPPER when Option A or B of the aec plan lands (a required workflow or a distinct
 publisher app, making the required checks unforgeable through the Checks API). The detector is then
@@ -45,7 +41,6 @@ env: REPO (required), PR_NUMBER (needed to accept the gate's own job).
 stdin: `set -o pipefail; gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate`
 Exit 0: none forged. 1: forged (listed on stderr). 2: could not evaluate (fails closed).
 """
-import base64
 import importlib.util
 import json
 import os
@@ -70,59 +65,59 @@ def _gh(*args):
         raise Ambiguous(f"gh api {args[0]} failed: {exc.stderr.strip()}") from exc
 
 
-def stale_main_run(repo, pr, run_id, path):
-    """None when run `run_id` is PR #pr's gate run under a default-branch workflow without run-name; else why not."""
+def _text(obj, *keys):
+    """obj[k1][k2]... as a non-empty string; anything else is Ambiguous (null == null must never match)."""
+    for key in keys:
+        obj = obj.get(key) if isinstance(obj, dict) else None
+    if not isinstance(obj, str) or not obj:
+        raise Ambiguous(f"{'.'.join(keys)} is missing or not a string ({obj!r})")
+    return obj
+
+
+def run_provenance(repo, pr, run_id):
+    """None when workflow run `run_id` was triggered by PR #pr; else why not."""
     pull = json.loads(_gh(f"repos/{repo}/pulls/{pr}"))
-    base, default, head = pull["base"]["ref"], pull["base"]["repo"]["default_branch"], pull["head"]
-    head_repo = (head.get("repo") or {}).get("full_name")  # null when the fork was deleted
-    if not head_repo or head_repo.lower() != repo.lower():
-        return f"the PR head is in {head_repo or 'a deleted fork'}, not {repo}: fork PRs never use this fallback"
-    main_wf = json.loads(_gh(f"repos/{repo}/contents/{path}?ref={default}"))
-    try:  # GitHub wraps the base64 in newlines; anything else that is not base64 is not a workflow we can read
-        main_text = base64.b64decode("".join(main_wf["content"].split()), validate=True).decode()
-    except (ValueError, AttributeError) as exc:
-        raise Ambiguous(f"{default}'s {path} content is not readable base64: {exc}") from exc
-    if not main_text.strip():
-        raise Ambiguous(f"{default}'s {path} came back empty")
-    if re.search(r"(?m)^run-name\s*:", main_text):
-        return f"{default}'s {path} sets run-name, so this PR's run is titled by it"
-    if base != default and json.loads(_gh(f"repos/{repo}/contents/{path}?ref={base}"))["sha"] != main_wf["sha"]:
-        return f"base {base}'s {path} differs from {default}'s"
+    want = (_text(pull, "head", "sha"), _text(pull, "head", "ref"), _text(pull, "head", "repo", "full_name"))
+    opened = _text(pull, "created_at")
     run = json.loads(_gh(f"repos/{repo}/actions/runs/{run_id}"))
-    got = (run["head_sha"], run["head_branch"], run["head_repository"]["full_name"])
-    want = (head["sha"], head["ref"], head_repo)
-    if got != want or head["ref"] == base or run["created_at"] < pull["created_at"]:
-        return f"run {run_id} head {got} at {run['created_at']} is not this PR's head {want} into {base}"
-    # The only way to rule out another PR's run: `commits/{sha}/pulls` omits closed-unmerged PRs, and the run
-    # does not name its PR, so every PR from this head branch, in any state, is listed. Another one that has this
-    # head sha (a closed PR's head is frozen, and labeling it still runs the gate) or was open when the run was
-    # created could have triggered it. An older PR closed before the run, on another sha, could not.
-    query = urllib.parse.urlencode({"state": "all", "head": f"{repo.split('/')[0]}:{head['ref']}", "per_page": 100})
+    got = (_text(run, "head_sha"), _text(run, "head_branch"), _text(run, "head_repository", "full_name"))
+    started = _text(run, "created_at")
+    if got != want or started < opened:
+        return f"run {run_id} head {got} at {started} is not this PR's head {want} (opened {opened})"
+    # The only way to rule out another PR's run: the run does not name its PR, and `commits/{sha}/pulls` omits
+    # closed-unmerged PRs, so every PR from this head repo and branch, in any state, is listed. Another one that
+    # has this head sha (a closed PR's head is frozen, and labeling it still runs the gate) or was open when the
+    # run was created could have triggered it. An older PR closed before the run, on another sha, could not.
+    query = urllib.parse.urlencode({"state": "all", "head": f"{want[2].split('/')[0]}:{want[1]}", "per_page": 100})
     pages = json.loads(_gh(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp"))
     if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise Ambiguous(f"the PR listing for {head['ref']} is not a list of pages")
-    others = sorted(p["number"] for page in pages for p in page if p["number"] != int(pr) and (
-        p["head"]["sha"] == head["sha"]
-        or p["created_at"] <= run["created_at"] and (p["closed_at"] is None or p["closed_at"] >= run["created_at"])))
+        raise Ambiguous(f"the PR listing for {want[1]} is not a list of pages")
+    others = []
+    for listed in (item for page in pages for item in page):
+        number = listed.get("number") if isinstance(listed, dict) else None
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise Ambiguous(f"a PR in the listing for {want[1]} has no number ({listed!r})")
+        if number == int(pr):
+            continue
+        closed = None if listed.get("closed_at") is None else _text(listed, "closed_at")
+        if _text(listed, "head", "sha") == want[0] or (
+                _text(listed, "created_at") <= started and (closed is None or closed >= started)):
+            others.append(number)
     if others:
-        return (f"this head sha is also PR #{others[0]}'s head. Push a new commit to this PR (an empty commit "
+        return (f"this head sha is also PR #{min(others)}'s head. Push a new commit to this PR (an empty commit "
                 "works) so it has a head of its own")
     return None
 
 
-def foreign_run(repo, pr, run_id, path):
+def foreign_run(repo, pr, run_id):
     """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
     title = _gh(f"repos/{repo}/actions/runs/{run_id}", "--jq", ".display_title").strip()
-    want = RUN_TITLE.format(pr=pr)
-    if title == want:
-        return None
-    why = f"run {run_id} is titled {title!r}, not {want!r}"
     other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
-    if other:  # a real gate run of another PR on this same head sha, not a forgery: name the fix (3.2.13)
-        return why + (f": this head sha is also PR #{other.group(1)}'s head, and that PR's Review Gate run is "
-                      "listed on it. Push a new commit to this PR (an empty commit works) so it has a head of its own")
-    stale = stale_main_run(repo, pr, run_id, path)
-    return stale and f"{why}: {stale}"
+    if other and other.group(1) != pr:  # a real gate run of another PR on this same head sha: name the fix (3.2.13)
+        return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: this head sha is also "
+                f"PR #{other.group(1)}'s head, and that PR's Review Gate run is listed on it. Push a new commit to "
+                "this PR (an empty commit works) so it has a head of its own")
+    return run_provenance(repo, pr, run_id)  # a matching title is not trust: on a stale main the PR wrote it
 
 
 def main():
@@ -160,7 +155,7 @@ def main():
             pr = os.environ.get("PR_NUMBER", "")
             if not re.fullmatch(r"[1-9][0-9]*", pr):
                 raise Ambiguous(f"PR_NUMBER is missing or malformed ({pr!r}); it is needed to accept the gate's job")
-            why = foreign_run(repo, pr, run_id, pair[0])
+            why = foreign_run(repo, pr, run_id)
             if why:
                 bad.append((name, where, why))
     except (ValueError, KeyError, TypeError, subprocess.CalledProcessError, Ambiguous) as exc:
