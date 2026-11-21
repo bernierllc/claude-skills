@@ -62,8 +62,8 @@ One file, shipped as byte-identical copies in `review-gate/scripts/shell_tokens.
 It turns a command string into a list of **segments**. Each segment is a list of **words**, and each word is one of:
 
 - `Literal(text)`: a word whose final text is fully known after Bash's quote removal, escapes, `$'…'` decoding and continuation joins. Decided per quoting context, in one left-to-right pass: a backslash-newline joins only outside single quotes, and `\c`, `\\` and escaped quotes are read in the context they appear.
-- `Unresolved(reason, raw)`: a word whose text the tokenizer cannot know. Causes: parameter or arithmetic expansion, `$(…)` or backticks, globs in the command position, `~user`, and any parse error (an unbalanced quote, an unknown `$'…'` escape). The reason names the construct.
-- `Nested(segments)`: the parsed body of a string the shell will run as a command: `$(…)` and backtick bodies, `bash|sh|zsh -c` payloads, `env -S`/`--split-string` strings (including attached `-S'…'`, short clusters such as `-vS'…'`, and `\c` truncation), `eval` arguments and heredocs fed to a shell. These are parsed recursively by the same function, with a depth cap; past the cap a body is `Unresolved`.
+- `Unresolved(reason, raw, nested)`: a word whose text the tokenizer cannot know. Causes: parameter or arithmetic expansion, `$(…)` or backticks, globs in the command position, `~user`, and any parse error (an unbalanced quote, an unknown `$'…'` escape). The reason names the construct. A command substitution has two effects, and the word keeps both: Bash runs the body, and its output becomes part of the word. So a word holding `$(…)` or backticks is `Unresolved`, and `nested` carries each substitution body, parsed into segments (empty for other causes). `$(printf g)h pr merge 7` has an `Unresolved` command word (the outer effect). `echo "$(gh pr merge 7)"` has an `Unresolved` argument whose `nested` body is a merge (the inner effect). Each is denied by its own effect.
+- `Nested(segments)`: the parsed body of a string argument that a wrapper hands to a shell as a command, where the word itself is consumed rather than kept as text: `bash|sh|zsh -c` payloads, `env -S`/`--split-string` strings (including attached `-S'…'`, short clusters such as `-vS'…'`, and `\c` truncation), `eval` arguments and heredocs fed to a shell. These bodies and `Unresolved.nested` bodies are parsed recursively by the same function, with a depth cap; past the cap a body is `Unresolved` with no `nested`, which fails closed under the rules below.
 
 Segments split on control operators (`;`, `&&`, `||`, `|`, `|&`, `&`, newline) and keep the operator, so a detector can still ask "does this run after a `cd`".
 
@@ -75,9 +75,9 @@ Cost: one pass over the characters, plus the shlex call per segment, which is li
 
 Every detector in both guards takes segments, never a string. The rules:
 
-- **A merge is a segment whose resolved command words are `gh … pr … merge`** after skipping `gh`'s global flags (`-R`, `--repo`, `--hostname`). Wrappers are expanded per Rule A, and `Nested` bodies are checked the same way, recursively.
-- **Unresolved fails closed where it matters.** If any candidate command word, or any `gh` subcommand word, is `Unresolved`, and the segment (or the command around it) contains a merge word that could complete it, the guard denies. The denial names the construct: "the command name comes from `$X`; write it literally". A `gh pr merge` in an unparseable command is denied. An `Unresolved` word in an argument position (a commit message, a file name) does not deny on its own.
-- **Inert text stays inert only when the tokenizer proves it is a `Literal` argument.** `git commit -m "gh pr merge 5"` and `echo 'gh pr merge'` are allowed because the mention is one `Literal` argument word. `git commit -m "$(gh pr merge 5)"` is a `Nested` body, so it is checked. A blanket per-command exemption is never used: the #130 `git commit` early return is the example.
+- **A merge is a segment whose resolved command words are `gh … pr … merge`** after skipping `gh`'s global flags (`-R`, `--repo`, `--hostname`). Wrappers are expanded per Rule A. `Nested` bodies, and the `nested` bodies of every `Unresolved` word in any position (command or argument), are checked the same way, recursively.
+- **Unresolved fails closed where it matters.** If any candidate command word, or any `gh` subcommand word, is `Unresolved`, and the segment (or the command around it) contains a merge word that could complete it, the guard denies. The denial names the construct: "the command name comes from `$X`; write it literally". A `gh pr merge` in an unparseable command is denied. An `Unresolved` word in an argument position (a commit message, a file name) does not deny on its own; its `nested` bodies are still checked.
+- **Inert text stays inert only when the tokenizer proves it is a `Literal` argument.** `git commit -m "gh pr merge 5"` and `echo 'gh pr merge'` are allowed because the mention is one `Literal` argument word. `git commit -m "$(gh pr merge 5)"` is an `Unresolved` argument whose `nested` body is checked, and denied. A blanket per-command exemption is never used: the #130 `git commit` early return is the example.
 - **Effects outside the text stay a separate rule, decided on tokens.** Git hooks, `GIT_EDITOR`, `BASH_ENV`, `PATH` overrides, function and alias redefinitions of `gh`, and `command_not_found_handle` are kept as today's detectors. They are rewritten to read words (`Literal("GIT_EDITOR=…")` assignments, a `Literal("alias")` command), not regexes over raw text.
 - **The raw-text second pass is deleted.** It exists only because `normalize_command` lost quoting. Once the tokenizer is the only reader of the text, no decision reads raw text.
 - **The `# review-gate-ok:` override and the `pr-guard` overrides** are read from the tokenizer's comment list (it already separates comments from words), not by regex over the whole string.
@@ -111,7 +111,7 @@ One table-driven test file per guard, plus a shared tokenizer test:
 | Source | Input | Expected |
 |---|---|---|
 | #129 | `env -S 'env X=\\c gh pr merge 1 --admin'` | deny (pr-guard) |
-| #130 | `git commit -m "\"'$(gh pr merge 5 --admin)"\'` | deny: `Nested` merge |
+| #130 | `git commit -m "\"'$(gh pr merge 5 --admin)"\'` | deny: merge in the argument's `Unresolved.nested` body |
 | #130 | `git commit --amend -m "gh pr merge 5 --admin"` with an executable `post-commit` hook that merges | deny (hook detector) |
 | #130 | `GIT_EDITOR=./merge.sh git commit` | deny |
 | #130 | `git commit -m "gh pr merge 5"` with no hooks | allow: `Literal` argument |
@@ -120,7 +120,9 @@ One table-driven test file per guard, plus a shared tokenizer test:
 | #132 | `env -S 'env -S "gh pr merge 17 --admin"'` | deny: nested split string |
 | #132 | ``env -S "`printf gh` pr merge 17 --auto"`` | deny: `Unresolved` command word with merge words |
 | #132 | `builtin exec env -S 'gh pr merge 17 --admin'` | deny |
-| #132 | ``echo `env -S 'gh pr merge 17 --admin'` `` | deny |
+| #132 | ``echo `env -S 'gh pr merge 17 --admin'` `` | deny: merge in the argument's `Unresolved.nested` body |
+| #139 review | `$(printf g)h pr merge 7` | deny: `Unresolved` command word with merge words |
+| #139 review | `echo "$(gh pr merge 7)"` | deny: merge in the argument's `Unresolved.nested` body |
 | #132 | `bash -c "env -S 'gh pr merge 17 --admin'"`, plus `sh -c`, `/bin/bash -c`, `/bin/sh -c` | deny |
 | #137 | `": '" + "z"*16001 + "'; g''h pr mer''ge 7 --squash"` | deny |
 | #137 | `g\h pr mer\ge 7` | deny |
