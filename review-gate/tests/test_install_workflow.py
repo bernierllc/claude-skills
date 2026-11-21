@@ -574,8 +574,167 @@ class VendoredSkillRefresh(unittest.TestCase):
                     proc = subprocess.run([sys.executable, str(installer / "scripts" / "install-workflow.py"), "--force"],
                                           cwd=repo, capture_output=True, text=True)
                     self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-                    self.assertIn("refusing to replace", proc.stderr)
+                    # 3.2.21: the preflight over every file destination runs first, so a repo nested inside the skill
+                    # is refused as "write" (its workflow destination overlaps the source) before the refresh runs
+                    self.assertRegex(proc.stderr, "refusing to (replace|write)")
                     self.assertEqual(tree(dest), before)
+
+
+class SymlinkedDestinations(unittest.TestCase):
+    """3.2.21: the installer never writes through a symlink, and never trusts one before an early return."""
+
+    # (destination relative to the repo, extra installer flags that make the installer write it)
+    DESTINATIONS = (
+        (Path(".github") / "workflows" / "review-gate.yml", ()),
+        (Path("scripts") / "check-review-gate.py", ()),
+        (Path("scripts") / "check-forged-gate-names.py", ()),
+        (Path(".github") / "workflows" / "review-gate-doctor.yml", ("--doctor-job",)),
+    )
+
+    def test_a_symlinked_destination_is_refused_with_and_without_force_and_its_target_is_untouched(self):
+        for rel, extra in self.DESTINATIONS:
+            template = (SKILL / "templates" / rel.name) if rel.suffix == ".yml" else (SKILL / "scripts" / rel.name)
+            other = COMPATIBLE if rel.name == "check-forged-gate-names.py" else b"other bytes\n"  # a detector main() accepts
+            # outside with other bytes, outside with the bytes the installer would write, and inside the repo
+            for target, content in (("outside", other), ("outside", template.read_bytes()), ("inside", other)):
+                for flags in ((), ("--force",)):
+                    with self.subTest(dest=str(rel), target=target, same=content == template.read_bytes(), flags=flags), \
+                            tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                        linked = Path(repo) / rel
+                        linked.parent.mkdir(parents=True, exist_ok=True)
+                        real = (Path(side) if target == "outside" else Path(repo)) / "linked-target.txt"
+                        real.write_bytes(content)
+                        linked.symlink_to(real)
+                        proc = install(repo, *flags, *extra)
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        self.assertIn("refusing to write", proc.stderr)
+                        self.assertIn("symlink", proc.stderr)
+                        self.assertEqual(real.read_bytes(), content)
+                        self.assertTrue(linked.is_symlink())
+
+    def test_a_dangling_symlinked_destination_is_not_written_through(self):
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                outside = Path(side) / "not-yet.yml"
+                linked = Path(repo) / ".github" / "workflows" / "review-gate.yml"
+                linked.parent.mkdir(parents=True)
+                linked.symlink_to(outside)
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertFalse(outside.exists())
+
+    def test_a_symlinked_parent_directory_is_refused_and_nothing_lands_outside(self):
+        for parent in (Path("scripts"), Path(".github")):
+            for flags in ((), ("--force",)):
+                with self.subTest(parent=str(parent), flags=flags), \
+                        tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                    (Path(repo) / parent).symlink_to(side)
+                    proc = install(repo, *flags)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to write", proc.stderr)
+                    self.assertEqual(list(Path(side).iterdir()), [])
+
+    def template_for(self, rel):
+        return (SKILL / "templates" / rel.name) if rel.suffix == ".yml" else (SKILL / "scripts" / rel.name)
+
+    def test_a_directory_at_a_file_destination_is_refused_and_a_link_inside_it_is_not_written_through(self):
+        # 3.2.21 Codex P1: copy2 onto a directory writes <dir>/<src.name>, here a symlink to a file outside the repo
+        for rel, extra in self.DESTINATIONS:
+            if rel.name == "check-forged-gate-names.py":
+                continue  # the detector has its own keep/replace branches before the write; the three below cover each shape
+            for flags in ((), ("--force",)):
+                with self.subTest(dest=str(rel), flags=flags), \
+                        tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                    outside = Path(side) / "outside.txt"
+                    outside.write_bytes(b"outside bytes\n")
+                    (Path(repo) / rel).mkdir(parents=True)
+                    (Path(repo) / rel / rel.name).symlink_to(outside)
+                    proc = install(repo, *flags, *extra)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to write", proc.stderr)
+                    self.assertIn("is a directory", proc.stderr)
+                    self.assertEqual(outside.read_bytes(), b"outside bytes\n")
+                    self.assertTrue((Path(repo) / rel).is_dir())
+
+    def test_a_hardlinked_destination_is_replaced_not_written_through_and_the_other_link_is_untouched(self):
+        # 3.2.21 Codex P1: the pathname is inside the repo, but an in-place write truncates the inode both names share
+        for rel, extra in self.DESTINATIONS:
+            if rel.name == "check-forged-gate-names.py":
+                continue
+            with self.subTest(dest=str(rel)), \
+                    tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                outside = Path(side) / "outside.txt"
+                outside.write_bytes(b"outside bytes\n")
+                (Path(repo) / rel).parent.mkdir(parents=True, exist_ok=True)
+                os.link(outside, Path(repo) / rel)
+                proc = install(repo, "--force", *extra)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertEqual(outside.read_bytes(), b"outside bytes\n")
+                self.assertEqual((Path(repo) / rel).read_bytes(), self.template_for(rel).read_bytes())
+                self.assertFalse(os.path.samefile(outside, Path(repo) / rel))
+                self.assertEqual(os.stat(outside).st_nlink, 1)
+
+    def test_an_installed_file_keeps_the_mode_of_its_source_and_leaves_no_temp_file(self):
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertEqual(install(repo, "--force").returncode, 0)
+            for rel, _ in self.DESTINATIONS[:2]:
+                self.assertEqual((Path(repo) / rel).stat().st_mode & 0o777,
+                                 self.template_for(rel).stat().st_mode & 0o777, rel)
+            for d in (Path(repo) / "scripts", Path(repo) / ".github" / "workflows"):
+                self.assertEqual([p.name for p in d.iterdir() if ".new-" in p.name], [])
+
+    def test_a_refused_later_destination_leaves_every_earlier_destination_and_the_vendored_copy_untouched(self):
+        # 3.2.21 Codex P2: the workflow, the first three scripts and a vendored-skill refresh used to land before
+        # the last script's symlink was refused
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+                before = tree(dest)
+                outside = Path(side) / "outside.txt"
+                outside.write_bytes(b"outside bytes\n")
+                (Path(repo) / "scripts").mkdir()
+                (Path(repo) / "scripts" / "lint-review-body.py").symlink_to(outside)  # the LAST script destination
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("refusing to write", proc.stderr)
+                self.assertEqual(outside.read_bytes(), b"outside bytes\n")
+                self.assertFalse((Path(repo) / ".github").exists())
+                self.assertEqual(sorted(p.name for p in (Path(repo) / "scripts").iterdir()), ["lint-review-body.py"])
+                self.assertEqual(tree(dest), before)
+
+    def test_a_vendored_copy_symlinked_to_the_running_skill_is_refused_and_the_skill_is_untouched(self):
+        # 3.2.21: dest.resolve() == skill_root returned True before the symlink check, so this reported success
+        before = tree(SKILL)
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as repo:
+                (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+                link = Path(repo) / ".claude" / "skills" / "review-gate"
+                link.symlink_to(SKILL)
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("refusing to replace", proc.stderr)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(tree(SKILL), before)
+
+    def test_real_files_still_install_and_a_forced_reinstall_stays_real(self):
+        with tempfile.TemporaryDirectory() as repo:
+            for flags in ((), ("--force",), ("--force", "--doctor-job")):
+                proc = install(repo, *flags)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            for rel, _ in self.DESTINATIONS:
+                self.assertTrue((Path(repo) / rel).is_file() and not (Path(repo) / rel).is_symlink(), rel)
+
+    def test_an_installer_run_from_its_own_vendored_copy_still_installs(self):
+        # the equal-to-skill-root early return survives, now behind the symlink check: a REAL vendored directory
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo)
+            vendored_installer = Path(repo) / ".claude" / "skills" / "review-gate" / "scripts" / "install-workflow.py"
+            before = tree(vendored_installer.parents[1])
+            proc = subprocess.run([sys.executable, str(vendored_installer), "--force"], cwd=repo,
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(tree(vendored_installer.parents[1]), before)
+            self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
 
 
 class DoctorVersionParity(unittest.TestCase):
