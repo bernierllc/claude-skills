@@ -695,11 +695,25 @@ assert forks("cd /some/fork && gh pr create --title x") == ["/some/fork"]
 assert forks("(cd /some/fork && gh pr create --title x) && gh pr create -R o/r --title y") == ["/some/fork"]
 assert forks("gh pr create --title x") == ["/hook"]
 assert forks('cd "$DIR" && gh pr create --title x') == []
+# Codex high P1 on PR #127: behind a wrapper the dir is unknown, so `gh pr create` needs -R (no fork lookup).
+for c in ("command -- gh pr create --title x --body x", "sudo gh pr create --title x", "env -i gh pr create --title x"):
+    assert "behind a wrapper" in (g.check(c, "/hook") or ""), c
+    assert forks(c.replace("gh pr create", "gh pr create -R o/r")) == [], c
+assert forks("env FOO=1 gh pr create --title x") == ["/hook"]  # env NAME=value keeps the dir known
 # Codex P2 on prevost #332: `env` and NAME=value prefixes don't hide the command.
 # 1.5.2 rule B: env with an option, or any other wrapper, leaves the dir unknown (blocked as unresolved)
 assert calls("GIT_DIR=x env -i FOO=1 git merge origin/main") == [("$WRAPPER", "merge", ["origin/main"])]
 assert calls("env -u HOME git -C wt rebase origin/main") == [("$WRAPPER/wt", "rebase", ["origin/main"])]
 assert calls("GIT_DIR=x env FOO=1 git merge origin/main") == [("/r", "merge", ["origin/main"])]
+# Codex high P2 on PR #127: an absolute -C behind a wrapper keeps the unknown root (sudo -R chroots).
+assert calls("sudo -R /jail git -C /repo merge origin/main") == [("$WRAPPER//repo", "merge", ["origin/main"])]
+# Codex high P2 on PR #127: a quoted or attached split string is split and every word tried as the command.
+for c in ("env -S 'gh pr merge' 1 --admin", "env --split-string='gh pr merge' 1 --admin",
+          "env -Sgh pr merge 1 --admin", "env '-Sgh pr merge' 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
+assert _blocked(f"env -S 'gh pr comment 1' -b '{M} review'")
+assert _blocked(f"env -S 'gh pr comment 1 -b' '{M} review'")
+assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
 _ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")
 for c in ("env git merge origin/main", "command git merge origin/main", "sudo git pull origin main",

@@ -93,16 +93,17 @@ hooks dormant). It blocks:
   heredoc, `$(...)`, a backtick, `$'...'`, a quote in a comment) every backslash-newline is joined, so such a
   split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
   `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
-  `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`). Their options are not parsed, so the command's
+  `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); a quoted or attached split string
+  (`env -S 'gh pr merge' …`, `-Sgh`, `--split-string=gh pr merge`) is split and each of its words tried too. Their options are not parsed, so the command's
   directory and root are known only behind no prefix, a plain `command`, or `env NAME=value…`; `env -C DIR` /
   `--chdir[=]DIR` keeps the root, so only an absolute plain body path is read. Behind anything else (any wrapper,
   any option such as `env -i`/`-u`/`-S`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
-  and a base sync or merge there runs in an unresolved directory (blocked; workaround: run `gh`/`git` without
-  the wrapper, or pass `-R owner/repo` to `gh pr merge`). `env -i`/`env -u` before a body file are new false
+  and a base sync or merge there runs in an unresolved directory, even with an absolute `git -C` (blocked;
+  workaround: run `gh`/`git` without the wrapper, or pass `-R owner/repo` to `gh pr merge`). A `gh pr create`
+  there blocks unless it passes `-R owner/repo`, since the fork check can't run in an unknown directory. `env -i`/`env -u` before a body file are new false
   blocks (accepted). WONTFIX: a `gh …` that is only an argument after a wrapper (`env echo gh pr merge 1`) is
   checked as a command, since telling `echo` from a wrapper is the wrapper knowledge the guard avoids; rare,
-  fails closed, workaround: drop the `env`. Out of scope: an attached split string (`env -Sgh …`) and
-  `bash -c 'cd …'`. A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
+  fails closed, workaround: drop the `env`. Out of scope: `bash -c 'cd …'`. A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
   attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;

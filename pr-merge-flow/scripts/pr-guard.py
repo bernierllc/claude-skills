@@ -184,6 +184,17 @@ def runs_async(cmd):
     return False
 
 
+def wrapped_words(w):
+    """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
+    would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag."""
+    try:
+        sp = shlex.split(w)
+    except ValueError:
+        sp = w.split()
+    m = re.fullmatch(r"--[\w-]+=(.+)|-[A-Za-z](.+)", sp[0]) if sp else None
+    return [m.group(1) or m.group(2)] + sp[1:] if m else sp
+
+
 def segments(cmd, raw=False):
     """Split a shell command into argv lists, one per simple command.
 
@@ -229,6 +240,9 @@ def segments(cmd, raw=False):
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
                     yield from ([["("], ["cd", d], argv[i:], [")"]] if d else [argv[i:]])
+                    sp = wrapped_words(argv[i])
+                    for j in range(len(sp) if sp != argv[i:i + 1] else 0):
+                        yield from [["("], ["cd", WRAPPED], sp[j:] + argv[i + 1:], [")"]]
             elif argv:
                 yield argv
             argv = []
@@ -285,7 +299,9 @@ def sync_calls(cmd, cwd):
         d, i = cwd, 1
         while i < len(argv) and argv[i].startswith("-"):
             if argv[i] == "-C" and i + 1 < len(argv):
-                d = argv[i + 1] if "$" in argv[i + 1] else os.path.join(d, os.path.expanduser(argv[i + 1]))
+                # Behind a wrapper the root is unknown too (`sudo -R /jail git -C /repo`): keep the marker.
+                d = (argv[i + 1] if "$" in argv[i + 1] else d + "/" + argv[i + 1] if d.startswith(WRAPPED)
+                     else os.path.join(d, os.path.expanduser(argv[i + 1])))
                 i += 2
             elif argv[i] == "-c":
                 i += 2
@@ -837,6 +853,10 @@ def check(cmd, cwd):
                 "If the user explicitly asked for a draft, ask them to run it with `! gh pr create --draft ...`, "
                 "or set aec's pr_open_mode to draft.")
     for d in pr_create_dirs(cmd, cwd):
+        if d.startswith(WRAPPED):
+            return ("Blocked: `gh pr create` behind a wrapper (`env`, `sudo`, `command -p`/`--`, …) runs in a "
+                    "directory the guard can't resolve, so it can't check for an unpinned fork. Pass "
+                    "`-R <owner>/<repo>`, or run `gh pr create` without the wrapper.")
         # A dir with $ or a backtick can't be resolved statically: skip, don't block.
         fork = None if "$" in d or "`" in d else unpinned_fork(d)
         if fork:

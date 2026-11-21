@@ -47,3 +47,6 @@
 ["/r", "sleep 30; sudo gh pr checks 1"]
 ["/r", "gh api -XGET -XPOST repos/o/r/issues -F b=@\"$F\""]
 ["/r", "gh api --method GET --method=POST repos/o/r/issues --input \"$B\""]
+["/r", "command -- gh pr create --title x --body x"]
+["/r", "sudo -R /jail git -C /repo merge origin/main"]
+["/r", "env -S 'gh pr merge' 1 --admin"]

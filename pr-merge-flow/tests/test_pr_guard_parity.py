@@ -3,7 +3,8 @@
 Differential check (plans/pr-guard-shell-parsing-design.md, step 1): every command the previous release blocked,
 this guard must still block. The baseline is the newest pr-merge-flow commit on origin/main whose SKILL.md version
 is lower than this tree's. Inputs: every command the head and baseline test files pass to a guard function, plus
-fixtures/pr_guard_inputs.txt. Each runs under four stubs (base staging/main x checks green/red).
+fixtures/pr_guard_inputs.txt. Each runs under eight stubs (base staging/main x checks green/red x the dir an
+unpinned fork or not).
 """
 import importlib.util
 import json
@@ -35,7 +36,7 @@ ALLOWED_FLIPS = {
 GUARD_FUNCS = ("check", "sync_calls", "merge_calls", "draft_violation", "comment_posts", "codex_mention_post",
                "body_file_block", "polls", "runs_async", "segments", "pr_create_dirs", "walk", "shell_comments",
                "has_override")
-CONFIGS = [dict(base=b, green=gr) for b in ("staging", "main") for gr in (True, False)]
+CONFIGS = [dict(base=b, green=gr, fork=f) for b in ("staging", "main") for gr in (True, False) for f in (False, True)]
 
 
 def git(*args):
@@ -71,7 +72,7 @@ def stubbed(name, path, cfg):
     m = load(name, path)
     m.pr_state = lambda d, b=cfg["base"]: (b, "CLEAN")
     m.not_green = (lambda *a, **k: "") if cfg["green"] else (lambda *a, **k: "red")
-    m.unpinned_fork = lambda d: None
+    m.unpinned_fork = (lambda d: "o/r (fork of u/r)") if cfg["fork"] else (lambda d: None)
     m.draft_mode = lambda *a, **k: False
     m.fb_log = lambda *a, **k: None
     return m
