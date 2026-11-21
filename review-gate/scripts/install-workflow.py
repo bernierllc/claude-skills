@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -174,17 +175,45 @@ def dotted(version: tuple[int, ...] | None) -> str:
     return ".".join(map(str, version)) if version else "unknown"
 
 
+def _first_symlink(root: Path, dest: Path) -> Path | None:
+    """The first component below `root`, down to and including `dest`, that is a symlink; None when there is none or
+    the path is absent from some point down (nothing below an absent component exists to be linked, 3.2.22: an
+    absent `.claude/skills/review-gate` under a symlinked `.claude` used to read as clean). Each directory is opened
+    from its parent's fd with O_NOFOLLOW, so the walk cannot be steered through a link swapped in mid-walk.
+    shortcut: only the walk is fd-based. The writes after it (mkdir, mkstemp, rename, copytree) address paths, so a
+    link planted between this check and a write is not closed; upgrade by doing those through the same dir fds."""
+    node, fd = root, os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parts = dest.relative_to(root).parts
+        for i, part in enumerate(parts):
+            node = node / part
+            try:
+                mode = os.stat(part, dir_fd=fd, follow_symlinks=False).st_mode
+                if stat.S_ISLNK(mode):
+                    return node
+                if i == len(parts) - 1 or not stat.S_ISDIR(mode):
+                    return None
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                return node  # ELOOP/ENOTDIR on a directory we just saw: it became a link mid-walk, so refuse
+            os.close(fd)
+            fd = child
+        return None
+    finally:
+        os.close(fd)
+
+
 def _dest_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
     """Why `dest` may not be written or deleted (every destination this installer touches goes through here),
     mirroring aec's install chokepoint (aec/lib/filesystem.py
     check_install_paths + confine.escapes, and remove_installed_item's never-delete-the-source guard): no
     symlink from below the repo root down to dest (stricter than aec for dest itself: a vendored copy is a
     tracked directory, so a link there is refused, not replaced), dest inside the repo, no source overlap."""
-    node = root
-    for part in dest.relative_to(root).parts:
-        node = node / part
-        if node.is_symlink():
-            return f"{node} is a symlink, so what it reaches is not this repo's"
+    link = _first_symlink(root, dest)
+    if link:
+        return f"{link} is a symlink, so what it reaches is not this repo's"
     real, src = dest.resolve(), skill_root.resolve()
     if root.resolve() not in real.parents:
         return f"{real} is outside {root.resolve()}"
@@ -199,9 +228,18 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
     one exists, and is restored if the swap fails; a run cut off mid-swap is undone by the next run. False (with
     the reason on stderr) when it refused or failed."""
     dest = root / VENDORED_SKILL
+    # Confinement before ANY probe or return (3.2.20 for the version compare, 3.2.21 for the equal-to-skill-root and
+    # not-a-directory returns, 3.2.22 for an absent dest): exists() and is_dir() follow links, so a symlinked
+    # `.claude` or `.claude/skills` must be refused here, with or without --force, even when nothing is vendored
+    # and even when the tree it points at is this very skill. The `.old` and staging names below are fixed
+    # siblings of this confined dest, so the same check covers their ancestors.
+    problem = _dest_problem(skill_root, root, dest)
+    if problem:
+        print(f"error: refusing to replace {dest}: {problem}. Nothing was changed.", file=sys.stderr)
+        return False
     backup = dest.with_name(dest.name + ".old")  # a fixed name, so the next run finds a swap that was cut off
     if backup.exists() or backup.is_symlink():
-        problem = "it is a symlink" if backup.is_symlink() else _dest_problem(skill_root, root, dest)
+        problem = "it is a symlink" if backup.is_symlink() else None
         if problem or dest.exists() or dest.is_symlink():
             # refuse rather than delete: fewer lines than a guarded delete, and it may hold the only local edits
             print(f"error: {backup} is left from an earlier refresh{f' ({problem})' if problem else ''}; keep the "
@@ -209,17 +247,8 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
             return False
         backup.rename(dest)
         print(f"recovered {dest} from {backup}, left by an interrupted refresh")
-    if not dest.exists() and not dest.is_symlink():
-        return True  # nothing vendored here, so nothing to confine
-    # Confinement before ANY return (3.2.20 for the version compare, 3.2.21 for the equal-to-skill-root and
-    # not-a-directory returns): a symlinked or out-of-repo copy, even one that is this very skill or reports a
-    # current or newer version, must not read as "vendored", with or without --force. Check-then-use: valid for
-    # a trusted, static filesystem under the repo root. The staging and backup names below are fixed siblings
-    # of this confined dest, so they are covered by the same check.
-    problem = _dest_problem(skill_root, root, dest)
-    if problem:
-        print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
-        return False
+    if not dest.exists():
+        return True  # nothing vendored here, and no ancestor is a link (checked above)
     if not dest.is_dir() or dest.resolve() == skill_root:
         return True
     try:

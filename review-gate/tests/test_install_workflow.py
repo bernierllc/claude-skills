@@ -716,6 +716,60 @@ class SymlinkedDestinations(unittest.TestCase):
                 self.assertTrue(link.is_symlink())
                 self.assertEqual(tree(SKILL), before)
 
+    def test_a_symlinked_claude_or_skills_parent_is_refused_even_when_nothing_is_vendored(self):
+        # 3.2.22 Codex P2: exists()/is_dir() follow the link, so an absent review-gate dir read as "nothing vendored"
+        # and the installer reported success with .claude or .claude/skills pointing outside the repo
+        def snapshot(d):  # every path, dotfiles included, with file bytes
+            return {p.relative_to(d).as_posix(): (p.read_bytes() if p.is_file() else None) for p in sorted(Path(d).rglob("*"))}
+
+        for linked in (Path(".claude"), Path(".claude") / "skills"):
+            for vendored in (False, True):  # absent review-gate dir, and an older copy present behind the link
+                for flags in ((), ("--force",)):
+                    with self.subTest(linked=str(linked), vendored=vendored, flags=flags), \
+                            tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
+                        outside = Path(side) / "target"  # what the link reaches: it must hold `skills/` or `review-gate/`
+                        if vendored:
+                            vendor(Path(side) / "holder", one_release_behind(skill_version(SKILL)))
+                            outside = Path(side) / "holder" / (".claude" if linked.name == ".claude" else ".claude/skills")
+                        else:
+                            outside.mkdir(parents=True)
+                        if linked.name == "skills":
+                            (Path(repo) / ".claude").mkdir()
+                        (Path(repo) / linked).symlink_to(outside)
+                        before_outside, before_repo = snapshot(side), snapshot(repo)
+                        proc = install(repo, *flags)
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        self.assertIn("refusing to replace", proc.stderr)
+                        self.assertIn(f"{Path(repo).resolve() / linked} is a symlink", proc.stderr)  # names the component
+                        self.assertEqual(snapshot(side), before_outside)  # nothing written outside the repo
+                        self.assertEqual(snapshot(repo), before_repo)  # and nothing written inside it either
+                        self.assertTrue((Path(repo) / linked).is_symlink())
+
+    def test_a_real_claude_skills_tree_without_a_vendored_copy_still_installs(self):
+        with tempfile.TemporaryDirectory() as repo:
+            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+            proc = install(repo)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
+            self.assertFalse((Path(repo) / ".claude" / "skills" / "review-gate").exists())
+
+    def test_first_symlink_walks_by_fd_and_stops_at_the_first_absent_component(self):
+        spec = importlib.util.spec_from_file_location("install_workflow_under_test", INSTALLER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            dest = root / ".claude" / "skills" / "review-gate"
+            self.assertIsNone(mod._first_symlink(root, dest))  # all absent
+            (root / ".claude").mkdir()
+            self.assertIsNone(mod._first_symlink(root, dest))  # partly present
+            (root / ".claude" / "skills").symlink_to(side)
+            self.assertEqual(mod._first_symlink(root, dest), root / ".claude" / "skills")
+            (root / ".claude" / "skills").unlink()
+            (root / ".claude" / "skills").mkdir()
+            dest.symlink_to(side)  # the final component itself
+            self.assertEqual(mod._first_symlink(root, dest), dest)
+
     def test_real_files_still_install_and_a_forced_reinstall_stays_real(self):
         with tempfile.TemporaryDirectory() as repo:
             for flags in ((), ("--force",), ("--force", "--doctor-job")):
