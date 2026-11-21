@@ -175,13 +175,51 @@ def dotted(version: tuple[int, ...] | None) -> str:
     return ".".join(map(str, version)) if version else "unknown"
 
 
+def _fd_walk_supported() -> bool:
+    """True when this platform can walk by directory fd without following links (POSIX). Native Windows has no
+    O_NOFOLLOW/O_DIRECTORY and no dir_fd, so `_first_symlink` takes the lstat walk there instead of raising."""
+    return (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+            and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+            and os.stat in os.supports_follow_symlinks)
+
+
 def _first_symlink(root: Path, dest: Path) -> Path | None:
     """The first component below `root`, down to and including `dest`, that is a symlink; None when there is none or
     the path is absent from some point down (nothing below an absent component exists to be linked, 3.2.22: an
-    absent `.claude/skills/review-gate` under a symlinked `.claude` used to read as clean). Each directory is opened
-    from its parent's fd with O_NOFOLLOW, so the walk cannot be steered through a link swapped in mid-walk.
-    shortcut: only the walk is fd-based. The writes after it (mkdir, mkstemp, rename, copytree) address paths, so a
-    link planted between this check and a write is not closed; upgrade by doing those through the same dir fds."""
+    absent `.claude/skills/review-gate` under a symlinked `.claude` used to read as clean). Where the platform allows
+    (`_fd_walk_supported`) each directory is opened from its parent's fd with O_NOFOLLOW, so the walk cannot be
+    steered through a link swapped in mid-walk; elsewhere the same walk runs by lstat, per path component.
+    shortcut: the writes after the walk (mkdir, mkstemp, rename, copytree) address paths on every platform, so a link
+    planted between this check and a write is not closed; upgrade by doing those through the same dir fds. The
+    lstat walk is not race-safe either, and sees a Windows junction only where `os.path.isjunction` exists (3.12+);
+    on an older Python a junction passes as a directory, so upgrade Python there."""
+    if not _fd_walk_supported():
+        return _first_symlink_lstat(root, dest)
+    return _first_symlink_fd(root, dest)
+
+
+def _first_symlink_lstat(root: Path, dest: Path) -> Path | None:
+    """`_first_symlink` by path: lstat each component below `root`, refusing a symlink (or junction) and stopping at
+    the first absent component or the first non-directory, exactly where the fd walk stops."""
+    is_junction = getattr(os.path, "isjunction", None)
+    node = root
+    parts = dest.relative_to(root).parts
+    for i, part in enumerate(parts):
+        node = node / part
+        try:
+            mode = os.lstat(node).st_mode
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return node  # cannot be inspected (permissions, a name the OS rejects): refuse rather than assume clean
+        if stat.S_ISLNK(mode) or (is_junction is not None and is_junction(node)):
+            return node
+        if i == len(parts) - 1 or not stat.S_ISDIR(mode):
+            return None
+    return None
+
+
+def _first_symlink_fd(root: Path, dest: Path) -> Path | None:
     node, fd = root, os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         parts = dest.relative_to(root).parts

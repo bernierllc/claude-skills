@@ -404,6 +404,20 @@ def install_at_swap(repo, action):
                           cwd=repo, capture_output=True, text=True)
 
 
+# Runs the real installer with the fd walk reported unavailable (as on native Windows), so `_first_symlink` takes
+# the lstat walk. Only the capability helper is replaced; every other line of the installer runs as shipped.
+LSTAT_RUNNER = """
+import importlib.util, sys
+installer, *args = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("install_workflow", installer)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod._fd_walk_supported = lambda: False
+sys.argv = [installer, *args]
+sys.exit(mod.main())
+"""
+
+
 def tree(d):
     d = Path(d)
     return {p.relative_to(d).as_posix(): p.read_bytes() for p in sorted(d.rglob("*"))
@@ -517,46 +531,6 @@ class VendoredSkillRefresh(unittest.TestCase):
             self.assertFalse(dest.exists())
             self.assertTrue(dest.with_name("review-gate.old").is_dir())
 
-    def test_a_symlinked_skills_parent_is_refused_and_the_external_copy_survives(self):
-        # #138 P1: a shared install reached through .claude/skills -> elsewhere must never be deleted
-        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
-            external = vendor(shared, one_release_behind(skill_version(SKILL)))
-            (external / "untracked-local-notes.md").write_text("keep me\n")
-            before = tree(external)
-            (Path(repo) / ".claude").mkdir()
-            (Path(repo) / ".claude" / "skills").symlink_to(external.parent)
-            proc = install(repo, "--force")
-            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-            self.assertIn("refusing to replace", proc.stderr)
-            self.assertEqual(tree(external), before)
-
-    def test_a_symlinked_vendored_copy_is_refused_and_its_target_survives(self):
-        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
-            external = vendor(shared, one_release_behind(skill_version(SKILL)))
-            before = tree(external)
-            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
-            (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
-            proc = install(repo, "--force")
-            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-            self.assertIn("refusing to replace", proc.stderr)
-            self.assertEqual(tree(external), before)
-
-    def test_a_symlinked_copy_reporting_the_current_version_is_refused_with_and_without_force(self):
-        # 3.2.20 (hub cop P1): confinement runs before the version compare, so a symlinked copy that reports
-        # the release (or newer) cannot read as "current" and be skipped.
-        for version in (skill_version(SKILL), "99.0.0"):
-            for flags in ((), ("--force",)):
-                with self.subTest(version=version, flags=flags), \
-                        tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
-                    external = vendor(shared, version)
-                    before = tree(external)
-                    (Path(repo) / ".claude" / "skills").mkdir(parents=True)
-                    (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
-                    proc = install(repo, *flags)
-                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-                    self.assertIn("refusing to replace", proc.stderr)
-                    self.assertEqual(tree(external), before)
-
     def test_overlapping_source_and_destination_are_refused(self):
         # #138 P1: replacing a tree that contains the installer's own skill (or sits inside it) destroys the source
         with tempfile.TemporaryDirectory() as tmp:
@@ -581,7 +555,11 @@ class VendoredSkillRefresh(unittest.TestCase):
 
 
 class SymlinkedDestinations(unittest.TestCase):
-    """3.2.21: the installer never writes through a symlink, and never trusts one before an early return."""
+    """3.2.21: the installer never writes through a symlink, and never trusts one before an early return.
+    Runs once per walk implementation: the fd walk (POSIX) and the lstat walk (native Windows, 3.2.22)."""
+
+    def install(self, repo, *args):
+        return install(repo, *args)
 
     # (destination relative to the repo, extra installer flags that make the installer write it)
     DESTINATIONS = (
@@ -605,7 +583,7 @@ class SymlinkedDestinations(unittest.TestCase):
                         real = (Path(side) if target == "outside" else Path(repo)) / "linked-target.txt"
                         real.write_bytes(content)
                         linked.symlink_to(real)
-                        proc = install(repo, *flags, *extra)
+                        proc = self.install(repo, *flags, *extra)
                         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                         self.assertIn("refusing to write", proc.stderr)
                         self.assertIn("symlink", proc.stderr)
@@ -619,7 +597,7 @@ class SymlinkedDestinations(unittest.TestCase):
                 linked = Path(repo) / ".github" / "workflows" / "review-gate.yml"
                 linked.parent.mkdir(parents=True)
                 linked.symlink_to(outside)
-                proc = install(repo, *flags)
+                proc = self.install(repo, *flags)
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertFalse(outside.exists())
 
@@ -629,7 +607,7 @@ class SymlinkedDestinations(unittest.TestCase):
                 with self.subTest(parent=str(parent), flags=flags), \
                         tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as repo:
                     (Path(repo) / parent).symlink_to(side)
-                    proc = install(repo, *flags)
+                    proc = self.install(repo, *flags)
                     self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                     self.assertIn("refusing to write", proc.stderr)
                     self.assertEqual(list(Path(side).iterdir()), [])
@@ -649,7 +627,7 @@ class SymlinkedDestinations(unittest.TestCase):
                     outside.write_bytes(b"outside bytes\n")
                     (Path(repo) / rel).mkdir(parents=True)
                     (Path(repo) / rel / rel.name).symlink_to(outside)
-                    proc = install(repo, *flags, *extra)
+                    proc = self.install(repo, *flags, *extra)
                     self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                     self.assertIn("refusing to write", proc.stderr)
                     self.assertIn("is a directory", proc.stderr)
@@ -667,7 +645,7 @@ class SymlinkedDestinations(unittest.TestCase):
                 outside.write_bytes(b"outside bytes\n")
                 (Path(repo) / rel).parent.mkdir(parents=True, exist_ok=True)
                 os.link(outside, Path(repo) / rel)
-                proc = install(repo, "--force", *extra)
+                proc = self.install(repo, "--force", *extra)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
                 self.assertEqual(outside.read_bytes(), b"outside bytes\n")
                 self.assertEqual((Path(repo) / rel).read_bytes(), self.template_for(rel).read_bytes())
@@ -676,7 +654,7 @@ class SymlinkedDestinations(unittest.TestCase):
 
     def test_an_installed_file_keeps_the_mode_of_its_source_and_leaves_no_temp_file(self):
         with tempfile.TemporaryDirectory() as repo:
-            self.assertEqual(install(repo, "--force").returncode, 0)
+            self.assertEqual(self.install(repo, "--force").returncode, 0)
             for rel, _ in self.DESTINATIONS[:2]:
                 self.assertEqual((Path(repo) / rel).stat().st_mode & 0o777,
                                  self.template_for(rel).stat().st_mode & 0o777, rel)
@@ -694,7 +672,7 @@ class SymlinkedDestinations(unittest.TestCase):
                 outside.write_bytes(b"outside bytes\n")
                 (Path(repo) / "scripts").mkdir()
                 (Path(repo) / "scripts" / "lint-review-body.py").symlink_to(outside)  # the LAST script destination
-                proc = install(repo, *flags)
+                proc = self.install(repo, *flags)
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertIn("refusing to write", proc.stderr)
                 self.assertEqual(outside.read_bytes(), b"outside bytes\n")
@@ -710,7 +688,7 @@ class SymlinkedDestinations(unittest.TestCase):
                 (Path(repo) / ".claude" / "skills").mkdir(parents=True)
                 link = Path(repo) / ".claude" / "skills" / "review-gate"
                 link.symlink_to(SKILL)
-                proc = install(repo, *flags)
+                proc = self.install(repo, *flags)
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertIn("refusing to replace", proc.stderr)
                 self.assertTrue(link.is_symlink())
@@ -737,7 +715,7 @@ class SymlinkedDestinations(unittest.TestCase):
                             (Path(repo) / ".claude").mkdir()
                         (Path(repo) / linked).symlink_to(outside)
                         before_outside, before_repo = snapshot(side), snapshot(repo)
-                        proc = install(repo, *flags)
+                        proc = self.install(repo, *flags)
                         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                         self.assertIn("refusing to replace", proc.stderr)
                         self.assertIn(f"{Path(repo).resolve() / linked} is a symlink", proc.stderr)  # names the component
@@ -745,35 +723,81 @@ class SymlinkedDestinations(unittest.TestCase):
                         self.assertEqual(snapshot(repo), before_repo)  # and nothing written inside it either
                         self.assertTrue((Path(repo) / linked).is_symlink())
 
+    def test_a_symlinked_skills_parent_is_refused_and_the_external_copy_survives(self):
+        # #138 P1: a shared install reached through .claude/skills -> elsewhere must never be deleted
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            (external / "untracked-local-notes.md").write_text("keep me\n")
+            before = tree(external)
+            (Path(repo) / ".claude").mkdir()
+            (Path(repo) / ".claude" / "skills").symlink_to(external.parent)
+            proc = self.install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_a_symlinked_vendored_copy_is_refused_and_its_target_survives(self):
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            before = tree(external)
+            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+            (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
+            proc = self.install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_a_symlinked_copy_reporting_the_current_version_is_refused_with_and_without_force(self):
+        # 3.2.20 (hub cop P1): confinement runs before the version compare, so a symlinked copy that reports
+        # the release (or newer) cannot read as "current" and be skipped.
+        for version in (skill_version(SKILL), "99.0.0"):
+            for flags in ((), ("--force",)):
+                with self.subTest(version=version, flags=flags), \
+                        tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+                    external = vendor(shared, version)
+                    before = tree(external)
+                    (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+                    (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
+                    proc = self.install(repo, *flags)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to replace", proc.stderr)
+                    self.assertEqual(tree(external), before)
+
     def test_a_real_claude_skills_tree_without_a_vendored_copy_still_installs(self):
         with tempfile.TemporaryDirectory() as repo:
             (Path(repo) / ".claude" / "skills").mkdir(parents=True)
-            proc = install(repo)
+            proc = self.install(repo)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
             self.assertFalse((Path(repo) / ".claude" / "skills" / "review-gate").exists())
 
-    def test_first_symlink_walks_by_fd_and_stops_at_the_first_absent_component(self):
-        spec = importlib.util.spec_from_file_location("install_workflow_under_test", INSTALLER)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+    WALK = "_first_symlink"  # LstatWalk below swaps in the lstat walk; the dispatcher is covered by the subprocess tests
+
+    def test_first_symlink_walks_and_stops_at_the_first_absent_component(self):
+        mod = installer()
+        walk = getattr(mod, self.WALK)
         with tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             dest = root / ".claude" / "skills" / "review-gate"
-            self.assertIsNone(mod._first_symlink(root, dest))  # all absent
+            self.assertIsNone(walk(root, dest))  # all absent
             (root / ".claude").mkdir()
-            self.assertIsNone(mod._first_symlink(root, dest))  # partly present
+            self.assertIsNone(walk(root, dest))  # partly present
             (root / ".claude" / "skills").symlink_to(side)
-            self.assertEqual(mod._first_symlink(root, dest), root / ".claude" / "skills")
+            self.assertEqual(walk(root, dest), root / ".claude" / "skills")
             (root / ".claude" / "skills").unlink()
             (root / ".claude" / "skills").mkdir()
             dest.symlink_to(side)  # the final component itself
-            self.assertEqual(mod._first_symlink(root, dest), dest)
+            self.assertEqual(walk(root, dest), dest)
+            dest.unlink()
+            dest.mkdir()
+            self.assertIsNone(walk(root, dest))  # a real tree is clean
+            (root / "file").write_text("x")
+            self.assertIsNone(walk(root, root / "file" / "below"))  # below a non-directory: nothing to link
 
     def test_real_files_still_install_and_a_forced_reinstall_stays_real(self):
         with tempfile.TemporaryDirectory() as repo:
             for flags in ((), ("--force",), ("--force", "--doctor-job")):
-                proc = install(repo, *flags)
+                proc = self.install(repo, *flags)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             for rel, _ in self.DESTINATIONS:
                 self.assertTrue((Path(repo) / rel).is_file() and not (Path(repo) / rel).is_symlink(), rel)
@@ -789,6 +813,57 @@ class SymlinkedDestinations(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(tree(vendored_installer.parents[1]), before)
             self.assertTrue((Path(repo) / ".github" / "workflows" / "review-gate.yml").is_file())
+
+
+
+class SymlinkedDestinationsLstatWalk(SymlinkedDestinations):
+    """The same tests with the fd walk made unavailable, as on native Windows: every refusal must be identical."""
+    WALK = "_first_symlink_lstat"
+
+    def install(self, repo, *args):
+        return subprocess.run([sys.executable, "-c", LSTAT_RUNNER, str(INSTALLER), *args],
+                              cwd=repo, capture_output=True, text=True)
+
+
+class NoFdWalkPlatform(unittest.TestCase):
+    """3.2.22 Codex P1: without os.O_NOFOLLOW (native Windows) the installer used to raise before installing."""
+
+    def drop_os_attr(self, name):
+        saved = getattr(os, name)
+        delattr(os, name)
+        self.addCleanup(setattr, os, name, saved)
+
+    def test_the_capability_helper_follows_the_os_module(self):
+        mod = installer()
+        self.assertEqual(mod._fd_walk_supported(), all(
+            [hasattr(os, "O_NOFOLLOW"), hasattr(os, "O_DIRECTORY"), os.open in os.supports_dir_fd,
+             os.stat in os.supports_dir_fd, os.stat in os.supports_follow_symlinks]))
+        for name in ("O_NOFOLLOW", "O_DIRECTORY"):
+            if hasattr(os, name):
+                with self.subTest(missing=name):
+                    saved = getattr(os, name)
+                    delattr(os, name)
+                    try:
+                        self.assertFalse(mod._fd_walk_supported())
+                    finally:
+                        setattr(os, name, saved)
+
+    def test_dest_problem_still_refuses_a_link_and_accepts_a_real_tree_without_o_nofollow(self):
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("this platform has no O_NOFOLLOW to remove; the lstat walk is the only walk here")
+        mod = installer()
+        self.drop_os_attr("O_NOFOLLOW")
+        self.assertFalse(mod._fd_walk_supported())
+        with tempfile.TemporaryDirectory() as side, tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            dest = root / ".claude" / "skills" / "review-gate"
+            self.assertIsNone(mod._dest_problem(SKILL, root, dest))  # absent
+            (root / ".claude" / "skills").mkdir(parents=True)
+            self.assertIsNone(mod._dest_problem(SKILL, root, dest))  # a real tree
+            (root / ".claude" / "skills").rmdir()
+            (root / ".claude").rmdir()
+            (root / ".claude").symlink_to(side)
+            self.assertIn(f"{root / '.claude'} is a symlink", mod._dest_problem(SKILL, root, dest))
 
 
 class DoctorVersionParity(unittest.TestCase):
