@@ -893,6 +893,11 @@ def check(cmd, cwd):
     return None
 
 
+def payload_cwd(data):
+    """The dir the command runs in: Gemini run_shell_command passes it as tool_input.dir_path, ahead of the session cwd."""
+    return (data.get("tool_input") or {}).get("dir_path") or data.get("cwd") or os.getcwd()
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -900,7 +905,7 @@ def main():
         return 0
     if data.get("tool_name") != "Bash":
         return 0
-    msg = check(data.get("tool_input", {}).get("command", ""), data.get("cwd") or os.getcwd())
+    msg = check(data.get("tool_input", {}).get("command", ""), payload_cwd(data))
     if msg:
         print(msg, file=sys.stderr)
         return 2

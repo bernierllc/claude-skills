@@ -23,6 +23,10 @@ assert calls("git rebase --continue") == []
 assert calls("git log origin/staging..HEAD") == []
 assert calls("gh pr merge 5 --merge") == []
 
+# Gemini run_shell_command passes its execution dir as tool_input.dir_path; it wins over the session cwd
+assert g.payload_cwd({"cwd": "/tmp/session", "tool_input": {"dir_path": "/tmp/exec"}}) == "/tmp/exec"
+assert g.payload_cwd({"cwd": "/tmp/session", "tool_input": {}}) == "/tmp/session"
+
 assert g.names_base(["origin", "staging"], "staging")
 assert g.names_base(["origin/staging"], "staging")
 assert not g.names_base(["origin/feat/x"], "staging")
