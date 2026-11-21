@@ -3833,9 +3833,11 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
         )
     cmd = strip_heredoc_bodies(cmd)
     # 3.2.18: the checks below are superlinear (80 KB took 6-50 s), and a hook killed at its timeout loses its
-    # denial. An oversized command that may name a merge is denied unread; one that cannot is allowed.
+    # denial. An oversized command that may name a merge is denied unread; one that cannot is allowed. It is
+    # read raw (escapes) and dequoted (linear), the form the checks below match: `g''h`, `mer\\ge` are a merge.
     if len(cmd) > MAX_SCANNED_CHARS:
-        return OVERSIZED_COMMAND.format(n=len(cmd), limit=MAX_SCANNED_CHARS) if _MAY_NAME_MERGE.search(cmd) else None
+        may_merge = _MAY_NAME_MERGE.search(cmd) or _MAY_NAME_MERGE.search(_dequote_shell_text(cmd))
+        return OVERSIZED_COMMAND.format(n=len(cmd), limit=MAX_SCANNED_CHARS) if may_merge else None
     parts = [p for p, _ in split_shell_chains(cmd)] or [cmd]
     # `a=(gh … pr merge); "${a[@]}"` — array-assembled merges bypass token checks.
     if array_assembled_merge(cmd) or any(array_assembled_merge(p) for p in parts):

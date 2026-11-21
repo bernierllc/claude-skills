@@ -142,9 +142,18 @@ def foreign_run(repo, pr, run_id):
     title = _text(_api_json(f"repos/{repo}/actions/runs/{run_id}"), "display_title").strip()
     other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
     if other and other.group(1) != pr:  # a real gate run of another PR on this same head sha: name the fix (3.2.13)
-        return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: this head sha is also "
-                f"PR #{other.group(1)}'s head, and that PR's Review Gate run is listed on it. Push a new commit to "
-                "this PR (an empty commit works) so it has a head of its own")
+        # 3.2.18: provenance names the fix when the other PR is open on this branch (close or split, not a commit).
+        # The title already rejects the run (exit 1); an unreadable provenance only loses that refinement.
+        try:
+            why = run_provenance(repo, pr, run_id)
+        except (Ambiguous, subprocess.CalledProcessError, ValueError) as exc:
+            print(f"::warning::run {run_id}: provenance unreadable, so the remedy assumes a closed PR: {exc}",
+                  file=sys.stderr)
+            why = None
+        return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: " + (
+            why or f"this head sha is also PR #{other.group(1)}'s head, and that PR's "
+            "Review Gate run is listed on it. Push a new commit to this PR (an empty commit works) so it has a head "
+            "of its own"))
     return run_provenance(repo, pr, run_id)  # a matching title is not trust: on a stale main the PR wrote it
 
 

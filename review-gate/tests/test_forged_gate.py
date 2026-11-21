@@ -520,6 +520,16 @@ class WrapperDetector(unittest.TestCase):
                               "becomes its head too. Close PR #9 or open each PR from its own head branch", err)
                 self.assertNotIn("Push a new commit", err)
 
+    # Codex P2 on f9f4dce: a run titled for another PR took an early return with push-a-new-commit advice, even
+    # when that PR is open on this head branch, where a new commit becomes its head too.
+    def test_run_titled_for_another_open_pr_names_close_or_split(self):
+        rc, err = self.gate_run(run_title(9), branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                            other_pr(9, HEAD_SHA, "2026-11-20T09:00:00Z", None)])
+        self.assertEqual(rc, 1, err)
+        self.assertIn("not 'Review Gate - PR #7'", err)
+        self.assertIn("Close PR #9 or open each PR from its own head branch", err)
+        self.assertNotIn("Push a new commit", err)
+
     def test_missing_or_mistyped_provenance_exits_2(self):
         # Codex P2 r4649920164: null == null matched, and a null pull.head raised AttributeError (exit 1).
         no_head = {**pull(), "head": None}

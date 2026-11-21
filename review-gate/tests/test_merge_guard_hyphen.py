@@ -189,7 +189,21 @@ class BoundedWork(unittest.TestCase):
         self.assertIn("git commit -F <file>", err)
 
     def test_huge_commands_without_merge_pass(self):
+        import time
+        started = time.monotonic()
         self.assertEqual(hook("echo '" + "z" * 80000 + "'")[0], 0)
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_huge_commands_hiding_a_merge_in_quotes_or_backslashes_deny(self):
+        # Codex P1 on f9f4dce: the size check read raw text, so a quote- or backslash-split `gh … merge` past
+        # the limit was allowed although the normal checks deny it. It must read the same dequoted form.
+        import time
+        for label, tail in {"quotes": "g''h pr mer''ge 7 --squash", "backslashes": "g\\h pr mer\\ge 7 --squash"}.items():
+            with self.subTest(case=label):
+                started = time.monotonic()
+                rc, err = hook(": '" + "z" * 16001 + "'; " + tail)
+                self.assertLess(time.monotonic() - started, 1.0, label)
+                self.assertEqual(rc, 2, err)
 
 
 class DirPathSymlink(unittest.TestCase):
