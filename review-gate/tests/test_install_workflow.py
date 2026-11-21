@@ -109,6 +109,22 @@ class VendoredDetector(unittest.TestCase):
             self.assertEqual((Path(repo) / "scripts" / "check-forged-review-gate.py").read_bytes(),
                              (SKILL / "scripts" / "check-forged-review-gate.py").read_bytes())
 
+    def test_the_3_2_19_pinless_detector_is_replaced_with_force(self):
+        # 3.2.20: its map had set() for the main-via-staging guard job, so the job rejected its own run; a repo
+        # vendored from 3.2.4-3.2.19 must be upgraded by --force, not KEPT as a "newer or custom" copy.
+        old = subprocess.run(["git", "show", "0d3a553:review-gate/scripts/check-forged-gate-names.py"],
+                             cwd=SKILL, capture_output=True)
+        if old.returncode:
+            self.skipTest("no git history (vendored layout)")
+        with tempfile.TemporaryDirectory() as repo:
+            dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
+            dest.parent.mkdir()
+            dest.write_bytes(old.stdout)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / "check-forged-gate-names.py").read_bytes())
+            self.assertNotIn("KEPT", proc.stdout)
+
     def test_known_older_vendored_detector_is_replaced_with_force(self):
         # #87 Codex P1: the 3.2.1-bundled detector (aec 46580fa) must be upgraded, not KEPT.
         import importlib.util
@@ -524,6 +540,22 @@ class VendoredSkillRefresh(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             self.assertIn("refusing to replace", proc.stderr)
             self.assertEqual(tree(external), before)
+
+    def test_a_symlinked_copy_reporting_the_current_version_is_refused_with_and_without_force(self):
+        # 3.2.20 (hub cop P1): confinement runs before the version compare, so a symlinked copy that reports
+        # the release (or newer) cannot read as "current" and be skipped.
+        for version in (skill_version(SKILL), "99.0.0"):
+            for flags in ((), ("--force",)):
+                with self.subTest(version=version, flags=flags), \
+                        tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+                    external = vendor(shared, version)
+                    before = tree(external)
+                    (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+                    (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
+                    proc = install(repo, *flags)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to replace", proc.stderr)
+                    self.assertEqual(tree(external), before)
 
     def test_overlapping_source_and_destination_are_refused(self):
         # #138 P1: replacing a tree that contains the installer's own skill (or sits inside it) destroys the source

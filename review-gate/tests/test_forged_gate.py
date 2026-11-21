@@ -379,13 +379,15 @@ class ForgedGateWorkflow(unittest.TestCase):
 
 class WrapperReason(unittest.TestCase):
     def test_wrapper_reason_still_holds(self):
-        # The wrapper exists only because the vendored map protects the other name with no trusted pair.
-        # If a re-vendor changes that, revisit (or delete) the wrapper.
+        # The wrapper exists because downstream repos still publish the main-via-staging name from other
+        # Actions jobs, so it scopes the detector to `Review Gate`. 3.2.20 re-vendored aec's map, which now
+        # pins that name to the guard's own pull_request_target job (the guard sees its own in-progress run).
         import importlib.util
         spec = importlib.util.spec_from_file_location("cfgn", SCRIPTS / "check-forged-gate-names.py")
         detector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(detector)
-        self.assertEqual(detector.PROTECTED["PRs into main must come from staging"], set())
+        self.assertEqual(detector.PROTECTED["PRs into main must come from staging"],
+                         {(".github/workflows/main-via-staging.yml", "pull_request_target")})
         self.assertEqual(detector.PROTECTED["Review Gate"],
                          {(".github/workflows/review-gate.yml", "pull_request_target")})
         header = (SCRIPTS / "check-forged-review-gate.py").read_text()

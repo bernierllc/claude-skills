@@ -28,6 +28,7 @@ KNOWN_OLD = frozenset({
     "9c9bb27b42012952bfb74f82f17e804bf49b6afdc0a21b7d5471513a200438f5",  # aec a9be4dd
     "33315bb0adb6e535ff98ee7105e3fe91fec9797a7d67446c634ab94c814163ce",  # aec 5054ef7
     "06cae65f3e93f2bca211ed248969392d07331a2cd396084d4481ceea56117c65",  # aec dba592db, review-gate 3.2.2/3.2.3
+    "ae587812f39f5fe4e8b67feb2f9289aabae0dbc1ceb7022fae0ec07df4047295",  # aec b4a8c9c pin-less map, review-gate 3.2.4-3.2.19
 })
 
 
@@ -178,6 +179,14 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
         print(f"recovered {dest} from {backup}, left by an interrupted refresh")
     if not dest.is_dir() or dest.resolve() == skill_root:
         return True
+    # Confinement before any version-based return (3.2.20): a symlinked or out-of-repo copy that reports a
+    # current or newer version must not read as "vendored", with or without --force. Check-then-use: valid for
+    # a trusted, static filesystem under the repo root. The staging and backup names below are fixed siblings
+    # of this confined dest, so they are covered by the same check.
+    problem = _replace_problem(skill_root, root, dest)
+    if problem:
+        print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
+        return False
     try:
         have, want = skill_version(dest), skill_version(skill_root)
     except ValueError as e:
@@ -193,12 +202,6 @@ def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
         print(f"stale: {VENDORED_SKILL} is {dotted(have)} (hooks.json {hooks_version(dest)}), this release is "
               f"{dotted(want)}; pass --force to replace the whole directory")
         return True
-    # Check-then-use: valid for a trusted, static filesystem under the repo root. The staging and backup names
-    # below are fixed siblings of this confined dest, so they are covered by the same check.
-    problem = _replace_problem(skill_root, root, dest)
-    if problem:
-        print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
-        return False
     new = Path(tempfile.mkdtemp(prefix=f".{dest.name}.new-", dir=dest.parent))
     try:
         shutil.copytree(skill_root, new, ignore=shutil.ignore_patterns(".*", "__pycache__"), dirs_exist_ok=True)

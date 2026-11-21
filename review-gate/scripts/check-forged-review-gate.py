@@ -2,13 +2,13 @@
 """Review Gate's forged-check step: the vendored aec detector, scoped to the `Review Gate` name.
 
 check-forged-gate-names.py is vendored byte-identical from
-bernierllc/agents-environment-config@dba592dbf5a95d89a19d7b4dfaf2ea11fdf44821 (aec #154: exits 2 on
-empty, malformed or runless input) (scripts/check-forged-gate-names.py; plan
+bernierllc/agents-environment-config@41f629945c291c4e0a84f20f14a077852e7dd9dc (exits 2 on empty, malformed,
+runless or truncated input; pins the main-via-staging guard job) (scripts/check-forged-gate-names.py; plan
 plans/2026-11-16-unforgeable-required-checks.md, step S5).
 Re-vendor it by copying that file unchanged; never edit it here.
 
 WHY THIS WRAPPER EXISTS: the vendored PROTECTED map also protects "PRs into main must come from
-staging" with no trusted pair (set()). Several downstream repos still publish that name from a plain
+staging" (pinned to main-via-staging.yml pull_request_target since 3.2.20). Several downstream repos still publish that name from a plain
 `pull_request` Actions job, so running the detector unscoped would fail every main promotion in those
 repos. The map stays unchanged; this wrapper checks only `Review Gate`. The other name stays the job
 of each repo's own main-via-staging guard.
