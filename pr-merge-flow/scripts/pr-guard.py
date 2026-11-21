@@ -190,8 +190,8 @@ def runs_async(cmd):
 def wrapped_words(w):
     """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
     would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag. `\\_` is a separator
-    to env -S (`'gh\\_pr\\_merge'`), so it splits too."""
-    w = w.replace("\\_", " ")
+    to env -S (`'gh\\_pr\\_merge'`), so it splits too, and env -S ignores everything after `\\c` (`'gh\\c'` runs gh)."""
+    w = w.replace("\\_", " ").split("\\c")[0]
     try:
         sp = shlex.split(w)
     except ValueError:

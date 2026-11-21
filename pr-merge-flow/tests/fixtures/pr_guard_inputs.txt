@@ -53,3 +53,4 @@
 ["/safe", "(cd /fork && env printf ' )'; gh pr create --title x --body x)"]
 ["/r", "(cd wt && env printf ' )'; git merge origin/main)"]
 ["/r", "env -S 'gh\\_pr\\_merge' 1 --admin"]
+["/r", "env -S 'gh\\c' pr merge 1 --admin"]
