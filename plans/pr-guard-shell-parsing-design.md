@@ -2,6 +2,8 @@
 
 Status: planned. Issue: https://github.com/bernierllc/claude-skills/issues/124. Context: PR https://github.com/bernierllc/claude-skills/pull/123 (pr-merge-flow 1.5.1, merged as dd01440). Owner: the author thread of #123, as routed by the claude-skills traffic cop on 2026-11-20.
 
+Amended 2026-11-21 by plan `2026-11-21-tokenizer-first-merge-guard.md` (PR #139): Rule A, Rule B and the parity harness (`pr-merge-flow/tests/test_pr_guard_parity.py`, landed in #127 as aeae404) move into a shared `shell_tokens.py` that both pr-guard and review-gate's merge-guard use. Rule A's wrapper list grows to every wrapper merge-guard 3.2.18 denies. The rules below are otherwise unchanged.
+
 ## What happened
 
 `pr-merge-flow/scripts/pr-guard.py` is a PreToolUse hook that tokenizes the Bash command string. It does this to block a Codex review mention, an unreadable comment body file, unsafe merges and base syncs. On #123 it took eight review rounds. Each round fixed one shell form and opened the next:
