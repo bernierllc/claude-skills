@@ -400,6 +400,88 @@ class VendoredSkillRefresh(unittest.TestCase):
             install(repo, "--force")
             self.assertEqual(tree(dest), before)
 
+    def test_force_repairs_an_equal_version_whose_hooks_json_disagrees(self):
+        # #138 P2: the doctor names --force as the fix for this; equal SKILL.md versions must not stop it
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            hooks = dest / "hooks.json"
+            hooks.write_text(hooks.read_text().replace(skill_version(SKILL), one_release_behind(skill_version(SKILL)), 1))
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(tree(dest), tree(SKILL))
+
+    def test_an_unparseable_vendored_version_is_refused_and_named_never_replaced(self):
+        # #138 P2: a prerelease or garbled version is not "older"; nothing is deleted and the exit says why
+        for bad in ("3.2.20-rc.1", "3..20"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as repo:
+                dest = vendor(repo, bad)
+                (dest / "untracked-local-notes.md").write_text("keep me\n")
+                before = tree(dest)
+                proc = install(repo, "--force")
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn(f"unparseable version {bad!r}", proc.stderr)
+                self.assertEqual(tree(dest), before)
+
+    def test_a_failed_copy_leaves_the_old_tree_and_its_untracked_files_intact(self):
+        # #138 P1: the old copy is only moved aside once the complete replacement exists
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            src = Path(tmp) / "review-gate"
+            shutil.copytree(SKILL, src, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            (src / "scripts" / "dangling.py").symlink_to(Path(tmp) / "missing-target.py")  # copytree cannot copy it
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            (dest / "untracked-local-notes.md").write_text("keep me\n")
+            before = tree(dest)
+            proc = subprocess.run([sys.executable, str(src / "scripts" / "install-workflow.py"), "--force"],
+                                  cwd=repo, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertEqual(tree(dest), before)
+            self.assertIn("could not copy", proc.stderr)
+            self.assertEqual([p.name for p in dest.parent.iterdir()], ["review-gate"])  # no temp dir left behind
+
+    def test_a_symlinked_skills_parent_is_refused_and_the_external_copy_survives(self):
+        # #138 P1: a shared install reached through .claude/skills -> elsewhere must never be deleted
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            (external / "untracked-local-notes.md").write_text("keep me\n")
+            before = tree(external)
+            (Path(repo) / ".claude").mkdir()
+            (Path(repo) / ".claude" / "skills").symlink_to(external.parent)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_a_symlinked_vendored_copy_is_refused_and_its_target_survives(self):
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            before = tree(external)
+            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+            (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_overlapping_source_and_destination_are_refused(self):
+        # #138 P1: replacing a tree that contains the installer's own skill (or sits inside it) destroys the source
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = vendor(Path(tmp) / "repo", one_release_behind(skill_version(SKILL)))
+            inner = outer / "nested" / "review-gate"  # dest contains source
+            shutil.copytree(SKILL, inner, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            src_holder = Path(tmp) / "skill" / "review-gate"  # source contains dest
+            shutil.copytree(SKILL, src_holder, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            nested_repo = src_holder / "consumer"
+            vendor(nested_repo, one_release_behind(skill_version(SKILL)))
+            for installer, repo in ((inner, Path(tmp) / "repo"), (src_holder, nested_repo)):
+                with self.subTest(repo=str(repo)):
+                    dest = repo / ".claude" / "skills" / "review-gate"
+                    before = tree(dest)
+                    proc = subprocess.run([sys.executable, str(installer / "scripts" / "install-workflow.py"), "--force"],
+                                          cwd=repo, capture_output=True, text=True)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to replace", proc.stderr)
+                    self.assertEqual(tree(dest), before)
+
 
 class DoctorVersionParity(unittest.TestCase):
     """3.2.19: doctor FAILS when the vendored skill is older than the release it runs from."""
@@ -428,6 +510,15 @@ class DoctorVersionParity(unittest.TestCase):
             proc, _ = doctor_script_lines(repo, self.no_gh())
             self.assertEqual(proc.returncode, 1, proc.stdout)
             self.assertIn("FAIL .claude/skills/review-gate/hooks.json", proc.stdout)
+
+    def test_unparseable_vendored_version_fails_naming_it_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo, "3..20")
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("FAIL unparseable version '3..20'", proc.stdout)
+            self.assertNotIn("Traceback", proc.stderr)
 
     def test_current_vendored_copy_passes(self):
         with tempfile.TemporaryDirectory() as repo:

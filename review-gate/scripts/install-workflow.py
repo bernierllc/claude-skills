@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -117,34 +119,98 @@ VENDORED_SKILL = Path(".claude") / "skills" / "review-gate"  # a repo-tracked co
 
 
 def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
-    """The SKILL.md frontmatter version as an int tuple, or None when it is missing or unreadable."""
+    """The SKILL.md frontmatter version as an int tuple; None when SKILL.md or its version line is missing.
+    Raises ValueError for anything but dotted digits (a prerelease, `3..20`): unknown is never "older"."""
     try:
-        m = re.search(r"\A---\n(?:.*\n)*?version:\s*([0-9][0-9.]*)\s*\n", (skill_dir / "SKILL.md").read_text())
+        m = re.search(r"\A---\n(?:.*\n)*?version:[ \t]*(.*?)[ \t]*\n", (skill_dir / "SKILL.md").read_text())
     except OSError:
         return None
-    return tuple(int(x) for x in m.group(1).strip(".").split(".")) if m else None
+    if m and not re.fullmatch(r"\d+(\.\d+)*", m.group(1)):
+        raise ValueError(f"unparseable version {m.group(1)!r} in {skill_dir / 'SKILL.md'}")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def hooks_version(skill_dir: Path) -> str:
+    try:
+        return str(json.loads((skill_dir / "hooks.json").read_text()).get("version"))
+    except (OSError, ValueError, AttributeError) as e:
+        return f"unreadable ({e})"
 
 
 def dotted(version: tuple[int, ...] | None) -> str:
     return ".".join(map(str, version)) if version else "unknown"
 
 
-def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> None:
-    """Replace an OLDER repo-tracked copy of this skill as one unit (delete, then copy the whole directory),
-    the way `aec install skill` does, so no file from an old release is left beside new ones."""
+def _replace_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
+    """Why `dest` may not be deleted, mirroring aec's install chokepoint (aec/lib/filesystem.py
+    check_install_paths + confine.escapes, and remove_installed_item's never-delete-the-source guard): no
+    symlink from below the repo root down to dest (stricter than aec for dest itself: a vendored copy is a
+    tracked directory, so a link there is refused, not replaced), dest inside the repo, no source overlap."""
+    node = root
+    for part in dest.relative_to(root).parts:
+        node = node / part
+        if node.is_symlink():
+            return f"{node} is a symlink, so the copy it reaches is not this repo's"
+    real, src = dest.resolve(), skill_root.resolve()
+    if root.resolve() not in real.parents:
+        return f"{real} is outside {root.resolve()}"
+    if src in real.parents or real in src.parents:
+        return f"it overlaps this installer's own skill at {src}"
+    return None
+
+
+def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
+    """Replace an OLDER repo-tracked copy of this skill as one unit, the way `aec install skill` does, so no
+    file from an old release is left beside new ones. The old tree is moved aside only once the complete new
+    one exists, and is restored if the swap fails. False (with the reason on stderr) when it refused or failed."""
     dest = root / VENDORED_SKILL
     if not dest.is_dir() or dest.resolve() == skill_root:
-        return
-    have, want = skill_version(dest), skill_version(skill_root)
-    if want is None or (have is not None and have >= want):
-        return  # current or newer: never downgrade a copy someone vendored on purpose
+        return True
+    try:
+        have, want = skill_version(dest), skill_version(skill_root)
+    except ValueError as e:
+        print(f"error: {e}; not replacing {dest}. Fix the version line or replace the copy by hand.", file=sys.stderr)
+        return False
+    if want is None or have is None:
+        print(f"error: cannot read the version of {dest if have is None else skill_root}; not replacing it",
+              file=sys.stderr)
+        return False
+    if have > want or (have == want and hooks_version(dest) == dotted(have)):
+        return True  # current or newer: never downgrade a copy someone vendored on purpose
     if not force:
-        print(f"stale: {VENDORED_SKILL} is {dotted(have)}, this release is {dotted(want)}; "
-              "pass --force to replace the whole directory")
-        return
-    shutil.rmtree(dest)
-    shutil.copytree(skill_root, dest, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+        print(f"stale: {VENDORED_SKILL} is {dotted(have)} (hooks.json {hooks_version(dest)}), this release is "
+              f"{dotted(want)}; pass --force to replace the whole directory")
+        return True
+    problem = _replace_problem(skill_root, root, dest)
+    if problem:
+        print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
+        return False
+    new = Path(tempfile.mkdtemp(prefix=f".{dest.name}.new-", dir=dest.parent))
+    backup = new.with_name(new.name.replace(".new-", ".old-"))
+    try:
+        shutil.copytree(skill_root, new, ignore=shutil.ignore_patterns(".*", "__pycache__"), dirs_exist_ok=True)
+    except (OSError, shutil.Error) as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own partial temp copy; the old tree was never touched
+        print(f"error: could not copy {skill_root} ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        dest.rename(backup)
+        try:
+            new.rename(dest)
+        except OSError:
+            backup.rename(dest)
+            raise
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy; dest is the old tree again
+        print(f"error: could not swap in the new copy ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        shutil.rmtree(backup)
+    except OSError as e:
+        print(f"refreshed {dest}, but the old copy is kept at {backup} ({e}); delete it before committing",
+              file=sys.stderr)
     print(f"refreshed {dest} ({dotted(have)} -> {dotted(want)}); commit the whole directory")
+    return True
 
 
 PUBLIC_RUNBOOK = """\
@@ -189,7 +255,8 @@ def main() -> int:
               "(your copy is backed up), or update it from the newest agents-environment-config.",
               file=sys.stderr)
         return 1
-    refresh_vendored_skill(skill_root, root, force)
+    if not refresh_vendored_skill(skill_root, root, force):
+        return 1
     _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:

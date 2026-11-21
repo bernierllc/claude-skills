@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Warn when a repo is missing review-gate wiring.
 
-Prints WARN / OK lines on stdout and exits 0. With --strict (3.2.14) it exits 1 when the workflow or a
-vendored script is missing or differs from this skill's copy: the local checks, which need no token. The
+Prints WARN / OK / FAIL lines on stdout. It exits 1, with or without --strict, when the repo-tracked
+.claude/skills/review-gate is older than this release, has an unreadable version, or its hooks.json and
+SKILL.md disagree (3.2.19). With --strict (3.2.14) it also exits 1 when the workflow or a vendored script is
+missing or differs from this skill's copy: the local checks, which need no token. Otherwise it exits 0. The
 label and ruleset checks stay warnings, since CI's GITHUB_TOKEN usually cannot read rulesets.
 """
 from __future__ import annotations
@@ -235,15 +237,19 @@ def vendored_skill_parity(root: Path) -> bool:
     if not dest.is_dir() or dest.resolve() == skill_root:
         return True  # nothing vendored, or this doctor IS the vendored copy (it cannot see a newer release)
     fix = f"python3 {SKILL_SCRIPTS / 'install-workflow.py'} --force"
-    have, want = installer.skill_version(dest), installer.skill_version(skill_root)
-    if have is None or (want is not None and have < want):
+    try:
+        have, want = installer.skill_version(dest), installer.skill_version(skill_root)
+    except ValueError as e:
+        print(f"FAIL {e}; fix that version line or replace the copy by hand (the installer refuses it)")
+        return False
+    if have is None:
+        print(f"FAIL {installer.VENDORED_SKILL}/SKILL.md has no readable version; replace the copy by hand")
+        return False
+    if want is not None and have < want:
         print(f"FAIL {installer.VENDORED_SKILL} is {installer.dotted(have)}, this release is "
               f"{installer.dotted(want)}; replace the whole copy and commit it: {fix}")
         return False
-    try:
-        hooks = json.loads((dest / "hooks.json").read_text()).get("version")
-    except (OSError, ValueError, AttributeError) as e:
-        hooks = f"unreadable ({e})"
+    hooks = installer.hooks_version(dest)
     if hooks != installer.dotted(have):
         print(f"FAIL {installer.VENDORED_SKILL}/hooks.json is {hooks}, its SKILL.md is {installer.dotted(have)}; "
               f"replace the whole copy and commit it: {fix}")
