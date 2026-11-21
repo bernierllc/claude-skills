@@ -720,27 +720,28 @@ assert _blocked(f"env -S 'gh pr comment 1 -b' '{M} review'")
 assert calls("(cd wt && env printf ' )'; git merge origin/main)") == [("/r/wt", "merge", ["origin/main"])]
 assert calls("(cd wt && env printf ' ) ('; git merge origin/main); git merge origin/main") == [
     ("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
-# round 2 P2: env -S reads `\_` as a separator.
-for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
-          "env --split-string='gh\\_pr\\_merge' 1 --admin"):
-    assert "--admin" in merge(c, rollup=ok), c
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
-# 1.5.5 (nevar-content #17 review): env -S strings with `$` or a non-`\\_` escape fail closed, whatever they run.
-OPAQUE = "has a `$` or a backslash escape"
-for c in ("env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\cjunk' pr merge 1 --admin",
-          "env '-Sgh\\c' pr merge 1 --admin", "env --split-string='gh\\_pr\\c' merge 1 --admin",
-          "env -S 'env X=\\\\c gh pr merge 1 --admin'", "env -S 'env X=\\\\c gh pr merge 1 --auto'",
-          "env -S \"env X='\\c' gh pr merge 1 --admin\"", "env -S \"env X='\\c' gh\\c\" pr merge 1 --admin",
-          "env -S 'env X=\\\\c gh\\c ignored' pr merge 17 --admin",
-          "env -S \"env X='\\c' gh\\c ignored\" pr merge 17 --admin",
-          "env -S 'env X=\\\\c gh\\c ignored' pr comment 17 --body-file /tmp/body.md",
-          "env -S '${EMPTY}gh\\c ignored' pr merge 17 --admin", "env -S '${GHCMD}' pr merge 17 --admin",
-          "/usr/bin/env -iS'gh\\c' pr merge 1 --admin", "env --sp='gh\\c' pr merge 1 --admin",
-          "sudo env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\tpr' merge 1 --admin"):
-    assert OPAQUE in merge(c, rollup=ok), c
-for c in ("env FOO=1 gh pr view 1", "env -S 'gh\\_pr\\_view' 1", "env -u X gh pr view 1",
-          "git commit -S -m 'a\\nb'", "echo env; printf '\\c'"):
-    assert g.opaque_split_string(c) is None, c
+# 1.5.5 (nevar-content #17, claude-skills #132): an env split-string option blocks on sight, any path or form.
+SPLIT = "`env -S` / `--split-string`"
+for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
+          "env --split-string='gh\\_pr\\_merge' 1 --admin", "env -S 'gh\\c' pr merge 1 --admin",
+          "env -S \"env X='\\c' gh\\c\" pr merge 1 --admin", "env -S '${GHCMD}' pr merge 17 --admin",
+          "/usr/bin/env -S'gh pr merge 17 --admin'", "env -vS'gh pr merge 17 --admin'",
+          "env -S 'env -S \"gh pr merge 17 --admin\"'", "env -S \"`printf gh` pr merge 17 --auto\"",
+          "env -iS x", "env -uXS x", "env -uC -S x", "env -iu X -S x", "env --unset X -S x", "env -u X -S x", "env --sp=x", "env --split-string x",
+          "sudo env -S x", "sudo /usr/bin/env -S x", "nice -n 5 env -S x", "env -S 'gh\\_pr\\_view' 1",
+          "env \"$OPT\" gh pr view 1"):
+    assert g.env_split_string(c) and merge(c, rollup=ok), c
+assert SPLIT in merge("env -S 'gh pr view 1'", rollup=ok)
+for c in ("echo env -S '${GHCMD}'", "printf '%s' env -S 'a\\tb'", "env printf '%s' -S '${GHCMD}'",
+          "env FOO=1 gh pr view 1", "env -u S gh pr view 1", "env -C /tmp gh pr view 1",
+          "env -- -S", "git commit -S -m 'a\\nb'", "echo env; printf '\\c'"):
+    assert not g.env_split_string(c), c
+    assert merge(c, rollup=ok) is None, c
+# claude-skills #132: a command word is matched by basename, so an absolute path is the same command.
+for c in ("/usr/bin/env gh pr merge 1 --admin", "/usr/bin/sudo gh pr merge 1 --admin",
+          "/opt/homebrew/bin/gh pr merge 1 --admin", "sudo /opt/homebrew/bin/gh pr merge 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
 assert merge("env FOO=1 gh pr view 1", rollup=ok) is None
 assert merge("gh pr merge 5 --squash --match-head-commit " + "a" * 40 + " -R owner/repo", rollup=ok) is None
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
