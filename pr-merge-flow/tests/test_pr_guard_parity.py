@@ -23,15 +23,7 @@ TMP = os.path.realpath(tempfile.gettempdir())
 M = "@" + "codex"
 
 # (cmd, cwd) pairs whose block the head may drop, cwd "<tmp>" for a test's temp dir. Each: reason, approval.
-ALLOWED_FLIPS = {
-    **{(f"gh pr comment 1 --body '{M[:k]}\\\n{M[k:]} review'", "<tmp>"):
-       "single quotes keep backslash-newline, so no mention is posted (plan step 3, issue #124, PR #125)"
-       for k in range(1, len(M))},
-    ('gh api -X GET repos/o/r/issues -F labels=@"$LABEL_FILE"', "<tmp>"):
-        "read-only GET posts no comment (plan step 3, issue #124, PR #125)",
-    ('gh api -X GET repos/o/r/issues --input "$B"', "<tmp>"):
-        "read-only GET posts no comment (plan step 3, issue #124, PR #125)",
-}
+ALLOWED_FLIPS = {}
 
 GUARD_FUNCS = ("check", "sync_calls", "merge_calls", "draft_violation", "comment_posts", "codex_mention_post",
                "body_file_block", "polls", "runs_async", "segments", "pr_create_dirs", "walk", "shell_comments",
