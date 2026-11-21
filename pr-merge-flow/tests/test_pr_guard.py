@@ -725,6 +725,16 @@ for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --adm
           "env --split-string='gh\\_pr\\_merge' 1 --admin"):
     assert "--admin" in merge(c, rollup=ok), c
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
+# 1.5.3 (nevar-content #16 review P2): env -S stops reading the string at `\c`, so `gh\c` runs gh.
+for c in ("env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\cjunk' pr merge 1 --admin",
+          "env '-Sgh\\c' pr merge 1 --admin", "env --split-string='gh\\_pr\\c' merge 1 --admin"):
+    assert "--admin" in merge(c, rollup=ok), c
+assert g.wrapped_words("gh\\c x y") == ["gh"]
+# 1.5.3 (#129 review P1): `\\\\c` is an escaped backslash and `'\\c'` is literal in single quotes, so neither ends the string.
+for c in ("env -S 'env X=\\\\c gh pr merge 1 --admin'", "env -S 'env X=\\\\c gh pr merge 1 --auto'",
+          "env -S \"env X='\\c' gh pr merge 1 --admin\""):
+    flag = "--auto" if "--auto" in c else "--admin"
+    assert flag in merge(c, rollup=ok), c
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
 _ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")
 for c in ("env git merge origin/main", "command git merge origin/main", "sudo git pull origin main",
