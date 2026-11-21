@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -94,14 +95,38 @@ def _backup(dest: Path) -> Path:
     raise SystemExit(f"error: 1000 backups of {dest} already exist; clean them up first")
 
 
-def _copy(src: Path, dest: Path, force: bool, skill_root: Path, root: Path) -> bool:
-    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector.
-    Exits 1 before touching anything when dest, or a directory above it, is a symlink or leaves the repo: the
-    exists/is_file/copy2 calls below follow links, so with or without --force they would read or write a path
-    outside the repo (3.2.21)."""
-    problem = _dest_problem(skill_root, root, dest)
+def _check_dest(skill_root: Path, root: Path, dest: Path) -> None:
+    """Exit 1 when `dest`, a FILE destination, may not be written: a symlink or outside-repo path (`_dest_problem`),
+    or an existing directory (a copy onto one lands inside it, through whatever link it holds, 3.2.21)."""
+    problem = _dest_problem(skill_root, root, dest) or ("it is a directory, not a file" if dest.is_dir() else None)
     if problem:
         raise SystemExit(f"error: refusing to write {dest}: {problem}. Nothing was written there.")
+
+
+def _replace_file(src: Path, dest: Path) -> None:
+    """Put src's bytes and mode at dest by writing a freshly created sibling and renaming it over dest. A rename
+    swaps the directory entry, so it never writes through a symlink or into a hardlinked inode that another path
+    (maybe outside the repo) shares. The stdlib has no atomic safe-copy: copy2 writes in place."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{dest.name}.new-", dir=dest.parent)  # O_EXCL: always a new inode
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(src.read_bytes())
+        shutil.copystat(src, tmp)  # mode and times, as copy2 did
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass  # the rename already consumed the temp file, so there is nothing to clean up
+        raise
+
+
+def _copy(src: Path, dest: Path, force: bool, skill_root: Path, root: Path) -> bool:
+    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector.
+    Exits 1 before touching anything when dest, or a directory above it, is a symlink or leaves the repo, or dest
+    is a directory: the exists/is_file calls below follow links, so with or without --force they would read a path
+    outside the repo (3.2.21). The write replaces dest by rename (`_replace_file`), never in place."""
+    _check_dest(skill_root, root, dest)
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
@@ -118,7 +143,7 @@ def _copy(src: Path, dest: Path, force: bool, skill_root: Path, root: Path) -> b
         print(f"already exists: {dest} (pass --force to overwrite)")
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
+    _replace_file(src, dest)
     print(f"wrote {dest}")
     return True
 
@@ -281,6 +306,12 @@ def main() -> int:
             return 1
 
     root = Path.cwd()
+    plan = [(workflow_src, root / ".github" / "workflows" / "review-gate.yml"),  # scripts must live on the default
+            *((src, root / "scripts" / src.name) for src in script_srcs)]       # branch; the workflow loads that ref
+    if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
+        plan.append((doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml"))
+    for _, dest in plan:  # one refusal before the first write, so a later bad destination leaves no earlier one changed
+        _check_dest(skill_root, root, dest)
     detector = root / "scripts" / VENDORED
     if (not force and detector.is_file() and detector.read_bytes() != (skill_root / "scripts" / VENDORED).read_bytes()
             and not _detector_compatible(detector)):
@@ -291,12 +322,8 @@ def main() -> int:
         return 1
     if not refresh_vendored_skill(skill_root, root, force):
         return 1
-    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force, skill_root, root)
-    # Scripts must live on the default branch; the workflow loads only that ref.
-    for src in script_srcs:
-        _copy(src, root / "scripts" / src.name, force, skill_root, root)
-    if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
-        _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force, skill_root, root)
+    for src, dest in plan:
+        _copy(src, dest, force, skill_root, root)
     visibility = repo_visibility(root)
     if visibility == "PUBLIC":
         print(PUBLIC_RUNBOOK)
