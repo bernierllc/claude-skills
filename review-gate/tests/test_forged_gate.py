@@ -578,18 +578,65 @@ class MergeGuardForgedStep(unittest.TestCase):
         self.assertIn("could not list check runs on aaaaaaaaaaaa", msg)
 
 
+# First pr-merge-flow release whose every copy documents the installed-skill command (1.4.2 shipped both).
+COP_DOC_FIXED_IN = (1, 4, 3)
+
+
+def cop_doc_skip_reason(doc_path: Path) -> str | None:
+    """Why the cop-command check cannot apply to this sibling pr-merge-flow, or None to check it.
+
+    Vendored repos carry whatever pr-merge-flow they installed; an older copy predates the
+    documented command and is that repo's upgrade to make, not a review-gate failure.
+    """
+    if not doc_path.exists():
+        return "pr-merge-flow is not installed beside review-gate (vendored layout)"
+    m = re.search(r"^version:\s*(\d+)\.(\d+)\.(\d+)", doc_path.read_text(), re.M)
+    if not m:
+        return "pr-merge-flow SKILL.md carries no version"
+    if tuple(map(int, m.groups())) < COP_DOC_FIXED_IN:
+        return f"vendored pr-merge-flow {'.'.join(m.groups())} predates the documented cop command"
+    return None
+
+
+def assert_cop_doc_uses_installed_skill(tc: unittest.TestCase, doc: str) -> None:
+    runs = [l for l in doc.splitlines() if "python3" in l and "check-forged-review-gate.py" in l]
+    tc.assertTrue(runs)
+    for line in runs:
+        tc.assertIn("python3 ~/.claude/skills/review-gate/scripts/check-forged-review-gate.py", line)
+        tc.assertNotRegex(line, r"python3 (\./)?scripts/")
+
+
 class CopMergeCommand(unittest.TestCase):
     def test_documented_command_never_runs_the_pr_checkout(self):
         # A PR controls its checkout's scripts/, so the cop's merge-time run must use the installed skill.
         doc_path = SKILL.parent / "pr-merge-flow" / "SKILL.md"
-        if not doc_path.exists():
-            self.skipTest("pr-merge-flow is not installed beside review-gate (vendored layout)")
-        doc = doc_path.read_text()
-        runs = [l for l in doc.splitlines() if "python3" in l and "check-forged-review-gate.py" in l]
-        self.assertTrue(runs)
-        for line in runs:
-            self.assertIn("python3 ~/.claude/skills/review-gate/scripts/check-forged-review-gate.py", line)
-            self.assertNotRegex(line, r"python3 (\./)?scripts/")
+        reason = cop_doc_skip_reason(doc_path)
+        if reason:
+            self.skipTest(reason)
+        assert_cop_doc_uses_installed_skill(self, doc_path.read_text())
+
+    def test_absent_or_older_vendored_copy_skips_and_current_passes(self):
+        installed = "python3 ~/.claude/skills/review-gate/scripts/check-forged-review-gate.py --pr 5"
+        docs = {
+            "1.4.1": "---\nversion: 1.4.1\n---\nno cop command yet\n",
+            "1.4.2": "---\nversion: 1.4.2\n---\npython3 scripts/check-forged-review-gate.py --pr 5\n",
+            "1.4.3": f"---\nversion: 1.4.3\n---\n{installed}\n",
+            "1.5.2": f"---\nversion: 1.5.2\n---\n{installed}\n",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIn("not installed", cop_doc_skip_reason(Path(d) / "SKILL.md"))
+            for version, text in docs.items():
+                path = Path(d) / f"{version}.md"
+                path.write_text(text)
+                with self.subTest(version=version):
+                    if version in ("1.4.1", "1.4.2"):
+                        self.assertIn("predates", cop_doc_skip_reason(path))
+                    else:
+                        self.assertIsNone(cop_doc_skip_reason(path))
+                        assert_cop_doc_uses_installed_skill(self, text)
+        # A current copy that regresses to the PR checkout's scripts/ still fails.
+        with self.assertRaises(AssertionError):
+            assert_cop_doc_uses_installed_skill(self, "python3 scripts/check-forged-review-gate.py --pr 5")
 
 
 class InstalledCopies(unittest.TestCase):

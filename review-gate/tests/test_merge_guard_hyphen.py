@@ -99,5 +99,43 @@ class HyphenatedMentions(unittest.TestCase):
                 self.assertEqual(rc, 2, f"not blocked: {cmd}\n{err}")
 
 
+class QuotedMentions(unittest.TestCase):
+    """`gh pr merge` as quoted data for grep or a commit message runs nothing (CS-REVIEW-GATE-FIXES)."""
+
+    def test_data_only_mentions_pass(self):
+        for cmd in ['git commit -m "vendor pr-merge-flow"',
+                    "grep pr merge",
+                    'git commit -m "docs: explain gh pr merge --squash"',
+                    'git add -A && git commit -m "x" -m "never run gh pr merge 5 by hand"',
+                    'grep -rn "gh pr merge" review-gate/SKILL.md',
+                    "cd review-gate && grep -c 'gh pr merge' SKILL.md"]:
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 0, err)
+
+    def test_runnable_forms_still_block(self):
+        for cmd in ['gh pr merge "$@"',
+                    "gh pr merge 12 -R o/r --squash",
+                    'f() { gh pr merge "$@"; }; f 5',
+                    'grep x; gh pr merge 5',
+                    'grep x & gh pr merge 5',
+                    'grep "gh pr merge 5" notes | sh',
+                    'grep -h "gh pr merge 5" notes > run.sh',
+                    'grep x <(gh pr merge 5)',
+                    'git commit -m "$(gh pr merge 5)"',
+                    'git commit -m "`gh pr merge 5`"',
+                    'git -c core.editor=x commit -m "gh pr merge 5"',
+                    'GIT_EDITOR=x git commit -m "gh pr merge 5"',
+                    "alias grep='bash -c'\ngrep 'gh pr merge 5'",
+                    "hash -p /bin/bash grep; grep -c 'gh pr merge 5'",
+                    "grep () { bash -c 'gh pr merge 5'; }; grep x",
+                    "bash -c 'grep x; gh pr merge 5'",
+                    "rg --pre sh 'gh pr merge 5' notes",
+                    "echo 'gh pr merge 5' && grep x"]:
+            with self.subTest(cmd=cmd):
+                rc, err = hook(cmd)
+                self.assertEqual(rc, 2, f"not blocked: {cmd}\n{err}")
+
+
 if __name__ == "__main__":
     unittest.main()

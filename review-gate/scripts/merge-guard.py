@@ -3558,6 +3558,7 @@ def resolve_pr_number(
 def payload_cwd(payload: dict, inp: dict) -> str:
     """AEC puts cwd at the top level; some harnesses nest it under tool_input."""
     for candidate in (
+        inp.get("dir_path"),  # Gemini run_shell_command: the dir the command runs in
         payload.get("cwd"),
         payload.get("working_directory"),
         inp.get("working_directory"),
@@ -3798,7 +3799,68 @@ def check_one(segment: str, cwd: str | None) -> str | None:
         return f"review-gate: gate check failed: {e}"
 
 
+_INERT_UNQUOTED_META = set("(){}|<>\\")
+
+
+def _only_literal_words(cmd: str) -> bool:
+    """True when ``cmd`` has no expansion, substitution, redirect, pipe, group or escape.
+
+    ``$`` and backticks expand even inside double quotes; the rest only matter unquoted.
+    """
+    in_single = in_double = False
+    for c in cmd:
+        if in_single:
+            in_single = c != "'"
+        elif c == "'" and not in_double:
+            in_single = True
+        elif c == '"':
+            in_double = not in_double
+        elif c in "$`":
+            return False
+        elif not in_double and c in _INERT_UNQUOTED_META:
+            return False
+    return not (in_single or in_double)
+
+
+def inert_merge_mention(cmd: str, env: dict[str, str] | None = None) -> bool:
+    """True when ``gh pr merge`` appears only as data to grep / git add / git commit.
+
+    ``git commit -m "… gh pr merge …"`` and ``grep -rn "gh pr merge" .`` run
+    nothing, yet the loose regexes below read them as shell-wrapped merges.
+    Narrow allowlist: every chained segment must be ``cd``, ``grep``/``egrep``/
+    ``fgrep``, or ``git add``/``git commit`` with no leading assignments and no
+    ``git -c``/``-C``; no ``$``/backticks, pipes, redirects, groups or escapes
+    anywhere; and no inherited ``BASH_ENV``/``ENV``/``BASH_FUNC_*`` that could
+    shadow ``grep`` or ``git``. ``rg`` (``--pre``) and ``git grep`` (``-O``) can
+    run programs, so they are not allowlisted.
+    """
+    e = os.environ if env is None else env
+    if (e.get("BASH_ENV") or "").strip() or (e.get("ENV") or "").strip():
+        return False
+    if any(k.startswith("BASH_FUNC_") for k in e):
+        return False
+    if not _only_literal_words(cmd):
+        return False
+    parts = [p for p, _ in split_shell_chains(cmd) if p.strip()]
+    if not parts:
+        return False
+    for part in parts:
+        tokens = _shell_tokens(part)
+        if not tokens:
+            return False
+        head = tokens[0]
+        if head in ("cd", "grep", "egrep", "fgrep"):
+            continue
+        if head == "git" and len(tokens) > 1 and tokens[1] in ("add", "commit"):
+            continue
+        return False
+    return True
+
+
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    # `gh pr merge` quoted as grep / commit-message data runs nothing (CS-REVIEW-GATE-FIXES).
+    if inert_merge_mention(cmd):
+        return None
     # Inspect executable/expanding heredocs before stripping their bodies.
     if executable_heredoc_merge(cmd):
         return (

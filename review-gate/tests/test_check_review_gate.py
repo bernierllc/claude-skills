@@ -1852,6 +1852,8 @@ finally:
 # AEC exposes cwd at the top level of the hook payload
 assert mg.payload_cwd({"cwd": "/tmp/other-checkout"}, {}) == "/tmp/other-checkout"
 assert mg.payload_cwd({}, {"working_directory": "/tmp/nested"}) == "/tmp/nested"
+# Gemini run_shell_command passes its execution dir as tool_input.dir_path; it wins over the session cwd
+assert mg.payload_cwd({"cwd": "/tmp/session"}, {"dir_path": "/tmp/exec"}) == "/tmp/exec"
 assert g.parse_repo("owner/name", cwd="/tmp/ignored") == ("owner", "name")
 
 # check_command must resolve the repo from the Bash tool cwd, not the hook process cwd
