@@ -70,7 +70,22 @@ def stubbed(name, path, cfg):
     return m
 
 
+def in_source_repo():
+    """True only in a claude-skills checkout: the baseline is read from this repo's origin/main history, which a
+    vendored copy (.claude/skills/pr-merge-flow inside another repo, or an install outside git) does not have."""
+    top = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return top.returncode == 0 and Path(top.stdout.strip()).resolve() == REPO.resolve() \
+        and (REPO / "skills-manifest.json").is_file()
+
+
 def main():
+    if not in_source_repo():
+        msg = f"SKIP: {REPO} is not the claude-skills repo root; parity reads that repo's origin/main history"
+        if "pytest" in sys.modules:
+            import pytest
+            pytest.skip(msg)
+        print(msg)
+        return
     t0 = time.monotonic()
     sha, bver = baseline()
     print(f"baseline {sha[:12]} (pr-merge-flow {'.'.join(map(str, bver))})")
