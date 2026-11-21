@@ -5,6 +5,7 @@ Row: https://app.notion.com/p/41a4efecc95a81388f71da096a699f71 (origin: nevar-in
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -289,7 +290,7 @@ class DoctorStrict(unittest.TestCase):
 
 
 class DoctorJob(unittest.TestCase):
-    """3.2.14: install-workflow.py --doctor-job writes an optional CI job running doctor --strict."""
+    """3.2.19: --doctor-job writes a no-clone job that runs the repo's own vendored doctor --strict."""
 
     def test_written_only_on_request(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -299,18 +300,330 @@ class DoctorJob(unittest.TestCase):
             written = (Path(repo) / ".github" / "workflows" / "review-gate-doctor.yml").read_bytes()
             self.assertEqual(written, (SKILL / "templates" / "review-gate-doctor.yml").read_bytes())
 
-    def test_job_runs_strict_from_claude_skills_main_with_no_paths_filter(self):
+    def test_job_clones_nothing_and_runs_the_vendored_doctor_strict(self):
         import yaml
-        wf = yaml.safe_load((SKILL / "templates" / "review-gate-doctor.yml").read_text())
-        on = wf[True]  # YAML 1.1 reads the `on` key as True
-        self.assertEqual(on, "pull_request")  # no paths filter, no branch filter
+        text = (SKILL / "templates" / "review-gate-doctor.yml").read_text()
+        self.assertNotIn("git clone", text)  # 3.2.18 cloned claude-skills main at run time
+        self.assertNotIn("github.com/", text)
+        wf = yaml.safe_load(text)
+        self.assertEqual(wf[True], "pull_request")  # YAML 1.1 reads the `on` key as True
         self.assertEqual(wf["permissions"], {"contents": "read"})
         steps = wf["jobs"]["doctor"]["steps"]
-        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["uses"], "actions/checkout@v7")
+        self.assertEqual(steps[0]["with"], {"persist-credentials": False})
         run = steps[1]["run"]
-        self.assertIn("https://github.com/bernierllc/claude-skills", run)
-        self.assertTrue(run.endswith("/review-gate/scripts/doctor-review-gate.py\" --strict"), run)
+        self.assertIn("python3 .claude/skills/review-gate/scripts/doctor-review-gate.py --strict", run)
         self.assertNotIn("${{", run)  # nothing from the event is interpolated into the shell
+
+    def run_step(self, repo):
+        import yaml
+        run = yaml.safe_load((SKILL / "templates" / "review-gate-doctor.yml").read_text())["jobs"]["doctor"]["steps"][1]["run"]
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
+        env = {**os.environ, "PATH": f"{empty.name}:{os.path.dirname(shutil.which('python3'))}:/usr/bin:/bin"}
+        env.pop("GH_TOKEN", None)
+        return subprocess.run(["bash", "-c", run], cwd=repo, capture_output=True, text=True, env=env)
+
+    def test_step_passes_in_a_repo_with_a_current_vendored_skill(self):
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo)
+            install(repo)
+            proc = self.run_step(repo)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_step_fails_closed_naming_the_fix_without_a_vendored_skill(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            proc = self.run_step(repo)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("::error::", proc.stdout)
+            self.assertIn("aec install skill review-gate", proc.stdout)
+
+
+def skill_version(skill_dir):
+    for line in (Path(skill_dir) / "SKILL.md").read_text().splitlines()[1:]:
+        if line.startswith("version:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError("no version")
+
+
+def one_release_behind(version):
+    major, minor, patch = (int(x) for x in version.split("."))
+    return f"{major}.{minor}.{patch - 1}"
+
+
+def vendor(repo, version=None):
+    """Track a copy of this skill at .claude/skills/review-gate, optionally stamped with an older version."""
+    dest = Path(repo) / ".claude" / "skills" / "review-gate"
+    shutil.copytree(SKILL, dest, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+    if version:
+        current = skill_version(SKILL)
+        for name in ("SKILL.md", "hooks.json"):
+            f = dest / name
+            f.write_text(f.read_text().replace(current, version, 1))
+        (dest / "scripts" / "dropped-in-a-later-release.py").write_text("# only the old copy has this\n")
+    return dest
+
+
+# Runs the real installer with --force and a fault at the swap: just before the staged copy is renamed
+# into place, either SIGKILL the process or make .claude/skills read-only (so that rename and the
+# rename back both fail). An audit hook is the fault point; no installer code is replaced.
+SWAP_FAULT = """
+import os, runpy, signal, sys
+installer, action, parent = sys.argv[1:4]
+def hook(event, args):
+    if event == "os.rename" and ".new-" in os.fsdecode(args[0]):
+        if action == "kill":
+            os.kill(os.getpid(), signal.SIGKILL)
+        os.chmod(parent, 0o555)
+sys.addaudithook(hook)
+sys.argv = [installer, "--force"]
+runpy.run_path(installer, run_name="__main__")
+"""
+
+
+def install_at_swap(repo, action):
+    parent = Path(repo) / ".claude" / "skills"
+    return subprocess.run([sys.executable, "-c", SWAP_FAULT, str(INSTALLER), action, str(parent)],
+                          cwd=repo, capture_output=True, text=True)
+
+
+def tree(d):
+    d = Path(d)
+    return {p.relative_to(d).as_posix(): p.read_bytes() for p in sorted(d.rglob("*"))
+            if p.is_file() and "__pycache__" not in p.parts and not any(x.startswith(".") for x in p.relative_to(d).parts)}
+
+
+class VendoredSkillRefresh(unittest.TestCase):
+    """3.2.19: the tracked .claude/skills/review-gate is refreshed as ONE unit, never file by file."""
+
+    def test_force_replaces_a_copy_one_release_behind_as_a_whole(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            self.assertTrue((dest / "scripts" / "dropped-in-a-later-release.py").is_file())
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(tree(dest), tree(SKILL))  # stale-only file gone, every file current
+            old, new = one_release_behind(skill_version(SKILL)), skill_version(SKILL)
+            self.assertIn(f".claude/skills/review-gate ({old} -> {new}); commit the whole directory", proc.stdout)
+
+    def test_without_force_a_stale_copy_is_left_whole_and_named(self):
+        with tempfile.TemporaryDirectory() as repo:
+            old = one_release_behind(skill_version(SKILL))
+            dest = vendor(repo, old)
+            before = tree(dest)
+            proc = install(repo)
+            self.assertEqual(tree(dest), before)
+            self.assertIn(f".claude/skills/review-gate is {old}", proc.stdout)
+            self.assertIn("--force", proc.stdout)
+
+    def test_a_current_or_newer_copy_is_never_touched(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, "99.0.0")
+            before = tree(dest)
+            install(repo, "--force")
+            self.assertEqual(tree(dest), before)
+
+    def test_force_repairs_an_equal_version_whose_hooks_json_disagrees(self):
+        # #138 P2: the doctor names --force as the fix for this; equal SKILL.md versions must not stop it
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            hooks = dest / "hooks.json"
+            hooks.write_text(hooks.read_text().replace(skill_version(SKILL), one_release_behind(skill_version(SKILL)), 1))
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(tree(dest), tree(SKILL))
+
+    def test_an_unparseable_vendored_version_is_refused_and_named_never_replaced(self):
+        # #138 P2: a prerelease or garbled version is not "older"; nothing is deleted and the exit says why
+        for bad in ("3.2.20-rc.1", "3..20"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as repo:
+                dest = vendor(repo, bad)
+                (dest / "untracked-local-notes.md").write_text("keep me\n")
+                before = tree(dest)
+                proc = install(repo, "--force")
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn(f"unparseable version {bad!r}", proc.stderr)
+                self.assertEqual(tree(dest), before)
+
+    def test_a_failed_copy_leaves_the_old_tree_and_its_untracked_files_intact(self):
+        # #138 P1: the old copy is only moved aside once the complete replacement exists
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            src = Path(tmp) / "review-gate"
+            shutil.copytree(SKILL, src, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            (src / "scripts" / "dangling.py").symlink_to(Path(tmp) / "missing-target.py")  # copytree cannot copy it
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            (dest / "untracked-local-notes.md").write_text("keep me\n")
+            before = tree(dest)
+            proc = subprocess.run([sys.executable, str(src / "scripts" / "install-workflow.py"), "--force"],
+                                  cwd=repo, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertEqual(tree(dest), before)
+            self.assertIn("could not copy", proc.stderr)
+            self.assertEqual([p.name for p in dest.parent.iterdir()], ["review-gate"])  # no temp dir left behind
+
+    def test_a_refresh_killed_between_the_renames_is_recovered_by_the_next_run(self):
+        # #138 P1 round 2: SIGKILL after the old copy moved aside and before the new one moved in
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            killed = install_at_swap(repo, "kill")
+            self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stdout + killed.stderr)
+            self.assertFalse(dest.exists())  # the window under test
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("recovered", proc.stdout)
+            self.assertEqual(tree(dest), tree(SKILL))
+            self.assertFalse(dest.with_name("review-gate.old").exists())
+
+    def test_a_leftover_backup_beside_a_present_copy_is_refused_and_both_survive(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            backup = shutil.copytree(dest, dest.with_name("review-gate.old"))
+            before = tree(dest)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("review-gate.old is left from an earlier refresh", proc.stderr)
+            self.assertEqual((tree(dest), tree(backup)), (before, before))
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes into a read-only directory")
+    def test_a_failed_rollback_says_the_copy_is_absent_and_names_the_backup(self):
+        # #138 P1 round 2: never "unchanged" when neither rename back worked
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo, one_release_behind(skill_version(SKILL)))
+            try:
+                proc = install_at_swap(repo, "readonly")
+            finally:
+                dest.parent.chmod(0o755)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertNotIn("unchanged", proc.stderr)
+            self.assertIn("ABSENT", proc.stderr)
+            self.assertRegex(proc.stderr, r"mv \S+/review-gate\.old \S+/review-gate\b")
+            self.assertFalse(dest.exists())
+            self.assertTrue(dest.with_name("review-gate.old").is_dir())
+
+    def test_a_symlinked_skills_parent_is_refused_and_the_external_copy_survives(self):
+        # #138 P1: a shared install reached through .claude/skills -> elsewhere must never be deleted
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            (external / "untracked-local-notes.md").write_text("keep me\n")
+            before = tree(external)
+            (Path(repo) / ".claude").mkdir()
+            (Path(repo) / ".claude" / "skills").symlink_to(external.parent)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_a_symlinked_vendored_copy_is_refused_and_its_target_survives(self):
+        with tempfile.TemporaryDirectory() as shared, tempfile.TemporaryDirectory() as repo:
+            external = vendor(shared, one_release_behind(skill_version(SKILL)))
+            before = tree(external)
+            (Path(repo) / ".claude" / "skills").mkdir(parents=True)
+            (Path(repo) / ".claude" / "skills" / "review-gate").symlink_to(external)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("refusing to replace", proc.stderr)
+            self.assertEqual(tree(external), before)
+
+    def test_overlapping_source_and_destination_are_refused(self):
+        # #138 P1: replacing a tree that contains the installer's own skill (or sits inside it) destroys the source
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = vendor(Path(tmp) / "repo", one_release_behind(skill_version(SKILL)))
+            inner = outer / "nested" / "review-gate"  # dest contains source
+            shutil.copytree(SKILL, inner, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            src_holder = Path(tmp) / "skill" / "review-gate"  # source contains dest
+            shutil.copytree(SKILL, src_holder, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+            nested_repo = src_holder / "consumer"
+            vendor(nested_repo, one_release_behind(skill_version(SKILL)))
+            for installer, repo in ((inner, Path(tmp) / "repo"), (src_holder, nested_repo)):
+                with self.subTest(repo=str(repo)):
+                    dest = repo / ".claude" / "skills" / "review-gate"
+                    before = tree(dest)
+                    proc = subprocess.run([sys.executable, str(installer / "scripts" / "install-workflow.py"), "--force"],
+                                          cwd=repo, capture_output=True, text=True)
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("refusing to replace", proc.stderr)
+                    self.assertEqual(tree(dest), before)
+
+
+class DoctorVersionParity(unittest.TestCase):
+    """3.2.19: doctor FAILS when the vendored skill is older than the release it runs from."""
+
+    def no_gh(self):
+        self._path = tempfile.TemporaryDirectory()
+        self.addCleanup(self._path.cleanup)
+        return {**os.environ, "PATH": self._path.name}
+
+    def test_vendored_copy_one_release_behind_fails_without_strict_and_prints_the_fix(self):
+        with tempfile.TemporaryDirectory() as repo:
+            old = one_release_behind(skill_version(SKILL))
+            vendor(repo, old)
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn(f"FAIL .claude/skills/review-gate is {old}, this release is {skill_version(SKILL)}", proc.stdout)
+            self.assertIn(f"python3 {SKILL / 'scripts' / 'install-workflow.py'} --force", proc.stdout)
+
+    def test_hooks_json_disagreeing_with_skill_md_fails(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            hooks = dest / "hooks.json"
+            hooks.write_text(hooks.read_text().replace(skill_version(SKILL), one_release_behind(skill_version(SKILL)), 1))
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("FAIL .claude/skills/review-gate/hooks.json", proc.stdout)
+
+    def test_unparseable_vendored_version_fails_naming_it_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo, "3..20")
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("FAIL unparseable version '3..20'", proc.stdout)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_current_vendored_copy_passes(self):
+        with tempfile.TemporaryDirectory() as repo:
+            vendor(repo)
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh(), "--strict")
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn(f"OK vendored skill .claude/skills/review-gate {skill_version(SKILL)}", proc.stdout)
+
+    def test_doctor_names_the_rerun_command(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install(repo)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertIn("does not re-run when a thread is resolved or a review lands", proc.stdout)
+            self.assertIn("gh pr edit <n> --remove-label review:high && gh pr edit <n> --add-label review:high",
+                          proc.stdout)
+
+
+class PublicRepoRunbook(unittest.TestCase):
+    """3.2.19: installing into a PUBLIC repo prints the Actions-policy runbook (Dec 2, 2026)."""
+
+    def install_with_gh(self, visibility):
+        stub_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(stub_dir.cleanup)
+        gh = Path(stub_dir.name) / "gh"  # third-party CLI stub: answers `gh repo view --json visibility`
+        gh.write_text(f"#!/bin/sh\necho {visibility}\n")
+        gh.chmod(0o755)
+        repo = tempfile.TemporaryDirectory()
+        self.addCleanup(repo.cleanup)
+        env = {**os.environ, "PATH": f"{stub_dir.name}:{os.environ['PATH']}"}
+        return subprocess.run([sys.executable, str(INSTALLER)], cwd=repo.name, capture_output=True, text=True, env=env)
+
+    def test_public_repo_prints_the_allowlist_runbook(self):
+        out = self.install_with_gh("PUBLIC").stdout
+        self.assertIn("PUBLIC repo", out)
+        self.assertIn("pull_request_target", out)
+        self.assertIn(".github/workflows/review-gate.yml", out)
+        self.assertIn("<owner>/<repo>", out)
+        self.assertIn("Review Gate - PR #<n>", out)
+
+    def test_private_repo_prints_no_runbook(self):
+        self.assertNotIn("PUBLIC repo", self.install_with_gh("PRIVATE").stdout)
 
 
 if __name__ == "__main__":

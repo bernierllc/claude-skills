@@ -479,7 +479,8 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
             continue
         problems.append(
             f"PR body line {n}: {_prose_offence(line)}; in ## Review every line must be plain prose (starting "
-            "with a letter or digit, no list marker, none of ` < > | [ ] ( ) * _ ~ $)"
+            "with a letter or digit, no list marker, none of ` < > | [ ] ( ) * _ ~ $); code spans, links, lists "
+            "and the generated footer go under a later ## Notes heading"
         )
     return region, problems
 
@@ -585,6 +586,16 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def rerun_hint(repo: str, number: int, base: str) -> str:
+    """The gate has no thread-resolved or review trigger (see the workflow), so say how to re-fire it.
+    Into main the label must end present, so remove then add; elsewhere add then remove."""
+    remove = f"gh pr edit {number} -R {repo} --remove-label review:high"
+    add = f"gh pr edit {number} -R {repo} --add-label review:high"
+    cmd = f"{remove} && {add}" if base == "main" else f"{add} && {remove}"
+    return ("Review Gate does not re-run when a thread is resolved or a review lands. "
+            f"After fixing the above, re-fire it: {cmd}")
+
+
 def main(argv: list[str]) -> int:
     repo = None
     number = None
@@ -620,6 +631,7 @@ def main(argv: list[str]) -> int:
         print("review-gate failed:")
         for r in reasons:
             print(f"- {r}")
+        print(rerun_hint(f"{owner}/{name}", number, pr.get("baseRefName") or ""))
         return 1
     print("review-gate ok")
     return 0

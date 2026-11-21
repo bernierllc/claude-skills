@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
+import re
+import shlex
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -111,6 +116,146 @@ def _copy(src: Path, dest: Path, force: bool) -> bool:
     return True
 
 
+VENDORED_SKILL = Path(".claude") / "skills" / "review-gate"  # a repo-tracked copy of this skill (aec project install)
+
+
+def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
+    """The SKILL.md frontmatter version as an int tuple; None when SKILL.md or its version line is missing.
+    Raises ValueError for anything but dotted digits (a prerelease, `3..20`): unknown is never "older"."""
+    try:
+        m = re.search(r"\A---\n(?:.*\n)*?version:[ \t]*(.*?)[ \t]*\n", (skill_dir / "SKILL.md").read_text())
+    except OSError:
+        return None
+    if m and not re.fullmatch(r"\d+(\.\d+)*", m.group(1)):
+        raise ValueError(f"unparseable version {m.group(1)!r} in {skill_dir / 'SKILL.md'}")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def hooks_version(skill_dir: Path) -> str:
+    try:
+        return str(json.loads((skill_dir / "hooks.json").read_text()).get("version"))
+    except (OSError, ValueError, AttributeError) as e:
+        return f"unreadable ({e})"
+
+
+def dotted(version: tuple[int, ...] | None) -> str:
+    return ".".join(map(str, version)) if version else "unknown"
+
+
+def _replace_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
+    """Why `dest` may not be deleted, mirroring aec's install chokepoint (aec/lib/filesystem.py
+    check_install_paths + confine.escapes, and remove_installed_item's never-delete-the-source guard): no
+    symlink from below the repo root down to dest (stricter than aec for dest itself: a vendored copy is a
+    tracked directory, so a link there is refused, not replaced), dest inside the repo, no source overlap."""
+    node = root
+    for part in dest.relative_to(root).parts:
+        node = node / part
+        if node.is_symlink():
+            return f"{node} is a symlink, so the copy it reaches is not this repo's"
+    real, src = dest.resolve(), skill_root.resolve()
+    if root.resolve() not in real.parents:
+        return f"{real} is outside {root.resolve()}"
+    if src in real.parents or real in src.parents:
+        return f"it overlaps this installer's own skill at {src}"
+    return None
+
+
+def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
+    """Replace an OLDER repo-tracked copy of this skill as one unit, the way `aec install skill` does, so no
+    file from an old release is left beside new ones. The old tree is moved aside only once the complete new
+    one exists, and is restored if the swap fails; a run cut off mid-swap is undone by the next run. False (with
+    the reason on stderr) when it refused or failed."""
+    dest = root / VENDORED_SKILL
+    backup = dest.with_name(dest.name + ".old")  # a fixed name, so the next run finds a swap that was cut off
+    if backup.exists() or backup.is_symlink():
+        problem = "it is a symlink" if backup.is_symlink() else _replace_problem(skill_root, root, dest)
+        if problem or dest.exists() or dest.is_symlink():
+            # refuse rather than delete: fewer lines than a guarded delete, and it may hold the only local edits
+            print(f"error: {backup} is left from an earlier refresh{f' ({problem})' if problem else ''}; keep the "
+                  f"right copy at {dest}, delete the other, then rerun. Nothing was changed.", file=sys.stderr)
+            return False
+        backup.rename(dest)
+        print(f"recovered {dest} from {backup}, left by an interrupted refresh")
+    if not dest.is_dir() or dest.resolve() == skill_root:
+        return True
+    try:
+        have, want = skill_version(dest), skill_version(skill_root)
+    except ValueError as e:
+        print(f"error: {e}; not replacing {dest}. Fix the version line or replace the copy by hand.", file=sys.stderr)
+        return False
+    if want is None or have is None:
+        print(f"error: cannot read the version of {dest if have is None else skill_root}; not replacing it",
+              file=sys.stderr)
+        return False
+    if have > want or (have == want and hooks_version(dest) == dotted(have)):
+        return True  # current or newer: never downgrade a copy someone vendored on purpose
+    if not force:
+        print(f"stale: {VENDORED_SKILL} is {dotted(have)} (hooks.json {hooks_version(dest)}), this release is "
+              f"{dotted(want)}; pass --force to replace the whole directory")
+        return True
+    # Check-then-use: valid for a trusted, static filesystem under the repo root. The staging and backup names
+    # below are fixed siblings of this confined dest, so they are covered by the same check.
+    problem = _replace_problem(skill_root, root, dest)
+    if problem:
+        print(f"error: refusing to replace {dest}: {problem}. Nothing was deleted.", file=sys.stderr)
+        return False
+    new = Path(tempfile.mkdtemp(prefix=f".{dest.name}.new-", dir=dest.parent))
+    try:
+        shutil.copytree(skill_root, new, ignore=shutil.ignore_patterns(".*", "__pycache__"), dirs_exist_ok=True)
+    except (OSError, shutil.Error) as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own partial temp copy; the old tree was never touched
+        print(f"error: could not copy {skill_root} ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        dest.rename(backup)
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy; dest was never moved
+        print(f"error: could not move {dest} aside ({e}); it is unchanged", file=sys.stderr)
+        return False
+    try:
+        new.rename(dest)
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy
+        try:
+            backup.rename(dest)
+        except OSError as e2:
+            print(f"error: could not swap in the new copy ({e}) or move the old one back ({e2}); {dest} is ABSENT and "
+                  f"the old copy is at {backup}. Restore it: mv {shlex.quote(str(backup))} {shlex.quote(str(dest))} "
+                  "(the next run of this installer also does that)", file=sys.stderr)
+            return False
+        print(f"error: could not swap in the new copy ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        shutil.rmtree(backup)
+    except OSError as e:
+        print(f"refreshed {dest}, but the old copy is kept at {backup} ({e}); delete it before committing",
+              file=sys.stderr)
+    print(f"refreshed {dest} ({dotted(have)} -> {dotted(want)}); commit the whole directory")
+    return True
+
+
+PUBLIC_RUNBOOK = """\
+PUBLIC repo: GitHub's Actions event policy (Dec 2, 2026) blocks pull_request_target in public repos by
+default, and Review Gate runs on pull_request_target. Before requiring it:
+  1. In the org or repo Actions policy (Settings > Actions), allow .github/workflows/review-gate.yml to
+     run on pull_request_target for <owner>/<repo>.
+  2. Open a test PR and confirm a 'Review Gate - PR #<n>' run appears.
+  3. Only then add 'Review Gate' as a required status check."""
+
+
+def repo_visibility(root: Path) -> str | None:
+    """PUBLIC / PRIVATE / INTERNAL from gh, or None when gh is missing or cannot tell."""
+    if shutil.which("gh") is None:
+        return None
+    try:
+        out = subprocess.run(["gh", "repo", "view", "--json", "visibility", "-q", ".visibility"], cwd=root,
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"could not read repo visibility ({e})", file=sys.stderr)
+        return None
+    return out.stdout.strip().upper() or None if out.returncode == 0 else None
+
+
 def main() -> int:
     skill_root = Path(__file__).resolve().parents[1]
     force = "--force" in sys.argv
@@ -131,12 +276,19 @@ def main() -> int:
               "(your copy is backed up), or update it from the newest agents-environment-config.",
               file=sys.stderr)
         return 1
+    if not refresh_vendored_skill(skill_root, root, force):
+        return 1
     _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
     # Scripts must live on the default branch; the workflow loads only that ref.
     for src in script_srcs:
         _copy(src, root / "scripts" / src.name, force)
     if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
         _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force)
+    visibility = repo_visibility(root)
+    if visibility == "PUBLIC":
+        print(PUBLIC_RUNBOOK)
+    elif visibility is None:
+        print("Could not read this repo's visibility with gh. If it is public:\n" + PUBLIC_RUNBOOK)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0
