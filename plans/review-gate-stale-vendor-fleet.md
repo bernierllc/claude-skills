@@ -10,7 +10,7 @@ Status: planned. Owner: the cop of each repo named below (re-vendor); the claude
 
 The guard is not the defect. nevar-secrets installed review-gate on 2026-11-15 from the pre-3.2.8 template. That template has `concurrency: cancel-in-progress: true` and POSTs check runs, so every new push or body edit cancels the previous run, and a cancelled run is a failed required check.
 
-The incumbent already fixes this. Since review-gate 3.2.8 the template has no `concurrency:` group on purpose (its comment cites nevar-fund #27), and the job named `Review Gate` is itself the check; nothing is POSTed. The defect is stale vendoring: `install-workflow.py` copies the workflow into each repo once, and nothing tells a repo when its copy has fallen behind the skill.
+The incumbent already fixes this, in two steps. review-gate 3.2.8 made the job named `Review Gate` the check (nothing is POSTed) but kept the `concurrency:` group. review-gate 3.2.10 (bce2e9c) removed the group on purpose; the template comment cites nevar-fund #27. A repo on a 3.2.8 or 3.2.9 copy therefore has the job-shaped check and can still cancel runs (nevar-logs is one), so "already on 3.2.8" does not mean fixed. The defect is stale vendoring: `install-workflow.py` copies the workflow into each repo once, and nothing tells a repo when its copy has fallen behind the skill.
 
 ## Measured 2026-11-20
 
@@ -23,13 +23,15 @@ Re-measure before each re-vendor PR; the list is a snapshot, not a contract.
 ## Fix
 
 1. Re-vendor review-gate 3.2.14 in each listed repo with `install-workflow.py --force`, one PR per repo, handled by that repo's traffic cop. nevar-secrets goes first because it is the repo that hit the false blocks. `agents-environment-config` and `agency-agents` are handled by the aec cop.
-2. A guard so stale vendoring cannot go unseen again. Use the incumbent `install-workflow.py --doctor-job`, which writes the optional `review-gate-doctor.yml`. It runs `doctor-review-gate.py --strict` on each PR and fails when the repo's `review-gate.yml` or a vendored `scripts/` file is missing or differs from the skill on claude-skills main. It is not a required check (making it one is each repo owner's branch-protection decision) and costs one job of about 10 s per push, billed on private repos. Each re-vendor PR turns it on. A repo that does not want the job can instead be covered by a fleet check that lists repos whose workflow differs from the template.
+2. A guard so stale vendoring cannot go unseen again. Use the incumbent `install-workflow.py --doctor-job`, which writes the optional `review-gate-doctor.yml`. It runs `doctor-review-gate.py --strict` on each PR and fails when the repo's `review-gate.yml` or a vendored `scripts/` file is missing or differs from the skill on claude-skills main. It is not a required check (making it one is each repo owner's branch-protection decision) and costs one job of about 10 s per push, billed on private repos. Each re-vendor PR in this rollout turns it on; no repo opts out, because the repo has no fleet check and none is proposed here. A repo that cannot take the job needs a separate plan that names a command, a schedule and a maintainer for recurring drift coverage.
+
+Bootstrap order: `pull_request_target` runs the workflow from the default branch, so the re-vendor PR itself is judged by the old copy, and body edits or label events on it can leave a cancelled newest run. Follow "Migrating to 3.2.8" in `review-gate/SKILL.md` for that PR (re-run the newest run by hand if it is cancelled). The first PR opened after the merge exercises the new copy; that PR must show a successful newest `Review Gate` run after a body edit and a label event, and that is recorded on the repo's Tracker row.
 3. No new script: the re-vendor and the doctor job are both `install-workflow.py` features. Anything added beyond them must say why the incumbent was not enough.
 
 ## Done when
 
-- None of the repos above has `cancel-in-progress: true` in its default-branch `review-gate.yml` (check with `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate.yml`).
-- Each repo runs the doctor job, or is listed in the fleet check's output as matching the template.
+- None of the repos above has `cancel-in-progress: true` in its default-branch `review-gate.yml`. The Contents API returns the file base64-encoded, so decode it: `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate.yml --jq .content | base64 -d | grep -c cancel-in-progress` must print 0, and a retrieval or decode error counts as a failure, not a pass. This only proves the concurrency group is gone; freshness is proved by the doctor job below.
+- Each repo runs the doctor job and its newest run on the default branch is green, meaning the workflow and the vendored scripts match the skill.
 - A cancelled or superseded `Review Gate` run no longer blocks a PR in any of them.
 
 ## Owners and routing
