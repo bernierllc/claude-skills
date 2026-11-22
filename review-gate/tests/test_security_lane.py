@@ -4,12 +4,16 @@ Each trust check a-f in the script's docstring has a test here that fails when t
 The lane runs against a fake `gh` (test_forged_gate.FAKE_GH), so no network and no real repo.
 """
 import copy
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+import yaml
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,6 +21,10 @@ import test_forged_gate  # noqa: E402  (its TestCases stay out of this module's 
 from test_forged_gate import FAKE_GH, HEAD_SHA, PROVENANCE, SCRIPTS, run_heads  # noqa: E402
 
 LANE = SCRIPTS / "check-security-scan.py"
+_spec = importlib.util.spec_from_file_location("check_security_scan", LANE)
+lane_module = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(lane_module)
+NOW = "2099-01-01T12:00:00+00:00"  # SECURITY_LANE_NOW: the lane's clock, moved forward past every fixture date
+DONE = "2099-01-01T11:00:00Z"  # a scan that completed an hour before NOW
 SCAN_RUN = ".github/workflows/review-gate-security-scan.yml\tpull_request_target"
 TREE = "b" * 40  # the default branch's .github/security-scan tree
 PR_TREE = "d" * 40  # the same directory as the PR head has it
@@ -24,29 +32,45 @@ ENABLED = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40},
            {"name": "review-gate-security-scan.yml", "type": "file", "sha": "1" * 40}]
 # 3.3.1: a repo's OWN workflow that happens to be named security-scan.yml (mbernier.com has one) is not the marker
 OWN_SCAN = [ENABLED[0], {"name": "security-scan.yml", "type": "file", "sha": "2" * 40}]
+# main's policy revision as the fake serves it: review-gate.yml listed, scripts/ empty, .claude/ absent
+POLICY = lane_module._revision({".github/workflows/review-gate.yml": "0" * 40})
 
 
 def scan(run_id=700, job_id=None, conclusion="success", status="completed", head=HEAD_SHA,
-         started="2026-11-20T10:01:00Z", slug="github-actions", annotations=1):
+         started="2026-11-20T10:01:00Z", slug="github-actions", annotations=1, completed=DONE):
     job_id = job_id or 8000 + run_id
     return {"id": 8000 + run_id, "name": "Security Scan", "app": {"slug": slug}, "head_sha": head, "status": status,
-            "conclusion": conclusion, "started_at": started, "output": {"annotations_count": annotations},
+            "conclusion": conclusion, "started_at": started, "completed_at": completed, "output": {"annotations_count": annotations},
             "details_url": f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id}"}
 
 
-def note(outcome="passed", tree=TREE):
+def note(outcome="passed", tree=TREE, **over):
+    """The scan's one notice; `over` replaces a freshness field (pr, head, base-ref, workflow, policy, exceptions-until)."""
+    fields = {"pr": "7", "head": HEAD_SHA, "base-ref": "main", "workflow": "1" * 40, "policy": POLICY,
+              "exceptions-until": "none", **{k.replace("_", "-"): v for k, v in over.items()}}
     return {"title": "security-scan", "annotation_level": "notice", "path": ".github",
-            "message": f"outcome={outcome} config-tree={tree}"}
+            "message": f"outcome={outcome} config-tree={tree} " + " ".join(f"{k}={v}" for k, v in fields.items())}
+
+
+MAIN_SHA = "c" * 40  # the default branch commit a dispatched re-scan ran
+GATE_RUN_SHA = "9" * 40  # GITHUB_WORKFLOW_SHA of the gate run; the fake serves review-gate.yml there as main's blob
+
+
+def dispatch_run(run_id=710, pr=7, head=HEAD_SHA, branch="main", path=SCAN_RUN.split("\t")[0],
+                 event="workflow_dispatch", sha=MAIN_SHA):
+    """A Security Refresh re-scan: the default branch's scan workflow, titled for PR `pr` @ `head`."""
+    return {"id": run_id, "path": path, "event": event, "head_branch": branch, "head_sha": sha,
+            "display_title": lane_module.RUN_TITLE.format(pr=pr, head=head)}
 
 
 def job_of(check, **over):
     """The Actions job GitHub lists for a scanner check run: same id, its run, bound by check_run_url."""
     return {"id": check["id"], "run_id": int(check["details_url"].split("/runs/")[1].split("/")[0]),
             "check_run_url": f"https://api.github.com/repos/o/r/check-runs/{check['id']}",
-            **{k: check.get(k) for k in ("status", "conclusion", "started_at", "head_sha")}, **over}
+            **{k: check.get(k) for k in ("status", "conclusion", "started_at", "completed_at", "head_sha")}, **over}
 
 
-def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=None, jobs=None):
+def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=None, jobs=None, dispatch=()):
     checks = [scan()] if checks is None else checks
     listed = {rid: [] for rid in {"700": 0, **(runs or {})}}
     for c in checks:
@@ -54,7 +78,7 @@ def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=No
             listed.setdefault(str(job_of(c)["run_id"]), []).append(job_of(c))
     base = copy.deepcopy(PROVENANCE)
     base["pull"]["body"] = body
-    return {**base, "scripts": {}, "check_runs": checks,
+    return {**base, "scripts": {}, "check_runs": checks, "dispatch_runs": list(dispatch),
             "runs": {"700": SCAN_RUN, **(runs or {})},
             "run_heads": {"700": run_heads(), **(heads or {})},
             "jobs": {**listed, **(jobs or {})},
@@ -69,15 +93,18 @@ def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=No
                          **(contents or {})}}
 
 
-def lane(fix, sha=HEAD_SHA):
+def lane(fix, sha=HEAD_SHA, args=(), **env_over):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         bindir = tmp / "bin"; bindir.mkdir()
         (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
         (tmp / "fixture.json").write_text(json.dumps(fix))
         env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
-                   PR_NUMBER="7", REPO="o/r", SHA=sha, DEFAULT_BRANCH="main")
-        proc = subprocess.run([sys.executable, "-I", str(LANE)], capture_output=True, text=True, env=env)
+                   PR_NUMBER="7", REPO="o/r", SHA=sha, DEFAULT_BRANCH="main",
+                   **{"SECURITY_LANE_NOW": NOW, "GITHUB_ACTIONS": "true", "GITHUB_WORKFLOW_SHA": GATE_RUN_SHA, **env_over})
+        proc = subprocess.run([sys.executable, "-I", str(LANE), *args], capture_output=True, text=True, env=env)
+        posts = tmp / "posts.log"
+        lane.posts = posts.read_text().splitlines() if posts.exists() else []
         return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -158,7 +185,7 @@ class TrustChecks(unittest.TestCase):
     def test_c_scan_on_another_sha_is_rejected(self):
         rc, out = lane(fixture(checks=[scan(head="e" * 40)]))
         self.assertEqual(rc, 1, out)
-        self.assertIn("not the PR head", out)
+        self.assertIn("not its run's head", out)
 
     def test_c_moved_pr_head_exits_2(self):
         rc, out = lane(fixture(), sha="f" * 40)
@@ -218,7 +245,7 @@ class TrustChecks(unittest.TestCase):
     def test_d_no_scan_yet_is_incomplete(self):
         rc, out = lane(fixture(checks=[]))
         self.assertEqual(rc, 1, out)
-        self.assertIn("re-fire Review Gate", out)
+        self.assertIn("Review Gate re-runs", out)
 
     # (e) digest: the scan must have used the default branch's current config tree
     def test_e_stale_config_tree_is_rejected(self):
@@ -357,10 +384,15 @@ class GateWiring(unittest.TestCase):
         self.assertTrue(any("contents/scripts/check-security-scan.py?ref=main" in c for c in self.calls), self.calls)
 
     def test_lane_pass_keeps_the_gate_green(self):
-        fix = fixture()
-        rc, out = self.gate([scan()], runs={"700": SCAN_RUN}, fixture={
-            "contents": fix["contents"], "annotations": fix["annotations"], "jobs": fix["jobs"],
-            "run_heads": {"600": run_heads(), "700": run_heads()}})
+        # the gate lists its four trusted scripts (sha 5...), so main's policy revision includes them
+        scripts = ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py", "check-security-scan.py")
+        policy = lane_module._revision({".github/workflows/review-gate.yml": "0" * 40,
+                                        **{f"scripts/{n}": "5" * 40 for n in scripts}})
+        fix = fixture(notes={8700: [note(policy=policy)]})
+        with mock.patch.dict(os.environ, SECURITY_LANE_NOW=NOW):
+            rc, out = self.gate([scan()], runs={"700": SCAN_RUN}, fixture={
+                "contents": fix["contents"], "annotations": fix["annotations"], "jobs": fix["jobs"],
+                "run_heads": {"600": run_heads(), "700": run_heads()}})
         self.assertEqual(rc, 0, out)
         self.assertIn("security lane ok", out)
 
@@ -403,6 +435,434 @@ class GateWiring(unittest.TestCase):
                 rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {".github/workflows?ref=main": body}})
                 self.assertEqual(rc, 1, out)
                 self.assertIn("to decide the security lane", out)
+
+
+class Freshness(unittest.TestCase):
+    """(g) a scan stands only for this PR's current head and base and main's current workflow and policy."""
+
+    def stale(self, fix, why):
+        rc, out = lane(fix)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("is stale", out)
+        self.assertIn(why, out)
+        self.assertIn("Security Refresh", out)
+
+    def test_each_notice_field_must_match(self):
+        for over, why in (({"pr": "8"}, "scanned PR #8"), ({"head": "e" * 40}, "@ eeeeeeeeeeee"),
+                          ({"base_ref": "staging"}, "now targets 'main'"), ({"workflow": "3" * 40}, "scan workflow blob"),
+                          ({"policy": "0" * 64}, "policy revision")):
+            with self.subTest(over=over):
+                self.stale(fixture(notes={8700: [note(**over)]}), why)
+
+    def test_a_policy_change_on_main_makes_the_scan_stale(self):
+        fix = fixture(); fix["scripts"] = {"check-security-scan.py": str(LANE)}  # main now lists the lane script
+        self.stale(fix, "policy revision")
+        guard = {".claude/skills/review-gate/scripts?ref=main": [{"name": "merge-guard.py", "type": "file", "sha": "6" * 40}]}
+        self.stale(fixture(contents=guard), "policy revision")
+
+    def test_a_scan_workflow_change_on_main_makes_the_scan_stale(self):
+        moved = [ENABLED[0], {**ENABLED[1], "sha": "4" * 40}]
+        self.stale(fixture(contents={".github/workflows?ref=main": moved}), "scan workflow blob")
+
+    def test_an_expired_exception_makes_the_scan_stale(self):
+        self.stale(fixture(notes={8700: [note(exceptions_until="2098-12-31")]}), "expired after 2098-12-31")
+        self.assertEqual(lane(fixture(notes={8700: [note(exceptions_until="2099-01-01")]}))[0], 0)
+
+    def test_the_clock_only_moves_forward(self):
+        # a past SECURITY_LANE_NOW cannot revive an exception that expired before today
+        rc, out = lane(fixture(notes={8700: [note(exceptions_until="2026-01-01")]}),
+                       SECURITY_LANE_NOW="2000-01-01T00:00:00+00:00")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("expired after 2026-01-01", out)
+
+    def test_a_naive_clock_override_exits_2(self):
+        self.assertEqual(lane(fixture(), SECURITY_LANE_NOW="2099-01-01T12:00:00")[0], 2)
+
+    def test_a_scan_older_than_max_age_is_stale(self):
+        self.stale(fixture(checks=[scan(completed="2098-12-30T23:59:59Z")]), "more than 36 h ago")
+        self.assertEqual(lane(fixture(checks=[scan(completed="2098-12-31T00:00:01Z")]))[0], 0)
+
+    def test_a_completed_at_without_timezone_is_stale(self):
+        self.stale(fixture(checks=[scan(completed="2099-01-01T11:00:00")]), "more than 36 h ago")
+
+    def test_a_pre_3_4_notice_says_re_vendor(self):
+        old = {**note(), "message": f"outcome=passed config-tree={TREE}"}
+        rc, out = lane(fixture(notes={8700: [old]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("re-vendor nevar-security-review's scan template", out)
+
+    def test_extra_notice_text_is_malformed(self):
+        bad = {**note(), "message": note()["message"] + " outcome=passed"}
+        rc, out = lane(fixture(notes={8700: [bad]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("malformed", out)
+
+
+class DispatchRescan(unittest.TestCase):
+    """The Security Refresh re-scan: a workflow_dispatch run of main's scan workflow, titled for this PR and head."""
+
+    def rescan(self, run=None, **scan_over):
+        check = scan(710, head=MAIN_SHA, started="2026-11-21T10:00:00Z", **scan_over)
+        return check, fixture(checks=[scan(), check], dispatch=[run or dispatch_run()],
+                              notes={8700: [note(policy="0" * 64)], 8710: [note()]})
+
+    def test_a_fresh_rescan_supersedes_a_stale_scan(self):
+        rc, out = lane(fixture(notes={8700: [note(policy="0" * 64)]}))
+        self.assertEqual(rc, 1, out)  # the pull_request_target scan alone is stale
+        rc, out = lane(self.rescan()[1])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("security lane ok", out)
+
+    def test_a_rescan_not_titled_for_this_pr_and_head_is_never_evidence(self):
+        for run in (dispatch_run(pr=8), dispatch_run(head="e" * 40), dispatch_run(branch="feat/x"),
+                    dispatch_run(path=".github/workflows/other.yml"), dispatch_run(event="pull_request")):
+            with self.subTest(run=run):
+                rc, out = lane(self.rescan(run)[1])
+                self.assertEqual(rc, 1, out)
+                self.assertIn("forged 'Security Scan' check 8710", out)
+
+    def test_a_rescan_check_must_be_on_its_runs_commit(self):
+        _, fix = self.rescan()
+        fix["check_runs"][1]["head_sha"] = HEAD_SHA  # the job says main's commit, the check run the PR head
+        rc, out = lane(fix)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not its run's head cccccccccccc", out)
+
+    def test_a_rescan_notice_must_name_this_pr_and_head(self):
+        check, fix = self.rescan()
+        fix["annotations"][str(check["id"])] = [note(head="e" * 40)]
+        rc, out = lane(fix)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("is stale", out)
+
+    def test_a_failing_rescan_fails(self):
+        check, fix = self.rescan(conclusion="failure")
+        fix["annotations"][str(check["id"])] = [note("findings")]
+        rc, out = lane(fix)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("reported findings", out)
+
+
+    def test_a_rescan_head_must_be_on_the_default_branch(self):
+        """A writer can dispatch the scan from any commit and title it freely: its head_sha must be main's tip or behind it."""
+        for status, rc_want in (("identical", 0), ("behind", 0), ("ahead", 1), ("diverged", 1)):
+            with self.subTest(status=status):
+                fix = {**self.rescan()[1], "branch_tip": "e" * 40, "compare": {MAIN_SHA: status}}
+                rc, out = lane(fix)
+                self.assertEqual(rc, rc_want, out)
+                if rc_want:
+                    self.assertIn("forged 'Security Scan' check 8710", out)
+
+    def test_an_unreadable_ancestry_check_fails_closed(self):
+        rc, out = lane({**self.rescan()[1], "compare_fails": True})
+        self.assertEqual(rc, 2, out)
+
+
+class GateWorkflowFile(unittest.TestCase):
+    """Check h: a re-run keeps its original review-gate.yml, so a run whose file is not main's current one fails."""
+
+    STALE = {f".github/workflows/review-gate.yml?ref={GATE_RUN_SHA}": {"type": "file", "sha": "e" * 40}}
+
+    def test_a_run_of_an_old_review_gate_yml_fails(self):
+        rc, out = lane(fixture(contents=self.STALE))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a re-run keeps its original workflow file", out)
+        self.assertIn("toggle a label", out)
+
+    def test_a_gate_run_without_a_workflow_sha_fails_closed(self):
+        for bad in ("", "not-a-sha", "A" * 40, "9" * 39):
+            with self.subTest(bad=bad):
+                rc, out = lane(fixture(), GITHUB_WORKFLOW_SHA=bad)
+                self.assertEqual(rc, 2, out)
+
+    def test_an_unreadable_blob_at_the_workflow_sha_fails_closed(self):
+        rc, out = lane(fixture(contents={f".github/workflows/review-gate.yml?ref={GATE_RUN_SHA}": None}))
+        self.assertEqual(rc, 2, out)
+
+    def test_the_gate_step_leaves_the_runner_variables_alone(self):
+        """(h) reads the runner's own GITHUB_ACTIONS and GITHUB_WORKFLOW_SHA; a YAML env override would forge them."""
+        gate = Path(__file__).resolve().parents[1] / "templates" / "review-gate.yml"
+        for step in yaml.safe_load(gate.read_text())["jobs"]["gate"]["steps"]:
+            self.assertFalse({"GITHUB_ACTIONS", "GITHUB_WORKFLOW_SHA"} & set(step.get("env", {})), step["name"])
+
+    def test_outside_actions_it_is_skipped(self):
+        rc, out = lane(fixture(contents=self.STALE), GITHUB_ACTIONS="")
+        self.assertEqual(rc, 0, out)
+
+    def test_a_disabled_lane_never_reads_it(self):
+        rc, out = lane(fixture(contents={".github/workflows?ref=main": ENABLED[:1], **self.STALE}))
+        self.assertEqual(rc, 0, out)
+
+
+class Timestamps(unittest.TestCase):
+    """GitHub writes a trailing Z, which datetime.fromisoformat rejects before Python 3.11."""
+
+    class Py310(lane_module.datetime):
+        """fromisoformat as Python 3.10 has it: a trailing Z is an error. CI runs 3.12, which accepts it."""
+
+        @classmethod
+        def fromisoformat(cls, text):
+            if text.endswith("Z"):
+                raise ValueError(f"Invalid isoformat string: {text!r}")
+            return super().fromisoformat(text)
+
+    def test_z_parses_as_utc(self):
+        with mock.patch.object(lane_module, "datetime", self.Py310):
+            self.assertEqual(lane_module._time("2099-01-01T12:00:00Z").utcoffset().total_seconds(), 0)
+
+    def test_a_z_clock_override_works(self):
+        with mock.patch.object(lane_module, "datetime", self.Py310), \
+                mock.patch.dict(os.environ, {"SECURITY_LANE_NOW": "2099-01-01T12:00:00Z"}):
+            self.assertEqual(lane_module.now_utc().year, 2099)
+        rc, out = lane(fixture(), SECURITY_LANE_NOW="2099-01-01T12:00:00Z")
+        self.assertEqual(rc, 0, out)
+
+
+class PolicyRevision(unittest.TestCase):
+    """--policy-revision (the scan workflow's step) and the lane's remote revision agree on the same blobs."""
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_local_revision_matches_the_remote_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.git(repo, "init", "-q")
+            blobs = {}
+            for path in (".github/workflows/review-gate.yml", "scripts/check-security-scan.py"):
+                (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                (repo / path).write_text(f"{path}\n")
+            (repo / "scripts/check-review-gate.py").symlink_to("check-security-scan.py")  # not a regular file: "-"
+            (repo / "scripts/unrelated.py").write_text("x\n")
+            self.git(repo, "add", "-A")
+            self.git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c")
+            for path in (".github/workflows/review-gate.yml", "scripts/check-security-scan.py"):
+                blobs[path] = self.git(repo, "rev-parse", f"HEAD:{path}")
+            rc, out = lane({}, args=("--policy-revision", str(repo)))
+            self.assertEqual((rc, out.strip()), (0, lane_module._revision(blobs)))
+            # the same blobs served through the Contents API give the same revision the lane checks
+            fix = fixture(notes={8700: [note(policy=out.strip())]},
+                          contents={".github/workflows?ref=main": [{**ENABLED[0], "sha": blobs[".github/workflows/review-gate.yml"]}, ENABLED[1]],
+                                    # check h: this gate run executes main's current review-gate.yml
+                                    f".github/workflows/review-gate.yml?ref={GATE_RUN_SHA}":
+                                        {"type": "file", "sha": blobs[".github/workflows/review-gate.yml"]}})
+            fix["scripts"] = {"check-security-scan.py": str(LANE)}
+            fix["script_shas"] = {"check-security-scan.py": blobs["scripts/check-security-scan.py"]}
+            self.assertEqual(lane(fix)[0], 0)
+
+    def test_not_a_checkout_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = lane({}, args=("--policy-revision", tmp))
+            self.assertEqual(rc, 2, out)
+            self.assertIn("could not compute the policy revision", out)
+
+    def test_unknown_arguments_exit_2(self):
+        self.assertEqual(lane(fixture(), args=("--bogus",))[0], 2)
+
+
+GATE_RUN = ".github/workflows/review-gate.yml\tpull_request_target"
+REFRESH = Path(__file__).resolve().parents[1] / "templates" / "review-gate-security-refresh.yml"
+
+
+def refresh_fixture(gate_runs=None, open_pulls=None, **extra):
+    fix = fixture()
+    fix["pull"]["state"] = "open"
+    gate_runs = {"650": {"display_title": "Review Gate - PR #7", "status": "completed",
+                         "created_at": "2026-11-21T10:00:00Z"}} if gate_runs is None else gate_runs
+    fix["runs"].update({i: GATE_RUN for i in gate_runs})
+    fix["run_meta"] = gate_runs
+    fix["open_pulls"] = [{"number": 7, "head": {"sha": HEAD_SHA}}] if open_pulls is None else open_pulls
+    return {**fix, **extra}
+
+
+class Refresh(unittest.TestCase):
+    """--refresh, the Security Refresh workflow's body, against the fake gh; posts.log holds its POSTs."""
+
+    def refresh(self, fix, event="push", title=""):
+        rc, out = lane(fix, args=("--refresh",), EVENT=event, TITLE=title)
+        return rc, out, lane.posts
+
+    def test_push_dispatches_a_rescan_and_reruns_the_gate(self):
+        rc, out, posts = self.refresh(refresh_fixture())
+        self.assertEqual(rc, 0, out)
+        dispatch = next(p for p in posts if "/dispatches" in p)
+        self.assertIn("actions/workflows/review-gate-security-scan.yml/dispatches", dispatch)
+        for field in ("ref=main", "inputs[pr]=7", f"inputs[head]={HEAD_SHA}"):
+            self.assertIn(field, dispatch.split())
+        self.assertIn("api repos/o/r/actions/runs/650/rerun -X POST", posts)
+
+    def test_the_newest_gate_run_of_this_pr_is_rerun(self):
+        runs = {"650": {"display_title": "Review Gate - PR #7", "status": "completed", "created_at": "2026-11-21T10:00:00Z"},
+                "651": {"display_title": "Review Gate - PR #7", "status": "completed", "created_at": "2026-11-21T11:00:00Z"},
+                "652": {"display_title": "Review Gate - PR #8", "status": "completed", "created_at": "2026-11-21T12:00:00Z"}}
+        rc, out, posts = self.refresh(refresh_fixture(runs))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([p for p in posts if "/rerun" in p], ["api repos/o/r/actions/runs/651/rerun -X POST"])
+
+    def test_a_running_gate_run_is_left_to_the_scan_on_push(self):
+        runs = {"650": {"display_title": "Review Gate - PR #7", "status": "in_progress", "created_at": "2026-11-21T10:00:00Z"}}
+        rc, out, posts = self.refresh(refresh_fixture(runs))
+        self.assertEqual(rc, 0, out)
+        self.assertFalse([p for p in posts if "/rerun" in p], posts)
+        self.assertIn("still running", out)
+
+    def test_a_refused_rerun_fails_and_names_the_pr(self):
+        rc, out, _ = self.refresh(refresh_fixture(post_fails=[r"/rerun"]))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("PR #7: its Review Gate run 650 could not be re-run", out)
+        self.assertIn("close and reopen that PR", out)
+
+    def test_a_draft_is_skipped(self):
+        rc, out, posts = self.refresh(refresh_fixture(open_pulls=[{"number": 7, "head": {"sha": HEAD_SHA}, "draft": True}]))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(posts, [])
+        self.assertIn("PR #7 is a draft; skipped", out)
+
+    def test_a_refused_dispatch_fails_and_skips_that_prs_rerun(self):
+        two = [{"number": 7, "head": {"sha": HEAD_SHA}}, {"number": 8, "head": {"sha": "e" * 40}}]
+        runs = {"650": {"display_title": "Review Gate - PR #7", "status": "completed", "created_at": "2026-11-21T10:00:00Z"},
+                "660": {"display_title": "Review Gate - PR #8", "status": "completed", "created_at": "2026-11-21T10:00:00Z"}}
+        rc, out, posts = self.refresh(refresh_fixture(runs, two, post_fails=[r"inputs\[pr\]=7 "]))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("PR #7: Security Scan could not be dispatched", out)
+        self.assertNotIn("api repos/o/r/actions/runs/650/rerun -X POST", posts)
+        self.assertIn("api repos/o/r/actions/runs/660/rerun -X POST", posts)  # the other PR still refreshed
+
+    def test_no_gate_run_fails(self):
+        rc, out, _ = self.refresh(refresh_fixture({}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no Review Gate run to re-run", out)
+
+    def test_workflow_run_reruns_the_scanned_prs_gate_after_it_finishes(self):
+        runs = {"650": {"display_title": "Review Gate - PR #7", "status": ["in_progress", "completed"],
+                        "created_at": "2026-11-21T10:00:00Z"}}
+        rc, out, posts = self.refresh(refresh_fixture(runs), "workflow_run", lane_module.RUN_TITLE.format(pr=7, head=HEAD_SHA))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(posts, ["api repos/o/r/actions/runs/650/rerun -X POST"])
+
+    def test_workflow_run_of_something_else_does_nothing(self):
+        for title in ("Security Scan - PR #7 @ main; rm -rf /", "anything", ""):
+            with self.subTest(title=title):
+                rc, out, posts = self.refresh(refresh_fixture(), "workflow_run", title)
+                self.assertEqual((rc, posts), (0, []), out)
+                self.assertNotIn("rm -rf", out)  # never echoed
+
+    def test_workflow_run_for_a_moved_or_closed_pr_does_nothing(self):
+        moved = lane_module.RUN_TITLE.format(pr=7, head="e" * 40)
+        rc, out, posts = self.refresh(refresh_fixture(), "workflow_run", moved)
+        self.assertEqual((rc, posts), (0, []), out)
+        fix = refresh_fixture(); fix["pull"]["state"] = "closed"
+        rc, out, posts = self.refresh(fix, "workflow_run", lane_module.RUN_TITLE.format(pr=7, head=HEAD_SHA))
+        self.assertEqual((rc, posts), (0, []), out)
+
+    def test_missing_env_exits_2(self):
+        self.assertEqual(lane(refresh_fixture(), args=("--refresh",))[0], 2)  # no EVENT
+
+
+class RefreshWorkflow(unittest.TestCase):
+    """The real review-gate-security-refresh.yml: its triggers and its run block against the fake gh."""
+
+    def test_push_paths_are_the_policy_files_plus_the_scan_config(self):
+        on = yaml.safe_load(REFRESH.read_text())[True]  # YAML 1.1 reads the `on` key as True
+        self.assertEqual(sorted(on["push"]["paths"]), sorted([*lane_module.POLICY_FILES, ".github/security-scan/**",
+                                                              ".github/workflows/review-gate-security-scan.yml"]))
+        self.assertEqual(on["workflow_run"], {"workflows": ["Security Scan"], "types": ["completed"]})
+        self.assertIn("schedule", on)
+
+    def test_least_privilege_and_no_expressions_in_run(self):
+        doc = yaml.safe_load(REFRESH.read_text())
+        self.assertEqual(doc["permissions"], {})
+        job = doc["jobs"]["refresh"]
+        self.assertEqual(job["permissions"], {"actions": "write", "contents": "read", "pull-requests": "read"})
+        self.assertNotIn("concurrency", doc)
+        self.assertNotIn("${{", job["steps"][0]["run"])
+
+    def run_block(self, fix, event="push", title="", missing=()):
+        run = yaml.safe_load(REFRESH.read_text())["jobs"]["refresh"]["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bindir = tmp / "bin"; bindir.mkdir()
+            (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            fix = {**fix, "scripts": {n: str(SCRIPTS / n) for n in
+                                      ("check-security-scan.py", "check-forged-review-gate.py", "check-forged-gate-names.py")
+                                      if n not in missing}}
+            (tmp / "fixture.json").write_text(json.dumps(fix))
+            work = tmp / "job"; work.mkdir()
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
+                       REPO="o/r", EVENT=event, TITLE=title, SECURITY_LANE_NOW=NOW, GITHUB_ACTIONS="true",
+                       GITHUB_WORKFLOW_SHA="9" * 40)
+            proc = subprocess.run(["bash", "-c", run.replace("/tmp/", f"{work}/")], capture_output=True, text=True, env=env)
+            posts = tmp / "posts.log"
+            return proc.returncode, proc.stdout + proc.stderr, posts.read_text().splitlines() if posts.exists() else []
+
+    def test_the_run_block_loads_main_scripts_and_refreshes(self):
+        rc, out, posts = self.run_block(refresh_fixture())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len([p for p in posts if "/dispatches" in p and "ref=main" in p]), 1, posts)
+        self.assertIn("api repos/o/r/actions/runs/650/rerun -X POST", posts)
+
+    def test_a_missing_script_fails_closed(self):
+        rc, out, posts = self.run_block(refresh_fixture(), missing=("check-forged-gate-names.py",))
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(posts, [])
+
+
+class MergeGuardSecurityLane(unittest.TestCase):
+    """merge-guard runs the lane itself before a merge (not only CI's gate run), failing closed."""
+
+    def guard(self, fix, head=HEAD_SHA, budget=None, **env_over):
+        spec = importlib.util.spec_from_file_location("mg_lane", SCRIPTS / "merge-guard.py")
+        mg = importlib.util.module_from_spec(spec); spec.loader.exec_module(mg)
+        if budget is not None:
+            mg.HOOK_BUDGET_S = budget
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            (bindir / "fixture.json").write_text(json.dumps(fix))
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, SECURITY_LANE_NOW=NOW, **env_over)
+            return mg.security_lane_check("o", "r", 7, head, None, env)
+
+    def test_a_fresh_passing_scan_allows(self):
+        self.assertIsNone(self.guard(fixture()))
+
+    def test_a_repo_without_the_lane_allows(self):
+        self.assertIsNone(self.guard(fixture(contents={".github/workflows?ref=main": ENABLED[:1]})))
+
+    def test_a_scan_gone_stale_since_ci_blocks(self):
+        msg = self.guard(fixture(notes={8700: [note(policy="0" * 64)]}))
+        self.assertIn("security lane exited 1", msg)
+        self.assertIn("policy revision", msg)
+        self.assertNotIn("::error::", msg)
+
+    def test_a_moved_head_blocks(self):
+        self.assertIn("security lane exited 2", self.guard(fixture(), head="e" * 40))
+
+    def test_the_default_branch_comes_from_the_api(self):
+        fix = fixture(); fix["default_branch"] = "trunk"  # main's listings no longer apply: "not enabled"
+        self.assertIsNone(self.guard(fix))
+
+    def test_an_unreadable_default_branch_blocks(self):
+        msg = self.guard({**fixture(), "fail": {"pattern": r"^api repos/o/r$"}})
+        self.assertIn("could not read the default branch of o/r", msg)
+
+    def test_running_out_of_budget_blocks(self):
+        msg = self.guard({**fixture(), "sleep": 0.3}, budget=0.2)
+        self.assertIn("security lane did not finish within", msg)
+
+    def test_a_merge_inside_actions_is_not_a_gate_run(self):
+        """Check h is the gate's own: the guard strips GITHUB_ACTIONS and GITHUB_WORKFLOW_SHA from the lane."""
+        self.assertIsNone(self.guard(fixture(contents=GateWorkflowFile.STALE), GITHUB_ACTIONS="true",
+                                     GITHUB_WORKFLOW_SHA=GATE_RUN_SHA))
+
+    def test_a_block_from_a_lane_unlike_the_repos_says_re_vendor(self):
+        stale = {8700: [note(policy="0" * 64)]}
+        fix = {**fixture(notes=stale), "scripts": {"check-security-scan.py": str(SCRIPTS / "merge-guard.py")}}
+        msg = self.guard(fix)
+        self.assertIn("re-vendor review-gate", msg)
+        self.assertIn("security lane exited 1", msg)
+        fix["scripts"] = {"check-security-scan.py": str(LANE)}
+        msg = self.guard(fix)
+        self.assertIn("security lane exited 1", msg)
+        self.assertNotIn("re-vendor", msg)
 
 
 if __name__ == "__main__":

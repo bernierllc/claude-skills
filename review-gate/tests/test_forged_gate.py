@@ -40,6 +40,22 @@ if fail and __import__("re").search(fail["pattern"], " ".join(args)):
 HEAD = "a" * 40
 created_path = os.path.join(state, "created.json")
 created = json.load(open(created_path)) if os.path.exists(created_path) else []
+if path.count("/") == 2:  # repos/<owner>/<repo>: the security refresh's default-branch read
+    print(json.dumps({"default_branch": fixture.get("default_branch", "main")})); sys.exit(0)
+if "/branches/" in path:  # the security lane's read of the default branch tip
+    print(json.dumps({"commit": {"sha": fixture.get("branch_tip", "c" * 40)}})); sys.exit(0)
+if "/compare/" in path:  # the security lane's ancestry check of a dispatch run's head_sha against that tip
+    base, head = path.split("/compare/")[1].split("...")
+    if fixture.get("compare_fails"):
+        sys.exit(1)
+    status = fixture.get("compare", {}).get(head, "identical" if base == head else "diverged")
+    print(json.dumps({"status": status})); sys.exit(0)
+if "-X" in args and "POST" in args and ("/dispatches" in path or path.endswith("/rerun")):  # the security refresh
+    with open(os.path.join(state, "posts.log"), "a") as posts:
+        posts.write(" ".join(args) + "\n")
+    if any(__import__("re").search(f, " ".join(args)) for f in fixture.get("post_fails", [])):
+        print("gh: Resource not accessible by integration (HTTP 403)", file=sys.stderr); sys.exit(1)
+    sys.exit(0)
 if "-X" in args and "POST" in args:
     check_id = 900 + len(created)
     ext = next((a.split("=", 1)[1] for a in args if a.startswith("external_id=")), None)
@@ -58,7 +74,8 @@ if path.endswith("/contents/.github/workflows/review-gate.yml"):  # merge-guard'
         sys.exit(0)
     print("gh: Not Found (HTTP 404)" if wf is False else "gh: Bad Gateway (HTTP 502)", file=sys.stderr); sys.exit(1)
 if path.split("?")[0].endswith("/contents/scripts"):  # the gate's listing of the trusted scripts
-    print(json.dumps([{"name": n, "type": "file"} for n in fixture["scripts"]])); sys.exit(0)
+    print(json.dumps([{"name": n, "type": "file", "sha": fixture.get("script_shas", {}).get(n, "5" * 40)}
+                      for n in fixture["scripts"]])); sys.exit(0)
 if "/contents/scripts/" in path:
     name = path.split("/contents/scripts/")[1].split("?")[0]
     src = fixture["scripts"].get(name)
@@ -83,25 +100,45 @@ if path.split("/check-runs/")[-1].isdigit():  # the security lane's read of the 
     if not found:
         sys.exit(1)
     print(json.dumps(found[0])); sys.exit(0)
+if "/actions/workflows/" in path and "/runs?" in path and "event=workflow_dispatch" in path:  # the lane's re-scans
+    found = fixture.get("dispatch_runs", [])
+    print(json.dumps([{"total_count": len(found), "workflow_runs": found}])); sys.exit(0)
 if "/actions/workflows/" in path and "/runs?" in path:  # the security lane's scanner-run discovery, slurped
     wf = path.split("/actions/workflows/")[1].split("/")[0]
-    found = [{"id": int(i), "path": pair.split("\t")[0], "event": pair.split("\t")[1]}
-             for i, pair in fixture.get("runs", {}).items() if pair.split("\t")[0].endswith("/" + wf)]
+    found = []
+    for i, pair in fixture.get("runs", {}).items():
+        if not pair.split("\t")[0].endswith("/" + wf):
+            continue
+        meta = dict(fixture.get("run_meta", {}).get(i, {}))
+        if isinstance(meta.get("status"), list):  # one status per read: a run that finishes while polled
+            seen_path = os.path.join(state, f"status-{i}.count")
+            seen = int(open(seen_path).read()) if os.path.exists(seen_path) else 0
+            open(seen_path, "w").write(str(seen + 1))
+            meta["status"] = meta["status"][min(seen, len(meta["status"]) - 1)]
+        found.append({"id": int(i), "path": pair.split("\t")[0], "event": pair.split("\t")[1], **meta})
     print(json.dumps([{"total_count": len(found), "workflow_runs": found}])); sys.exit(0)
 if path.endswith("/annotations"):  # the security lane's read of one check run's annotations, slurped
     found = fixture.get("annotations", {}).get(path.split("/")[-2])
     if found is None:
         sys.exit(1)
     print(json.dumps([found])); sys.exit(0)
+if "/contents/.claude" in path:  # the policy revision's merge-guard directory: absent unless listed
+    listing = fixture.get("contents", {}).get(path.split("/contents/", 1)[1])
+    if listing is None:
+        print("gh: Not Found (HTTP 404)", file=sys.stderr); sys.exit(1)
+    print(json.dumps(listing)); sys.exit(0)
 if "/contents/.github" in path:  # the security lane's directory listings, keyed by "<dir>?ref=<ref>"
     key = path.split("/contents/", 1)[1]
-    default = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?") else None
+    default = ([{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?")
+               else {"type": "file", "sha": "0" * 40} if key.startswith(".github/workflows/review-gate.yml?ref=") else None)
     listing = fixture.get("contents", {}).get(key, default)
     if listing is None:
         sys.exit(1)
     if isinstance(listing, dict) and "raw" in listing:  # a body that is not JSON, served verbatim
         print(listing["raw"], end=""); sys.exit(0)
     print(json.dumps(listing)); sys.exit(0)
+if "/pulls?" in path and "state=open" in path:  # the security refresh's open PR listing, one page
+    print(json.dumps([fixture.get("open_pulls", [])])); sys.exit(0)
 if "/pulls?" in path:  # the wrapper's head-repo/branch PR listing (3.2.16), one page
     if "branch_pulls_raw" in fixture:
         print(fixture["branch_pulls_raw"]); sys.exit(0)
@@ -219,7 +256,8 @@ class ForgedGateWorkflow(unittest.TestCase):
                  "own_jobs": [job("Review Gate", int(i)) for i in own_ids], **(fixture or {})}))
             workdir = tmp / "job"; workdir.mkdir()
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
-                       PR_NUMBER="7", REPO="o/r", SHA="a" * 40, DEFAULT_BRANCH="main")
+                       PR_NUMBER="7", REPO="o/r", SHA="a" * 40, DEFAULT_BRANCH="main",
+                       GITHUB_ACTIONS="true", GITHUB_WORKFLOW_SHA="9" * 40)  # what the runner always sets
             # The block writes the trusted scripts to /tmp/<name>; point that at this test's own dir.
             script = run_block().replace("/tmp/", f"{workdir}/")
             self.rcs = []

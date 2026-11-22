@@ -11,18 +11,24 @@ files are renamed in the staging copy, so they are scanned as data but never loa
 
 It prints exactly one annotation the lane reads:
     ::notice title=security-scan::outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha>
-and wraps everything else it prints (file names and rule ids come from the PR) in
+        pr=<n> head=<sha> base-ref=<ref> workflow=<blob sha> policy=<sha256> exceptions-until=<YYYY-MM-DD|none>
+(one line). The fields after config-tree let the lane tell a stale scan from a current one: the PR and head
+it scanned, the PR's base branch, the blob of the scan workflow it ran, review-gate's policy revision
+(`check-security-scan.py --policy-revision`), and the earliest expiry among the exceptions that suppressed a
+finding. Every field is read before anything PR-derived is printed; one that cannot be read means no notice,
+so the lane fails closed. It wraps everything else it prints (file names and rule ids come from the PR) in
 ::stop-commands:: so PR content cannot emit a second one. Exit 0 for passed and
 not-applicable, 1 otherwise, so the job conclusion matches the outcome.
 
-Environment (set by the workflow): GITHUB_TOKEN, REPO, PR_NUMBER, HEAD_SHA, BASE_DIR,
-HEAD_DIR, WORK_DIR, BIN_DIR, SEMGREP_IMAGE (or SEMGREP_BIN for a local run),
+Environment (set by the workflow): GITHUB_TOKEN, REPO, PR_NUMBER, HEAD_SHA, WORKFLOW_SHA, POLICY,
+BASE_DIR, HEAD_DIR, WORK_DIR, BIN_DIR, SEMGREP_IMAGE (or SEMGREP_BIN for a local run),
 GITHUB_STEP_SUMMARY (optional).
 """
 import datetime as dt
 import fnmatch
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -32,6 +38,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 CONFIG_REL = ".github/security-scan"
+WORKFLOW_REL = ".github/workflows/review-gate-security-scan.yml"
 SCANNERS = ("gitleaks", "osv-scanner", "zizmor", "semgrep")
 TIMEOUT = 600  # seconds per scanner; a timeout is a scanner-error
 MAX_PR_FILES = 3000  # the pulls files API stops listing here; a capped list is a scanner-error
@@ -306,11 +313,26 @@ def load_exceptions(path, today):
     return active, expired
 
 
+def _key(x):
+    return x["scanner"], x["rule"], x["path"]
+
+
 def apply_exceptions(findings, active):
     """(kept, excepted). An exception matches scanner, rule and path exactly."""
-    key = {(e["scanner"], e["rule"], e["path"]) for e in active}
-    kept = [f for f in findings if (f["scanner"], f["rule"], f["path"]) not in key]
+    key = {_key(e) for e in active}
+    kept = [f for f in findings if _key(f) not in key]
     return kept, [f for f in findings if f not in kept]
+
+
+def exceptions_until(excepted, active):
+    """The last day every exception that suppressed a finding still applies, or None when none did.
+
+    A key listed twice holds until its later expiry, so per key the max; across keys the min.
+    """
+    last = {}
+    for e in active:
+        last[_key(e)] = max(last.get(_key(e), e["expires"]), e["expires"])
+    return min((last[_key(f)] for f in excepted), default=None)
 
 
 def outcome(results):
@@ -323,9 +345,18 @@ def outcome(results):
     return "passed" if "passed" in statuses else "not-applicable"
 
 
-def notice(result, tree):
-    assert result in OUTCOMES and len(tree) == 40, (result, tree)
-    return f"::notice title=security-scan::outcome={result} config-tree={tree}"
+HEX40, HEX64 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
+PR_RE = re.compile(r"[1-9][0-9]*")
+REF_RE = re.compile(r"[^\s:]+")  # git forbids space and ':' in a ref, so a valid one never forms a command
+DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def notice(result, tree, pr, head, base_ref, workflow, policy, until):
+    assert (result in OUTCOMES and HEX40.fullmatch(tree) and PR_RE.fullmatch(pr) and HEX40.fullmatch(head)
+            and REF_RE.fullmatch(base_ref) and HEX40.fullmatch(workflow) and HEX64.fullmatch(policy)
+            and (until is None or DATE_RE.fullmatch(until))), (result, tree, pr, head, workflow, policy, until)
+    return (f"::notice title=security-scan::outcome={result} config-tree={tree} pr={pr} head={head} "
+            f"base-ref={base_ref} workflow={workflow} policy={policy} exceptions-until={until or 'none'}")
 
 
 def config_tree(base_dir):
@@ -350,13 +381,13 @@ def github_api(token):
 
 
 def scan(staged, cfg, stage_dir, work, today, skipped=()):
-    """Per-scanner results, findings and summary lines for the staged paths.
+    """Per-scanner results, findings, summary lines and exceptions_until for the staged paths.
 
     skipped: changed paths stage() did not copy (symlinks, non-regular, absent); a dependency
     file among them is still not-covered, since the package manager can read it.
     """
     active, expired = load_exceptions(cfg / "exceptions.json", today)
-    results, findings, lines = {}, [], []
+    results, findings, lines, used = {}, [], [], []
     for scanner in SCANNERS:
         targets = applicable(scanner, staged)
         unstaged = [{"scanner": scanner, "rule": "not-covered", "path": p} for p in skipped
@@ -377,10 +408,30 @@ def scan(staged, cfg, stage_dir, work, today, skipped=()):
         lines.append(f"- {scanner}: {results[scanner]} on {len(targets) + len(unstaged)} file(s), "
                      f"{len(kept)} finding(s), {len(excepted)} excepted")
         findings += kept
+        used += excepted
     for e in expired:
         lines.append(f"- expired exception (no longer applied): {e['scanner']} {e['rule']} "
                      f"{e['path']}, owner {e['owner']}, expired {e['expires']}")
-    return results, findings, lines
+    return results, findings, lines, exceptions_until(used, active)
+
+
+def identity(env, api):
+    """The notice's fields that do not depend on the scan, read up front; SystemExit when one is invalid.
+
+    Messages never echo a value: a value that failed validation could be a workflow command.
+    """
+    pr, head_sha, wf_sha, policy = (env.get(k, "") for k in ("PR_NUMBER", "HEAD_SHA", "WORKFLOW_SHA", "POLICY"))
+    for name, value, pattern in (("PR_NUMBER", pr, PR_RE), ("HEAD_SHA", head_sha, HEX40),
+                                 ("WORKFLOW_SHA", wf_sha, HEX40), ("POLICY", policy, HEX64)):
+        if not pattern.fullmatch(value):
+            raise SystemExit(f"security-scan: {name} is missing or malformed; no notice")
+    base_ref = api(f"/repos/{env['REPO']}/pulls/{pr}").get("base", {}).get("ref")
+    workflow = api(f"/repos/{env['REPO']}/contents/{WORKFLOW_REL}?ref={wf_sha}").get("sha")
+    if not isinstance(base_ref, str) or not REF_RE.fullmatch(base_ref):
+        raise SystemExit("security-scan: the PR's base ref is missing or malformed; no notice")
+    if not isinstance(workflow, str) or not HEX40.fullmatch(workflow):
+        raise SystemExit(f"security-scan: no blob sha for {WORKFLOW_REL} at WORKFLOW_SHA; no notice")
+    return pr, head_sha, base_ref, workflow, policy
 
 
 def main():
@@ -389,14 +440,18 @@ def main():
     base, head, stage_dir = Path(env["BASE_DIR"]), Path(env["HEAD_DIR"]), work / "stage"
     cfg = base / CONFIG_REL
     tree = config_tree(base)  # no tree, no notice: the lane then fails closed on a missing annotation
+    api = github_api(env["GITHUB_TOKEN"])
+    pr, head_sha, base_ref, workflow, policy = identity(env, api)
+    until = None
     token = secrets.token_hex(16)
     print(f"::stop-commands::{token}", flush=True)
     try:
         stage_dir.mkdir(parents=True, exist_ok=False)
-        rels = list_changed(github_api(env["GITHUB_TOKEN"]), env["REPO"], env["PR_NUMBER"], env["HEAD_SHA"])
+        rels = list_changed(api, env["REPO"], pr, head_sha)
         staged, notes = stage(head, rels, stage_dir)
-        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date(),
-                                        [r for r in rels if r not in staged])
+        results, findings, lines, until = scan(staged, cfg, stage_dir, work,
+                                               dt.datetime.now(dt.timezone.utc).date(),
+                                               [r for r in rels if r not in staged])
         lines += [f"- note: {n}" for n in notes]
         result = outcome(results)
     except (ScanError, OSError, ValueError, KeyError) as e:
@@ -410,7 +465,7 @@ def main():
         with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
             s.write("\n".join(report) + "\n")
     print(f"::{token}::", flush=True)
-    print(notice(result, tree), flush=True)
+    print(notice(result, tree, pr, head_sha, base_ref, workflow, policy, until), flush=True)
     return 0 if result in ("passed", "not-applicable") else 1
 
 
