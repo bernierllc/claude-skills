@@ -82,7 +82,9 @@ def _entries(w, repo, path, ref):
     listing = w._api_json(f"repos/{repo}/contents/{path}?{urllib.parse.urlencode({'ref': ref})}")
     if not isinstance(listing, list):
         raise w.Ambiguous(f"{path} on {ref} is not a directory listing")
-    return {w._text(e, "name"): e for e in listing if isinstance(e, dict)}
+    if not all(isinstance(e, dict) and isinstance(e.get("name"), str) for e in listing):
+        raise w.Ambiguous(f"{path} on {ref} lists a malformed entry")  # never read as "lane not enabled"
+    return {e["name"]: e for e in listing}
 
 
 def _listing(w, path, key):
@@ -119,7 +121,8 @@ def verdict(w, detector, repo, pr, head, ref):
             return f"forged '{NAME}' check {check.get('id')}: not a job of this PR's trusted scanner run"
     if not jobs:
         return f"no trusted '{NAME}' run on {head[:12]} yet; re-fire Review Gate once it completes"
-    job = max(jobs, key=lambda j: (j.get("started_at") or "", j["id"]))  # (d) the newest scanner job decides
+    # (d) the newest scanner job decides; one not started yet (started_at null) is newest, so it reads incomplete
+    job = max(jobs, key=lambda j: (j.get("started_at") is None, j.get("started_at") or "", j["id"]))
     latest = w._api_json(f"repos/{repo}/check-runs/{job['id']}")
     linked = re.search(r"/job/(\d+)", w._text(latest, "details_url"))
     if (latest.get("id") != job["id"] or not linked or int(linked.group(1)) != job["id"]

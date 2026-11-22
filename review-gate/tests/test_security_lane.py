@@ -202,6 +202,12 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("reported findings", out)
 
+    def test_d_a_newer_queued_job_is_incomplete(self):
+        done, queued = scan(700), scan(701, status="queued", conclusion=None, started=None)
+        rc, out = lane(fixture(checks=[done, queued], runs={"701": SCAN_RUN}, heads={"701": run_heads()}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("is queued", out)
+
     def test_d_no_scan_yet_is_incomplete(self):
         rc, out = lane(fixture(checks=[]))
         self.assertEqual(rc, 1, out)
@@ -252,6 +258,8 @@ class TrustChecks(unittest.TestCase):
         fix = fixture(); fix["listing_fails"] = True
         self.assertEqual(lane(fix)[0], 2)
         self.assertEqual(lane(fixture(contents={".github/workflows?ref=main": {"message": "not a list"}}))[0], 2)
+        for entry in (None, "garbage", {"type": "file"}):  # a malformed entry never reads as "lane not enabled"
+            self.assertEqual(lane(fixture(checks=[], contents={".github/workflows?ref=main": [entry]}))[0], 2, entry)
 
 
 class BodyClaims(unittest.TestCase):
