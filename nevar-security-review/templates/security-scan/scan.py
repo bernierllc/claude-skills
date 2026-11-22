@@ -231,8 +231,10 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
                 "--format", "json"]
         for t in targets:
             argv += ["-L", str(Path(stage_dir) / t)]
-        code, out = run(argv, ok=(0, 1, 128))  # 128: no packages in the listed lockfiles
-        return [] if code == 128 else parse_osv(json.loads(out), stage_dir)
+        code, out = run(argv, ok=(0, 1, 128))
+        if code == 128:  # "no packages found": nothing was checked, so it is never a pass
+            return [{"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets]
+        return parse_osv(json.loads(out), stage_dir)
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",

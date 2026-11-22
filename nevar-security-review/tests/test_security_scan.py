@@ -233,6 +233,16 @@ class Inputs(unittest.TestCase):
 class Parsers(unittest.TestCase):
     st = Path("/w/stage")
 
+    # Codex bot P1: osv-scanner exit 128 is "no packages found", so nothing was checked
+    def test_osv_no_packages_is_a_finding_not_a_pass(self):
+        real = scan.run
+        scan.run = lambda argv, cwd=None, ok=(0,): (128, "")
+        try:
+            got = scan.scan_one("osv-scanner", ["app/requirements.txt"], Path("/cfg"), self.st, Path("/w"))
+        finally:
+            scan.run = real
+        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
+
     def test_gitleaks(self):
         got = scan.parse_gitleaks([{"RuleID": "r", "File": "/w/stage/c.py", "Secret": "REDACTED"}], self.st)
         self.assertEqual(got, [{"scanner": "gitleaks", "rule": "r", "path": "c.py"}])

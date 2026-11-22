@@ -217,7 +217,8 @@ What the workflow does:
   so a rename never overwrites another file and no file can borrow another path's exception.
 - Each scanner runs only on the files it applies to:
   - gitleaks on every changed file;
-  - osv-scanner on lockfiles;
+  - osv-scanner on lockfiles; a lockfile it finds no packages in (exit 128) is a `no-packages`
+    finding, never a pass, and takes a dated exception when the file is legitimately empty;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
     for, inside a pinned container with no network and a read-only mount. A repo that adds
