@@ -331,7 +331,9 @@ class BodyClaims(unittest.TestCase):
 
     def test_a_pass_beside_a_negation_is_still_a_claim(self):
         for line in ("Security scan: gitleaks did not pass but semgrep passed",
-                     "Security scan: no findings, semgrep passed"):
+                     "Security scan: no findings, semgrep passed",
+                     "Security scan: semgrep not only passed but found zero issues",
+                     "Security scan: gitleaks never once failed, it is clean"):
             body = f"## Review\n\n{line}\n"
             rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
             self.assertEqual(rc, 1, (line, out))

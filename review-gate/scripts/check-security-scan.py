@@ -57,8 +57,9 @@ PASSING = {"passed", "not-applicable"}
 SCANNER = re.compile(r"\b(gitleaks|osv-scanner|zizmor|semgrep|security scan)\b", re.I)
 PASS_WORD = re.compile(r"\b(pass|passed|passes|clean|green|success|succeeded|ok)\b", re.I)
 LABELLED = re.compile(r"^\s*security (review|scan):", re.I)
-# A pass word right after a negation ("did not pass", "is not clean", "failed to pass") is a failure report.
-NEGATED = re.compile(r"\b(?:not|never|no|cannot|\w+n['’]t|fail(?:s|ed|ing)?\s+to)\s+(?:\w+\s+)?"
+# A pass word directly after a negation ("did not pass", "is not clean", "failed to pass") is a failure
+# report. Directly: one word in between ("not only passed") is still a claim.
+NEGATED = re.compile(r"\b(?:not|never|no|cannot|\w+n['’]t|fail(?:s|ed|ing)?\s+to)\s+"
                      r"(?:pass|passed|passes|clean|green|success|succeeded|ok)\b", re.I)
 
 
