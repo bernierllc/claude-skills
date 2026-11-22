@@ -168,26 +168,26 @@ def is_requirements(p):
     return name.endswith(".txt") and "requirements" in name
 
 
-def has_include(text):
-    """True when a requirements file includes another (-r, -c, a --requirement/--constraint prefix).
+def has_option_line(text):
+    """True when pip could read a line of this requirements file as an option line (first token "-").
 
-    shortcut: includes are not resolved (plans/2026-11-22-security-scan-osv-include-resolution.md),
-    so the scan cannot prove an including file was read completely and reports it as not-covered.
+    Every include (-r, -c, any spelling, after any other option) lives on an option line, so this
+    over-reports instead of parsing pip's options. Lines are joined like pip's join_lines; a line
+    starting with "$" can expand to an option, and a NUL means a UTF-16/32 file read wrongly here.
+    shortcut: includes are not resolved (plans/2026-11-22-security-scan-osv-include-resolution.md), so
+    any option line, even --index-url or -e ., is not-covered until that plan lands.
     """
-    logical, cur = [], ""
+    if "\x00" in text:
+        return True
+    logical, cur = [], []
     for line in text.lstrip("\ufeff").splitlines():
         if line.endswith("\\") and not COMMENT_LINE.match(line):
-            cur += line[:-1]
+            cur.append(line.strip("\\"))  # pip strips backslashes from both ends of a continued line
             continue
-        logical.append(cur + line)
-        cur = ""
-    for line in logical + [cur]:
-        tok = (line.split() or [""])[0].split("=", 1)[0]
-        # optparse takes a glued short value (-rbase.txt) and any unambiguous long-option prefix
-        if tok[:2] in ("-r", "-c") or (len(tok) > 2 and tok.startswith("--") and (
-                "--requirement".startswith(tok) or "--constraint".startswith(tok))):
-            return True
-    return False
+        logical.append("".join(cur) + line)
+        cur = []
+    logical.append("".join(cur))
+    return any(line.lstrip()[:1] in ("-", "$") for line in logical)
 
 
 def applicable(scanner, staged):
@@ -272,7 +272,7 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
         return parse_osv(report, stage_dir) + [
             {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read] + [
             {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets
-            if is_requirements(t) and has_include((Path(stage_dir) / t).read_text(errors="replace"))]
+            if is_requirements(t) and has_option_line((Path(stage_dir) / t).read_text(errors="replace"))]
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",

@@ -5,9 +5,11 @@ descoped to what it can prove.
 
 ## Why this is a plan, not a fix in #147
 
-PR #147 produced eight P1 findings in the osv-scanner exit and coverage area. The traffic cop
+PR #147 produced nine P1 findings in the osv-scanner exit and coverage area. The traffic cop
 set the rule after the fourth: one more P1 there and the PR descopes OSV and this plan takes
-include resolution. The f277bbf re-check found four more, so the descope ran.
+include resolution. The f277bbf re-check found four more, so the descope ran. The review of
+the descope head found a ninth in the include predicate itself, so #147 stopped parsing
+include syntax at all (below).
 
 | # | Head | Finding |
 |---|------|---------|
@@ -19,6 +21,7 @@ include resolution. The f277bbf re-check found four more, so the descope ran.
 | 6 | f277bbf | `--requirement` includes are staged but never scanned: the pinned parser follows only `-r` |
 | 7 | f277bbf | physical-line matching misses continuations (`-\` then `r base.txt`); a quoted include (`-r "base.txt"`) gives a false unresolved finding |
 | 8 | f277bbf | alternate names such as `requirements-dev.txt` get no coverage |
+| 9 | f95bd30 | an include after another option on the same line (`--no-index -r base.txt`) is missed by the include predicate |
 
 Plus one P2 on f277bbf: an exception keyed on the including file covers every unresolved
 include in it.
@@ -29,12 +32,19 @@ include in it.
   2.7.0 reads as requirements files (a base name ending `.txt` that contains
   `requirements`, case-sensitive; probed against the pinned binary). Every input must yield
   packages on its own (`no-packages` otherwise).
-- A changed requirements file with any include line is a `not-covered` finding on that file.
-  `has_include()` joins continuation lines the way pip does (never joining a comment line),
-  strips a BOM, and matches `-r` / `-c` (glued values too) and any prefix of `--requirement`
-  or `--constraint` (optparse accepts unambiguous prefixes). It fails the gate unless an
-  exact, owned, expiring exception names that file. Findings 5–8 cannot occur: nothing is
-  staged or resolved, and the predicate covers the alternate names.
+- A changed requirements file with any option line is a `not-covered` finding on that file.
+  pip 26.2.2 follows `-r`/`-c` only on an option line (its first token starts with `-`,
+  after `join_lines` and comment stripping), so `has_option_line()` joins continuation lines
+  the way pip does (never joining a comment line), strips a BOM, and flags any logical line
+  whose first character is `-`, or `$` (an environment variable can expand to an option), and
+  any text containing a NUL (a UTF-16/32 file this reader cannot see). It parses no option
+  syntax, so no spelling of an include can slip past it. pip-compile's hashed output
+  (`six==1 \` then `--hash=...`) joins into a requirement line and is not flagged. It fails
+  the gate unless an exact, owned, expiring exception names that file. Findings 5–9 cannot
+  occur: nothing is staged or resolved, and the predicate covers the alternate names.
+- Intended false positives: an option line that is not an include (`--index-url`, `-e .`,
+  `--require-hashes`) is also `not-covered` and needs a per-file exception until this plan
+  lands.
 - The P2 becomes the intended semantics for now: the finding is about the file ("OSV cannot
   prove it read this file completely"), so one exception per file is the right key until
   includes are resolved.
@@ -75,7 +85,7 @@ is missing, so a partial read looks like a read.
 ## Affected surfaces
 
 - `nevar-security-review/templates/security-scan/scan.py`: staging, the OSV branch,
-  `has_include()` (removed or kept as the not-covered fallback), `applicable()`.
+  `has_option_line()` (removed or kept as the not-covered fallback), `applicable()`.
 - `nevar-security-review/tests/test_security_scan.py`: unit tests and real-scanner tests.
 - `nevar-security-review/references/nevar.md`: the OSV bullet, the `not-covered` rule, the
   residual.

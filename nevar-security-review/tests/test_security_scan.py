@@ -369,22 +369,24 @@ class Outcome(unittest.TestCase):
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
-    # Codex P1s on c849c19 and f277bbf: includes are not resolved (plans/2026-11-22-security-scan-
-    # osv-include-resolution.md), so any include line, in any form pip accepts, is not-covered
-    def test_has_include_matches_every_form_pip_accepts(self):
-        includes = ["-r base.txt", "-rbase.txt", "  -r\tbase.txt", "-c c.txt", "--requirement base.txt",
-                    "--requirement=base.txt", '-r "base.txt"', "--req base.txt", "--constr=c.txt",
-                    "-\\\nr base.txt", "six==1.16.0 \\\n\n-r base.txt", "\ufeff-r base.txt",
-                    "-r ${DIR}/base.txt"]
-        for text in includes:
+    # Codex P1s on c849c19, f277bbf and f95bd30: includes are not resolved (plans/2026-11-22-security-
+    # scan-osv-include-resolution.md). pip follows -r/-c only on an option line (first token "-",
+    # after join_lines), so every option line is not-covered and no option syntax is parsed.
+    def test_every_option_line_is_not_covered(self):
+        option_lines = ["-r base.txt", "-rbase.txt", "  -r\tbase.txt", "-c c.txt", "--requirement=base.txt",
+                        "--req base.txt", "--no-index -r base.txt", "-i https://example.invalid -r base.txt",
+                        "-\\\nr base.txt", "\\-r base.txt \\\n--no-index", "six==1.16.0\n\n--no-index \\\n-r base.txt",
+                        "\ufeff-r base.txt", "${OPT} base.txt", "-e .", "--index-url https://example.invalid/simple",
+                        "# note \\\n-r base.txt", "-\x00r\x00 base.txt"]
+        for text in option_lines:
             with self.subTest(text=text):
-                self.assertTrue(scan.has_include(text))
-        plain = ["six==1.16.0", "# -r base.txt", "# note \\\n-x", "-e .", "--require-hashes",
-                 "--index-url https://example.invalid/simple", "requests[security]==2.31.0 --hash=sha256:00"]
+                self.assertTrue(scan.has_option_line(text))
+        # requirement lines, hashed continuations (pip-compile --generate-hashes) and comments
+        plain = ["six==1.16.0", "# -r base.txt", "  # --index-url x", "requests[security]==2.31.0 --hash=sha256:00",
+                 "six==1.16.0 \\\n    --hash=sha256:00 \\\n    --hash=sha256:11", "six==1.16.0 -r base.txt", ""]
         for text in plain:
             with self.subTest(text=text):
-                self.assertFalse(scan.has_include(text))
-        self.assertTrue(scan.has_include("# note \\\n-r base.txt"))  # pip never joins a comment line
+                self.assertFalse(scan.has_option_line(text))
 
     def test_include_is_an_exceptable_not_covered_finding(self):
         real = scan.scan_one
