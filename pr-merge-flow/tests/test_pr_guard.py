@@ -1022,7 +1022,7 @@ FAIL = {
     "rule without parameters": ({"rules": [{"type": "required_status_checks"}]}, "rules a required_status_checks rule lists no checks"),
     "policy 403": ({"policy": _gh_error(403, "Resource not accessible by integration")}, ".github/required-checks.json 403"),
     "policy 500": ({"policy": _gh_error(500, "Server Error")}, ".github/required-checks.json 500 Server Error"),
-    "policy nested too deep": ({"policy": "[" * 100000 + "]" * 100000}, ".github/required-checks.json malformed: "),
+    "policy nested too deep": ({"policy": "[" * 1000000 + "]" * 1000000}, ".github/required-checks.json malformed: "),
     "check-runs 500": ({"cr": _gh_error(500, "Server Error")}, "check-runs 500 Server Error"),
 }
 for case, (kw, line) in FAIL.items():
