@@ -320,24 +320,25 @@ class BodyClaims(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("claims a scanner pass", out)
 
-    # SKILLS-SEC-CLAIM-2: a negated or failure report is not a pass claim, with the lane off
-    def test_negated_reports_are_not_claims(self):
-        for line in ("Security scan: semgrep did not pass", "Security scan: gitleaks is not clean",
-                     "Security scan: zizmor failed", "Security scan: osv-scanner failed to pass",
-                     "Security scan: semgrep didn't pass", "Security scan: gitleaks isn’t clean"):
-            body = f"## Review\n\n{line}\n"
-            rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
-            self.assertEqual(rc, 0, (line, out))
-
-    def test_a_pass_beside_a_negation_is_still_a_claim(self):
-        for line in ("Security scan: gitleaks did not pass but semgrep passed",
-                     "Security scan: no findings, semgrep passed",
+    # SKILLS-SEC-CLAIM-2: negation is not parsed (each parser was evaded in review), so a failure report
+    # that uses a pass word fails closed and the error says how to reword it
+    def test_a_pass_word_counts_even_when_negated(self):
+        for line in ("Security scan: semgrep did not pass", "Security scan: gitleaks isn’t clean",
+                     "Security scan: gitleaks did not pass but semgrep passed",
                      "Security scan: semgrep not only passed but found zero issues",
-                     "Security scan: gitleaks never once failed, it is clean"):
+                     "Security scan: semgrep did not fail to pass",
+                     "Security scan: semgrep found no pass-blocking issues"):
             body = f"## Review\n\n{line}\n"
             rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
             self.assertEqual(rc, 1, (line, out))
             self.assertIn("claims a scanner pass", out)
+            self.assertIn("reword it without a pass word", out)
+
+    def test_a_failure_report_without_a_pass_word_is_not_a_claim(self):
+        for line in ("Security scan: zizmor failed", "Security scan: semgrep reported 2 findings"):
+            body = f"## Review\n\n{line}\n"
+            rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
+            self.assertEqual(rc, 0, (line, out))
 
     def test_fallback_attestation_is_not_a_claim(self):
         body = "## Review\n\nFallback review: codex on " + "a" * 40 + " — verdict: clean\n"
