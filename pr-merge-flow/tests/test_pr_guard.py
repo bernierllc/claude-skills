@@ -1110,5 +1110,12 @@ assert m and "required check Test & Build is MISSING" in m, m
 assert not [c for c in calls_seen if "/contents/" in " ".join(c) and "ref" in " ".join(c)], calls_seen
 
 
+# 17. A guard crash blocks (exit 2), never allows: a JSON list makes main() raise AttributeError.
+_home = Path(tempfile.mkdtemp())
+_crash = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / "pr-guard.py")], input="[]",
+              capture_output=True, text=True, timeout=20,
+              env={"PATH": "/usr/bin:/bin", "HOME": str(_home), "CLAUDE_PROJECT_DIR": str(_home), "AGENT_FEEDBACK_BIN": ""})
+assert _crash.returncode == 2 and "pr-guard crashed" in _crash.stderr, (_crash.returncode, _crash.stderr)
+
 def test_pr_guard():
     """pytest entry point: the asserts above run at import, so a failure is a collection error."""

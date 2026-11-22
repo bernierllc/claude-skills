@@ -1207,6 +1207,10 @@ def fb_log(subject: str, severity: str, summary: str) -> None:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:
+    except Exception as exc:  # fail closed: PreToolUse blocks only on exit 2, and a crash (exit 1) would allow
         fb_log("hook:pr-merge-flow/pmf-pr-guard", "high", f"pr-guard crashed: {type(exc).__name__}")
-        raise
+        import traceback
+        traceback.print_exc()
+        print(f"Blocked: pr-guard crashed ({type(exc).__name__}: {exc}), so the command was not checked.",
+              file=sys.stderr)
+        sys.exit(2)
