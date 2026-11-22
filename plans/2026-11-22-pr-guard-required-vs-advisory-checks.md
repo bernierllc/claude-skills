@@ -127,7 +127,7 @@ Revision 1's failure cases 4a-4i (exit codes, 403, a 404 that is not "Branch not
 
 ## Rollout (recommendation: ship enforcing, behind a per-repo opt-in)
 
-1. **Release 1.6.0** after #131 and #132. With no policy file, every repo behaves exactly as it does on 1.5.x. Revision 1's parity test (`tests/test_pr_guard_parity.py`, from #131) stays green for every repo without the file. The new behavior only exists behind the file, and new tests pin it.
+1. **Release 1.6.0** after #131 and #132. With no policy file, every repo behaves exactly as it does on 1.5.x. The parity test (`tests/test_pr_guard_parity.py`, #131) replays every test and fixture input against the previous release and fails on a lost block unless the input is listed in `ALLOWED_FLIPS` with a reason. Every input without a policy file keeps its old verdict. The inputs that the previous release blocks and 1.6.0 allows (tests 1 and 9's advisory case) each get an `ALLOWED_FLIPS` entry naming this plan, added on purpose in the same PR, not by loosening the test.
 2. **Canary:** nevar-aec-catalog (the incident repo) adds `.github/required-checks.json` listing what its owner considers required. Its traffic cop re-vendors the guard to 1.6.0. Watch one red-`doctor` merge and one required-red refusal.
 3. **Shadow mode is not recommended.** The only loosening is one pinned, provenance-checked entry, and only in repos that opted in. A shadow phase would leave the incident unfixed while measuring a change that is already off by default. If the Program Cop wants shadow anyway, the cheap form: for one release, step 5's exemption logs `would allow` through the existing `fb_log` (line 909) and still blocks.
 4. **Fleet:** each repo's cop adds the file in its next re-vendor PR, which is the same PR CS-DOCTOR-LATEST-RELEASE and `review-gate-stale-vendor-fleet.md` already plan per repo. There is no extra PR per repo.
@@ -168,7 +168,7 @@ The suite follows the repo's rule: no mocks of what we own. `check()`, `not_gree
 12. **Output channel:** the advisory line reaches the model on an **allowed** merge. Before promising this, establish against the harness whether exit-0 stdout or stderr is shown, or whether it must go out as `hookSpecificOutput.additionalContext` JSON (revision 1's test 10, still open: verify, do not assume).
 13. **No bypass:** `# advisory-ok:`, `# codex-review-ok:`, `# sync-base:` and any environment variable leave tests 3-8 blocked.
 14. **Deny-list:** `ADVISORY_CHECKS` contains no `Review Gate`, `Security Scan`, or name matching `test|build|codeql|security`.
-15. **Unchanged rules:** `--admin`, `--auto`, the missing `--match-head-commit` SHA, the Codex mention and the polling rules block exactly as on 1.5.4. The #131 parity test passes for every fixture without a policy file.
+15. **Unchanged rules:** `--admin`, `--auto`, the missing `--match-head-commit` SHA, the Codex mention and the polling rules block exactly as on 1.5.4. The #131 parity test passes, with `ALLOWED_FLIPS` entries only for the allowed advisory cases (rollout step 1).
 
 ## Acceptance criteria
 
