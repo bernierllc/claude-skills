@@ -230,7 +230,8 @@ What the workflow does:
     changed dependency file, lockfiles included, is also a `not-covered` finding on that
     file, whatever its content: the scan cannot prove it saw what the package manager
     installs. That includes a dependency file staging skipped, such as a symlink, since the
-    package manager still reads it. Advisories are still reported. It fails unless an
+    package manager still reads it, and one the PR deletes or renames away, since that
+    changes what gets installed. Advisories are still reported. It fails unless an
     owned, expiring exception names that file. Proving coverage, one format at a time, is
     `plans/2026-11-22-security-scan-osv-include-resolution.md`;
   - zizmor on workflows, actions and Dependabot config;

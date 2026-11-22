@@ -87,12 +87,15 @@ def list_changed(api, repo, pr, head_sha):
         raise ScanError(f"PR head moved to {now} while listing files for {head_sha}; re-run")
     out = []
     for f in files:
-        if f.get("status") == "removed":
-            continue
-        rel = safe_rel(f.get("filename"))
-        if rel is None:
-            raise ScanError(f"unsafe file name in PR: {f.get('filename')!r}")
-        out.append(rel)
+        # a removed dependency file, or one renamed away, still changes what gets installed:
+        # keep its path so it is not-covered (absent at the head, so never staged)
+        names = [f.get("filename")] + ([f["previous_filename"]] if f.get("previous_filename") else [])
+        for i, name in enumerate(names):
+            rel = safe_rel(name)
+            if rel is None:
+                raise ScanError(f"unsafe file name in PR: {name!r}")
+            if (i == 0 and f.get("status") != "removed") or is_dependency_file(rel):
+                out.append(rel)
     return sorted(set(out))
 
 

@@ -5,7 +5,7 @@ descoped to what it can prove.
 
 ## Why this is a plan, not a fix in #147
 
-PR #147 produced fifteen P1 findings in the osv-scanner exit and coverage area. The traffic cop
+PR #147 produced sixteen P1 findings in the osv-scanner exit and coverage area. The traffic cop
 set the rule after the fourth: one more P1 there and the PR descopes OSV and this plan takes
 the rest. The f277bbf re-check found four more, so the descope ran. The review of the descope
 head found a ninth in the include predicate, and the review of the option-line rule that
@@ -14,7 +14,8 @@ read the same requirements bytes differently. The review of the requirements-onl
 three more (13–15): a requirements symlink escaped the rule because staging drops it, and
 two Yarn lockfile inputs make osv-scanner's parser read less than yarn does while still
 yielding packages. Under the third-round rule #147 therefore proves nothing about any
-dependency file, lockfiles included (below).
+dependency file, lockfiles included (below). The review of that rule found a sixteenth: the
+changed-file list dropped deleted dependency files and rename sources, so they escaped it.
 
 | # | Head | Finding |
 |---|------|---------|
@@ -33,6 +34,7 @@ dependency file, lockfiles included (below).
 | 13 | ffb4239 | a changed requirements file replaced by a symlink is dropped by staging, so it gets no `not-covered` finding |
 | 14 | ffb4239 | a single-quoted Yarn Berry version (`version: '4.17.20'`) is read as version `""`, so its advisories are hidden |
 | 15 | ffb4239 | a Yarn comment longer than about 70000 characters silently truncates the extractor's parse; earlier packages still count as read |
+| 16 | 6ed2a9d | a deleted lockfile, or a requirements file renamed to a non-dependency name, was dropped from the changed-file list, so it escaped `not-covered` |
 
 Plus one P2 on f277bbf: an exception keyed on the including file covers every unresolved
 include in it.
@@ -46,9 +48,10 @@ include in it.
   advisory extras: neither proves the file was read completely.
 - Every changed dependency file is a `not-covered` finding on that file, whatever its
   content and whatever osv-scanner read from it. That includes a dependency file staging
-  skipped (a symlink, a non-regular file), because the package manager still reads it. It
+  skipped (a symlink, a non-regular file), because the package manager still reads it, and a
+  dependency file the PR deletes or renames away, because that changes what gets installed. It
   fails the gate unless an exact, owned, expiring exception names that file. No content
-  predicate exists, so findings 5–15 cannot turn into a pass. A repo that changes
+  predicate exists, so findings 5–16 cannot turn into a pass. A repo that changes
   dependency files needs a per-file exception until this plan lands a proven format.
 - The P2 becomes the intended semantics for now: the finding is about the file ("OSV cannot
   prove it read this file completely"), so one exception per file is the right key.
@@ -115,5 +118,5 @@ include, are scanned with what pip would install or fail with a named finding, a
 lockfile format whose `not-covered` is lifted is proven read completely. Real-scanner tests
 cover nested, missing, escaping, symlinked, `--requirement`, continued and quoted includes,
 encoding declarations, `\r`/`\f` separators, environment variables, quoted Yarn versions
-and long Yarn lines (findings 1–15), and the unconditional `not-covered` rule and the
+and long Yarn lines (findings 1–15; 16 is closed in #147), and the unconditional `not-covered` rule and the
 residual are removed from `nevar.md`.

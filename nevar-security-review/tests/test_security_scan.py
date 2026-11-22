@@ -164,6 +164,25 @@ class Inputs(unittest.TestCase):
         self.assertEqual(len(got), 150)
         self.assertNotIn("gone.py", got)
 
+    # Codex P1 on 6ed2a9d: a deleted or renamed-away dependency file must still be not-covered
+    def test_list_changed_keeps_removed_and_renamed_dependency_files(self):
+        files = [{"filename": "package-lock.json", "status": "removed"},
+                 {"filename": "archived.txt", "status": "renamed", "previous_filename": "requirements.txt"},
+                 {"filename": "new.py", "status": "renamed", "previous_filename": "old.py"}]
+        got = scan.list_changed(self.api(files), "o/r", 1, "h1")
+        self.assertEqual(got, ["archived.txt", "new.py", "package-lock.json", "requirements.txt"])
+        with tempfile.TemporaryDirectory() as t:
+            head, st = Path(t) / "head", Path(t) / "st"
+            head.mkdir(); st.mkdir()
+            (head / "archived.txt").write_text("x\n"); (head / "new.py").write_text("x = 1\n")
+            staged, _ = scan.stage(head, got, st)
+            skipped = [r for r in got if r not in staged]
+            (st / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
+            with mock.patch.object(scan, "scan_one", lambda *a: []):
+                _, found, _ = scan.scan(staged, st, st, st, dt.date(2026, 1, 1), skipped)
+        self.assertEqual(sorted(f["path"] for f in found if f["rule"] == "not-covered"),
+                         ["package-lock.json", "requirements.txt"])
+
     def test_list_changed_fails_closed(self):
         with self.assertRaisesRegex(scan.ScanError, "head moved"):
             scan.list_changed(self.api([{"filename": "a", "status": "added"}], head="h2"), "o/r", 1, "h1")
