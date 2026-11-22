@@ -57,6 +57,7 @@ Design, owned by review-gate. Both parts land, and are proven on the canary, bef
    4. It only touches runs of the lane's own workflows, for that PR, on its current head. Overlapping config pushes each finish, and the newest tree wins.
    5. A run that cannot be re-run fails closed: missing, past GitHub's 30-day re-run window, past the attempt limit, or with its workflow disabled. The mechanism fails visibly and names the PR. Recovery is an event that starts both workflows: re-enable a disabled workflow, then close and reopen the PR. A label toggle starts only `Review Gate`, because the scan template triggers on `opened`, `synchronize`, `reopened` and `ready_for_review`.
    6. The installer and doctor install and verify every workflow the lane needs (preflight 1).
+   7. Freshness covers the scanner, not just its config. A re-run keeps the workflow version of its original event, so a workflow-only change, such as a new pinned scanner binary, leaves `.github/security-scan/` and its digest unchanged while the old binary runs. The freshness check must also bind the scan workflow's revision on the default branch, and the re-fire must run the current trusted definition, not re-run the old one.
 2. Defense in depth: the merge guard checks the lane live. `merge-guard.py` calls `check-security-scan.py` with the live default-branch digest whenever the lane is on, and fails closed exactly as `forged_gate_check()` does. This blocks an agent merge at once, whatever state the re-fire is in.
 3. Kept residual: the UI-merge window. Invalidation is asynchronous. From the config push until the re-run `Review Gate` finishes, the old green check stands, and a merge in the GitHub UI succeeds. When the re-fire workflow is queued or failing, the window lasts until it runs. The lane therefore claims only this much: an agent merge is blocked at once (part 2), and a UI merge is blocked once the re-fire lands (part 1). Only an evaluation at merge time can close the window, such as a merge queue that re-runs required checks on `merge_group`. review-gate's workflows do not handle `merge_group` today, so that is a separate review-gate decision, outside this rollout. Each repo's Tracker row states the window, and config changes merge when no PR is about to merge.
 
@@ -67,7 +68,10 @@ Canary proof needed:
 - The merge guard must refuse `gh pr merge` while a gate is red.
 - Delayed invalidation: disable the re-fire workflow, merge another config change, and record that `gh pr view --json mergeStateStatus` still reads mergeable while the merge guard refuses. That proves the residual is exactly as stated above.
 - The fail-closed path for runs that cannot be re-run is unit-tested in the step 2 PR, because a 30-day expiry cannot be staged on the canary. The canary does show recovery after a missing run: delete the PR's newest scan run, then close and reopen the PR.
-- The canary is private, so these runs also prove the token's permissions.
+- The canary is private, so these runs also prove the token's permissions. Record the re-fire workflow's permissions block, and show that it never checks out PR code (requirement 3).
+- Workflow-only change: merge a change to the scan workflow alone. The old definition's result must not pass the gate, and a scan under the new definition must (requirement 7).
+- Overlapping pushes and a moving head: merge two config changes back to back and show that the newest tree decides. Push to a PR while its re-fire runs and show that only the new head's runs count. Run a same-name job from another workflow and show it is neither re-run nor counted (requirement 4).
+- Install the lane on the canary with the extended installer, and show that the doctor passes only once every lane workflow is on the default branch (requirement 6).
 
 Record the run URLs on the SKILLS-SEC-CLAIM-2 row. The canary repo is therefore kept until this proof is done. Its deletion approval (Ops #61) covers only the first phase.
 
@@ -110,7 +114,7 @@ Every row's owner is `Traffic Cop · <repo>`. "Collision" is the number of workf
 
 | Repo | Default | review-gate now | Lane script | First step |
 |---|---|---|---|---|
-| mbernier.com | staging | 3.3.1 | yes | Re-vendor review-gate 3.3.2 at the pin. 3.3.1 still parses negation in claims, which SKILLS-SEC-CLAIM-2 finding 1 showed could be evaded. After the upgrade, a failure report that uses a pass word must be reworded. Its `security-scan.yml` ("Security Scanning": Dependency Vulnerability Scan, Secrets Detection, Scheduled audit issue) does not collide. |
+| mbernier.com | staging | 3.3.1 | yes | Re-vendor review-gate at the step 3 tag, the release that carries finding 2. 3.3.2 is the first release with the claims fix, but it lacks finding 2. 3.3.1 still parses negation in claims, which SKILLS-SEC-CLAIM-2 finding 1 showed could be evaded. After the upgrade, a failure report that uses a pass word must be reworded. Its `security-scan.yml` ("Security Scanning": Dependency Vulnerability Scan, Secrets Detection, Scheduled audit issue) does not collide. |
 | nevar-mail | staging | 3.2.22 | no | Re-vendor at the pin |
 | nevar.io | staging | 3.2.22 | no | Re-vendor at the pin |
 | nevar-api | staging | 3.2.20 | no | Re-vendor at the pin |
@@ -140,7 +144,7 @@ Excluded: review-gate-sandbox, review-gate-repro14, and the canary (test repos).
 
 ## Done when
 
-- The finding 2 proof is recorded, with run URLs, on the Tracker and SKILLS-SEC-CLAIM-2 rows. It covers a default-base PR, a non-default-base PR and the delayed-invalidation case.
+- The finding 2 proof is recorded, with run URLs, on the Tracker and SKILLS-SEC-CLAIM-2 rows. It covers every bullet under "Canary proof needed": both bases, delayed invalidation, missing-run recovery, permissions, the workflow-only change, overlapping pushes and a moving head, foreign-run isolation, and the installer and doctor round trip.
 - A claude-skills tag and the matching AEC release exist, and the catalog pins to them.
 - Every repo in the table has either the lane on, with its proof row recorded, or a written reason on its Tracker row why it waits.
 - The single platform-ops issue 1 ask is answered and recorded. Either a required-workflow rule is proven on the canary and applied in the repos that took the lane, or the trust table keeps the same-name residual as detection only.
