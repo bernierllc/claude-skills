@@ -314,6 +314,31 @@ class DoctorStrict(unittest.TestCase):
             self.assertTrue(any(line.startswith("WARN scripts/check-forged-gate-names.py differs") for line in lines))
 
 
+class SecurityRefreshInstall(unittest.TestCase):
+    """Security Refresh is installed only beside nevar-security-review's scan workflow, byte-identical."""
+
+    def test_only_with_the_scan_workflow(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = Path(repo) / ".github" / "workflows" / "review-gate-security-refresh.yml"
+            install(repo)
+            self.assertFalse(dest.exists())
+            (Path(repo) / ".github" / "workflows" / "review-gate-security-scan.yml").write_text("name: Security Scan\n")
+            install(repo)
+            self.assertEqual(dest.read_bytes(), (SKILL / "templates" / "review-gate-security-refresh.yml").read_bytes())
+
+    def test_doctor_warns_strict_when_the_scan_has_no_refresh(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as empty_path:
+            install(repo)
+            (Path(repo) / ".github" / "workflows" / "review-gate-security-scan.yml").write_text("name: Security Scan\n")
+            proc, _ = doctor_script_lines(repo, {**os.environ, "PATH": empty_path}, "--strict")
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("WARN .github/workflows/review-gate-security-refresh.yml is missing", proc.stdout)
+            install(repo)
+            proc, _ = doctor_script_lines(repo, {**os.environ, "PATH": empty_path}, "--strict")
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn("OK workflow .github/workflows/review-gate-security-refresh.yml", proc.stdout)
+
+
 class DoctorJob(unittest.TestCase):
     """3.2.19: --doctor-job writes a no-clone job that runs the repo's own vendored doctor --strict."""
 

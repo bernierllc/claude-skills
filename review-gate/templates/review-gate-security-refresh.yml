@@ -1,0 +1,73 @@
+# Security Refresh: keeps Review Gate's security lane current for every open PR.
+# Installed by review-gate's install-workflow.py as .github/workflows/review-gate-security-refresh.yml when
+# the repo has nevar-security-review's .github/workflows/review-gate-security-scan.yml.
+#
+# The lane (scripts/check-security-scan.py, check g) fails a scan that predates the default branch's current
+# scan workflow, .github/security-scan/ config or review-gate policy code, or that completed over 36 h ago.
+# This workflow re-fires both the scan and the gate, so a stale green never stands and a PR does not stay red:
+# - push to the default branch touching any of those files, and daily: dispatch Security Scan
+#   (workflow_dispatch, inputs pr and head) for every open PR, then re-run that PR's newest Review Gate run,
+#   which fails until the new scan lands (its old scan is now stale or the new one is queued).
+# - Security Scan completing (workflow_run): re-run that PR's newest Review Gate run, waiting up to 2 min for
+#   one still in progress, so the gate reads the finished scan without a label toggle.
+# The push paths are check-security-scan.py's POLICY_FILES plus the scan workflow and its config tree; a test
+# pins them to that list.
+#
+# Trust: push, schedule and workflow_run all run this file and the scripts from the default branch, and the
+# scripts load through the Contents API exactly as review-gate.yml loads them. Nothing from a PR is checked
+# out or executed. No `${{` in run: the completed run's title (any workflow can be named Security Scan)
+# reaches the script only as env, which a regex parses and never echoes.
+# A dispatch or re-run that GitHub refuses fails this run and names the PR: close and reopen that PR.
+# No concurrency group: a cancelled refresh would leave PRs un-fired.
+name: Security Refresh
+
+on:
+  push:
+    paths:
+      - .github/workflows/review-gate.yml
+      - .github/workflows/review-gate-security-scan.yml
+      - .github/security-scan/**
+      - scripts/check-security-scan.py
+      - scripts/check-review-gate.py
+      - scripts/check-forged-review-gate.py
+      - scripts/check-forged-gate-names.py
+      - .claude/skills/review-gate/scripts/merge-guard.py
+  schedule:
+    - cron: "17 6 * * *" # daily: the lane's 36 h freshness window assumes it
+  # zizmor: ignore[dangerous-triggers] default-branch code only; it reads PR numbers and heads, never PR code
+  workflow_run:
+    workflows: [Security Scan]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  refresh:
+    name: Security Refresh
+    # a push to another branch runs that branch's copy of this file: only the default branch's acts
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write # dispatch Security Scan and re-run Review Gate
+      contents: read # load the lane scripts from the default branch
+      pull-requests: read # list open PRs and read their heads
+    steps:
+      - name: Re-fire Security Scan and Review Gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+        run: |
+          set -euo pipefail
+          # a schedule event's payload has no repository, so ask the API
+          DEFAULT_BRANCH=$(gh api "repos/$REPO" | jq -r '.default_branch // empty')
+          [ -n "$DEFAULT_BRANCH" ] || { echo "::error::security refresh: could not read the default branch"; exit 1; }
+          export DEFAULT_BRANCH
+          for name in check-security-scan.py check-forged-review-gate.py check-forged-gate-names.py; do
+            # an empty or absent .content would run an empty script: fail closed, as review-gate.yml does
+            gh api "repos/$REPO/contents/scripts/$name?ref=$DEFAULT_BRANCH" | jq -r '.content // empty' | base64 -d > "/tmp/$name"
+            [ -s "/tmp/$name" ] || { echo "::error::security refresh: could not load scripts/$name from $DEFAULT_BRANCH"; exit 1; }
+          done
+          python3 -I /tmp/check-security-scan.py --refresh

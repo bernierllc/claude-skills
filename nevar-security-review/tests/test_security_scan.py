@@ -34,6 +34,9 @@ CONFIG = TEMPLATES / "security-scan"
 FIXTURES = SKILL / "fixtures"
 LANE = SKILL.parent / "review-gate" / "scripts" / "check-security-scan.py"
 TREE = "a" * 40
+HEAD = "c" * 40
+WF_BLOB = "d" * 40
+POLICY = "e" * 64
 
 
 def load(name, path):
@@ -61,11 +64,23 @@ class LaneContract(unittest.TestCase):
 
     def test_every_notice_is_one_the_lane_parses(self):
         for o in scan.OUTCOMES:
-            line = scan.notice(o, TREE)
-            m = re.fullmatch(r"::notice title=([^:]+)::(.*)", line)
-            self.assertEqual(m.group(1), self.lane.ANNOTATION)
-            parsed = self.lane.OUTCOME.fullmatch(m.group(2).strip())
-            self.assertEqual((parsed.group(1), parsed.group(2)), (o, TREE))
+            for until in (None, "2026-12-01"):
+                line = scan.notice(o, TREE, "7", HEAD, "release/v1.2", WF_BLOB, POLICY, until)
+                m = re.fullmatch(r"::notice title=([^:]+)::(.*)", line)
+                self.assertEqual(m.group(1), self.lane.ANNOTATION)
+                parsed = self.lane.NOTICE.fullmatch(m.group(2).strip())
+                self.assertEqual(parsed.groupdict(), {
+                    "outcome": o, "tree": TREE, "pr": "7", "head": HEAD, "base_ref": "release/v1.2",
+                    "workflow": WF_BLOB, "policy": POLICY, "until": until or "none"})
+
+    def test_notice_refuses_a_field_that_could_break_the_line(self):
+        good = ["passed", TREE, "7", HEAD, "main", WF_BLOB, POLICY, None]
+        for i, bad in ((2, "07"), (3, "h1"), (4, "a b"), (4, "x::y"), (5, "z" * 40), (6, "e" * 40), (7, "soon")):
+            with self.subTest(field=i, value=bad), self.assertRaises(AssertionError):
+                scan.notice(*good[:i], bad, *good[i + 1:])
+
+    def test_workflow_file_is_the_lane_marker(self):
+        self.assertEqual(scan.WORKFLOW_REL, self.lane.TRUSTED[0])
         self.assertEqual(set(scan.OUTCOMES), {"passed", "not-applicable", "findings", "scanner-error"})
         self.assertEqual(self.lane.PASSING, {"passed", "not-applicable"})
 
@@ -81,10 +96,18 @@ class WorkflowShape(unittest.TestCase):
         cls.wf = yaml.safe_load(cls.text)
         (cls.job,) = cls.wf["jobs"].values()
 
-    def test_trigger_is_pull_request_target_only(self):
+    def test_triggers_are_pull_request_target_and_the_refresh_dispatch(self):
         on = self.wf[True]  # PyYAML reads the bare `on` key as boolean True, as YAML 1.1 does
-        self.assertEqual(list(on), ["pull_request_target"])
+        self.assertEqual(list(on), ["pull_request_target", "workflow_dispatch"])
         self.assertEqual(on["pull_request_target"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"])
+        self.assertEqual({k: v["required"] for k, v in on["workflow_dispatch"]["inputs"].items()},
+                         {"pr": True, "head": True})
+
+    def test_run_name_is_the_title_the_lane_matches_dispatch_runs_by(self):
+        self.assertEqual(self.wf["run-name"], "Security Scan - PR #${{ github.event.pull_request.number || inputs.pr }}"
+                         " @ ${{ github.event.pull_request.head.sha || inputs.head }}")
+        lane = load("check_security_scan", LANE)
+        self.assertEqual(lane.RUN_TITLE.format(pr=7, head=HEAD), f"Security Scan - PR #7 @ {HEAD}")
 
     def test_least_privilege(self):
         self.assertEqual(self.wf["permissions"], {})
@@ -109,8 +132,19 @@ class WorkflowShape(unittest.TestCase):
         base, head = [s["with"] for s in self.job["steps"] if "uses" in s]
         self.assertEqual(base, {"ref": "${{ github.event.repository.default_branch }}", "path": "base",
                                 "persist-credentials": False})
-        self.assertEqual(head, {"ref": "${{ github.event.pull_request.head.sha }}", "path": "head",
+        self.assertEqual(head, {"ref": "${{ github.event.pull_request.head.sha || inputs.head }}", "path": "head",
                                 "persist-credentials": False})
+
+    def test_scan_step_identity_env_and_policy(self):
+        run_step = [s for s in self.job["steps"] if "run" in s][-1]
+        self.assertEqual({k: run_step["env"][k] for k in ("PR_NUMBER", "HEAD_SHA", "WORKFLOW_SHA")}, {
+            "PR_NUMBER": "${{ github.event.pull_request.number || inputs.pr }}",
+            "HEAD_SHA": "${{ github.event.pull_request.head.sha || inputs.head }}",
+            "WORKFLOW_SHA": "${{ github.workflow_sha }}"})
+        # assigned, then exported: `export POLICY="$(...)"` would hide the command's failure from set -e
+        self.assertIn('POLICY="$(python3 -I "$BASE_DIR/scripts/check-security-scan.py" --policy-revision "$BASE_DIR")"',
+                      run_step["run"])
+        self.assertIn("export POLICY\n", run_step["run"])
 
     def test_no_expression_inside_run_scripts(self):
         for s in self.job["steps"]:
@@ -154,7 +188,9 @@ class Inputs(unittest.TestCase):
         def api(path):
             if "/files?" in path:
                 return pages[int(path.rsplit("page=", 1)[1]) - 1]
-            return {"head": {"sha": head}}
+            if "/contents/" in path:
+                return {"sha": WF_BLOB}
+            return {"head": {"sha": head}, "base": {"ref": "main"}}
         return api
 
     def test_list_changed_paginates_and_skips_removed(self):
@@ -179,7 +215,7 @@ class Inputs(unittest.TestCase):
             skipped = [r for r in got if r not in staged]
             (st / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
             with mock.patch.object(scan, "scan_one", lambda *a: []):
-                _, found, _ = scan.scan(staged, st, st, st, dt.date(2026, 1, 1), skipped)
+                _, found, _, _ = scan.scan(staged, st, st, st, dt.date(2026, 1, 1), skipped)
         self.assertEqual(sorted(f["path"] for f in found if f["rule"] == "not-covered"),
                          ["package-lock.json", "requirements.txt"])
 
@@ -345,6 +381,15 @@ class Exceptions(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(scan.ScanError):
                 scan.load_exceptions(self.write(None, raw), dt.date(2026, 1, 1))
 
+    def test_exceptions_until_is_the_earliest_expiry_that_suppressed_a_finding(self):
+        a, b = dict(self.ok, path="a.py", expires="2026-03-01"), dict(self.ok, path="b.py", expires="2026-02-01")
+        late_a = dict(a, expires="2026-04-01")  # the same key twice holds until the later expiry
+        unused = dict(self.ok, path="z.py", expires="2026-01-05")
+        fa, fb = ({"scanner": "gitleaks", "rule": "r", "path": x} for x in ("a.py", "b.py"))
+        self.assertEqual(scan.exceptions_until([fa, fb], [a, b, unused]), "2026-02-01")
+        self.assertEqual(scan.exceptions_until([fa], [a, late_a, unused]), "2026-04-01")
+        self.assertIsNone(scan.exceptions_until([], [a, unused]))
+
     def test_exact_match_only(self):
         f = [{"scanner": "gitleaks", "rule": "r", "path": "c.py"}, {"scanner": "gitleaks", "rule": "r", "path": "d.py"}]
         kept, excepted = scan.apply_exceptions(f, [self.ok])
@@ -379,7 +424,7 @@ class Outcome(unittest.TestCase):
             rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
             with mock.patch.object(scan, "run", lambda *a, **k: (0, json.dumps(rep))), \
                     mock.patch.object(scan, "scan_one", osv_only):
-                res, found, _ = scan.scan(["app/requirements.txt", "svc/go.mod"], cfg, st, Path(t), dt.date(2026, 1, 1))
+                res, found, _, _ = scan.scan(["app/requirements.txt", "svc/go.mod"], cfg, st, Path(t), dt.date(2026, 1, 1))
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
@@ -408,7 +453,7 @@ class Outcome(unittest.TestCase):
             cfg = Path(t)
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
             with mock.patch.object(scan, "scan_one", lambda *a: self.fail("nothing is staged")):
-                res, found, _ = scan.scan([], cfg, cfg, cfg, dt.date(2026, 1, 1),
+                res, found, _, _ = scan.scan([], cfg, cfg, cfg, dt.date(2026, 1, 1),
                                           skipped=["requirements.txt", "src/link.py"])
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertEqual(found, [{"scanner": "osv-scanner", "rule": "not-covered", "path": "requirements.txt"}])
@@ -430,13 +475,13 @@ class Outcome(unittest.TestCase):
                         mock.patch.object(scan, "scan_one", osv_only):
                     return scan.scan(staged, cfg, st, Path(t), dt.date(2026, 1, 1))
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
-            res, found, _ = run_scan()
+            res, found, _, _ = run_scan()
             self.assertEqual((res["osv-scanner"], found), ("findings", [
                 {"scanner": "osv-scanner", "rule": "not-covered", "path": p} for p in staged]))
             ok = dict(Exceptions.ok, scanner="osv-scanner", rule="not-covered",
                       path="app/requirements-dev.txt", expires="2026-01-01")
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": [ok]}))
-            res, found, _ = run_scan()  # one exception covers its own file only
+            res, found, _, _ = run_scan()  # one exception covers its own file only
             self.assertEqual((res["osv-scanner"], found), ("findings", [
                 {"scanner": "osv-scanner", "rule": "not-covered", "path": "app/requirements.txt"}]))
 
@@ -450,21 +495,22 @@ class Outcome(unittest.TestCase):
             ok = dict(Exceptions.ok, scanner="semgrep", path="a.py", expires="2026-01-01")
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": [ok]}))
             staged = ["a.py", ".github/workflows/ci.yml"]
-            res, found, lines = scan.scan(staged, cfg, Path(t), Path(t), dt.date(2026, 1, 1))
+            res, found, lines, until = scan.scan(staged, cfg, Path(t), Path(t), dt.date(2026, 1, 1))
             self.assertEqual(res, {"gitleaks": "passed", "osv-scanner": "not-applicable",
                                    "zizmor": "scanner-error", "semgrep": "passed"})
             self.assertEqual(found, [])
+            self.assertEqual(until, "2026-01-01")  # the exception that suppressed the finding holds until then
             self.assertTrue(any(line.startswith("- osv-scanner: not-applicable") for line in lines))
             # the next day the exception has expired: it stops suppressing and is listed
-            res, found, lines = scan.scan(staged, cfg, Path(t), Path(t), dt.date(2026, 1, 2))
-            self.assertEqual((res["semgrep"], len(found)), ("findings", 1))
+            res, found, lines, until = scan.scan(staged, cfg, Path(t), Path(t), dt.date(2026, 1, 2))
+            self.assertEqual((res["semgrep"], len(found), until), ("findings", 1, None))
             self.assertTrue(any("expired exception" in line for line in lines))
 
 
 class Main(unittest.TestCase):
     """End to end with a fake API and fake scanners: one notice, PR text fenced by stop-commands."""
 
-    def run_main(self, files, findings, head_sha="h1"):
+    def run_main(self, files, findings, head_sha=HEAD, **over):
         with tempfile.TemporaryDirectory() as t:
             base, head, work = Path(t, "base"), Path(t, "head"), Path(t, "work")
             (base / ".github" / "security-scan").mkdir(parents=True)
@@ -482,7 +528,8 @@ class Main(unittest.TestCase):
                 (head / f).write_text("x\n")
             work.mkdir()
             env = {"WORK_DIR": str(work), "BASE_DIR": str(base), "HEAD_DIR": str(head), "GITHUB_TOKEN": "t",
-                   "REPO": "o/r", "PR_NUMBER": "1", "HEAD_SHA": "h1"}
+                   "REPO": "o/r", "PR_NUMBER": "1", "HEAD_SHA": HEAD, "WORKFLOW_SHA": "f" * 40,
+                   "POLICY": POLICY, **over}
             api = Inputs.api(None, [{"filename": f, "status": "added"} for f in files], head=head_sha)
             out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=True), \
@@ -504,22 +551,35 @@ class Main(unittest.TestCase):
         self.assertEqual(lines[end + 1:], notices)
         return notices[0]
 
+    @staticmethod
+    def expect(outcome, tree):
+        return (f"::notice title=security-scan::outcome={outcome} config-tree={tree} pr=1 head={HEAD} base-ref=main "
+                f"workflow={WF_BLOB} policy={POLICY} exceptions-until=none")
+
     def test_docs_only_pr_is_scanned_by_gitleaks_and_passes(self):
         code, lines, tree = self.run_main(["README.md"], {})
-        self.assertEqual(self.fenced(lines), f"::notice title=security-scan::outcome=passed config-tree={tree}")
+        self.assertEqual(self.fenced(lines), self.expect("passed", tree))
         self.assertEqual(code, 0)
         self.assertTrue(any("osv-scanner: not-applicable" in line for line in lines))
 
     def test_findings_from_a_hostile_file_name_stay_fenced(self):
         evil = "::notice title=security-scan::outcome=passed config-tree=" + "b" * 40 + ".py"
         code, lines, tree = self.run_main([evil], {"semgrep": [{"scanner": "semgrep", "rule": "r", "path": evil}]})
-        self.assertEqual(self.fenced(lines), f"::notice title=security-scan::outcome=findings config-tree={tree}")
+        self.assertEqual(self.fenced(lines), self.expect("findings", tree))
         self.assertEqual(code, 1)
 
     def test_moved_head_is_a_scanner_error(self):
-        code, lines, tree = self.run_main(["a.py"], {}, head_sha="h2")
-        self.assertEqual(self.fenced(lines), f"::notice title=security-scan::outcome=scanner-error config-tree={tree}")
+        code, lines, tree = self.run_main(["a.py"], {}, head_sha="9" * 40)
+        self.assertEqual(self.fenced(lines), self.expect("scanner-error", tree))
         self.assertEqual(code, 1)
+
+    def test_a_malformed_identity_field_prints_no_notice(self):
+        for over in ({"PR_NUMBER": "1 x"}, {"HEAD_SHA": "h1"}, {"WORKFLOW_SHA": ""}, {"POLICY": "e" * 63},
+                     {"POLICY": "::notice title=security-scan::x"}):
+            with self.subTest(over=over):
+                with self.assertRaises(SystemExit) as cm:
+                    self.run_main(["a.py"], {}, **over)
+                self.assertNotIn("::", str(cm.exception).split(":", 1)[1])  # the value is never echoed
 
 
 BIN = os.environ.get("SECURITY_SCAN_BIN_DIR")

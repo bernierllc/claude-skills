@@ -368,8 +368,9 @@ def main() -> int:
     force = "--force" in sys.argv
     workflow_src = skill_root / "templates" / "review-gate.yml"
     doctor_src = skill_root / "templates" / "review-gate-doctor.yml"
+    refresh_src = skill_root / "templates" / "review-gate-security-refresh.yml"
     script_srcs = [skill_root / "scripts" / name for name in VENDORED_SCRIPTS]
-    for src in (workflow_src, doctor_src, *script_srcs):
+    for src in (workflow_src, doctor_src, refresh_src, *script_srcs):
         if not src.is_file():
             print(f"missing: {src}", file=sys.stderr)
             return 1
@@ -379,6 +380,11 @@ def main() -> int:
             *((src, root / "scripts" / src.name) for src in script_srcs)]       # branch; the workflow loads that ref
     if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
         plan.append((doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml"))
+    # The security lane fails a scan older than the default branch's scan config or policy code; Security Refresh
+    # re-fires the scan and the gate when those change. Only a repo with nevar-security-review's scan needs it.
+    has_scan = (root / ".github" / "workflows" / "review-gate-security-scan.yml").is_file()
+    if has_scan:
+        plan.append((refresh_src, root / ".github" / "workflows" / "review-gate-security-refresh.yml"))
     for _, dest in plan:  # one refusal before the first write, so a later bad destination leaves no earlier one changed
         _check_dest(skill_root, root, dest)
     detector = root / "scripts" / VENDORED
@@ -398,6 +404,9 @@ def main() -> int:
         print(PUBLIC_RUNBOOK)
     elif visibility is None:
         print("Could not read this repo's visibility with gh. If it is public:\n" + PUBLIC_RUNBOOK)
+    if not has_scan:
+        print("No .github/workflows/review-gate-security-scan.yml: the security lane stays off. After installing "
+              "nevar-security-review's scan, rerun this installer to add Security Refresh.")
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0

@@ -8,21 +8,38 @@
 # - pull_request_target, so the workflow, the driver and every scanner config come from the
 #   base side. The PR head is checked out into head/ as DATA ONLY: never executed, imported,
 #   installed, built or used as scanner config (author-side configs are renamed in staging).
+# - workflow_dispatch (inputs pr, head) on the default branch is the re-scan: review-gate's
+#   Security Refresh workflow dispatches it for every open PR when the default branch changes
+#   this file, .github/security-scan/ or review-gate's policy code, and daily. Dispatching needs
+#   actions: write, so only writers and that workflow can; the lane accepts a dispatch run only
+#   from the default branch, titled for this PR and head, with a notice naming both.
 # - One job, named "Security Scan": review-gate counts every job of this workflow as a scanner
 #   job and decides on the newest. No job-level `if` and no concurrency cancel, either of which
 #   would make a skipped or cancelled job the newest.
 # - Exactly one `security-scan` notice: outcome=<o> config-tree=<sha of .github/security-scan
-#   on the default branch>. PR-derived output is printed inside ::stop-commands::.
+#   on the default branch> pr=<n> head=<sha> base-ref=<ref> workflow=<blob of this file at the run's
+#   commit> policy=<review-gate policy revision> exceptions-until=<date|none>; the lane reads the
+#   last five fields to tell a stale scan from a current one. PR-derived output is printed inside
+#   ::stop-commands::.
 # - Scanner binaries and the action are pinned by sha256 / commit; errors and timeouts fail.
 #
 # Rollback: delete this file from the default branch; the lane reports "security lane not
 # enabled" on the next Review Gate run.
 name: Security Scan
+run-name: "Security Scan - PR #${{ github.event.pull_request.number || inputs.pr }} @ ${{ github.event.pull_request.head.sha || inputs.head }}"
 
 on:
   # zizmor: ignore[dangerous-triggers] base-side code only; the head is checked out as data and never run
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to re-scan
+        required: true
+      head:
+        description: that PR's current head sha
+        required: true
 
 permissions: {}
 
@@ -45,7 +62,7 @@ jobs:
       - name: Check out the PR head as data (never executed)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.head }}
           path: head
           persist-credentials: false
 
@@ -71,13 +88,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           SEMGREP_IMAGE: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
         run: |
           set -euo pipefail
           export BASE_DIR="$GITHUB_WORKSPACE/base" HEAD_DIR="$GITHUB_WORKSPACE/head"
           export WORK_DIR="$RUNNER_TEMP/security-scan" BIN_DIR="$RUNNER_TEMP/bin"
           mkdir -p "$WORK_DIR"
+          POLICY="$(python3 -I "$BASE_DIR/scripts/check-security-scan.py" --policy-revision "$BASE_DIR")"
+          export POLICY
           cd "$RUNNER_TEMP"
           python3 -I "$BASE_DIR/.github/security-scan/scan.py"

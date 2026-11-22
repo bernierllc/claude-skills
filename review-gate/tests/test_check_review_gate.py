@@ -22,6 +22,9 @@ spec2.loader.exec_module(mg)
 # (MergeGuardForgedStep). Here it is recorded, so the payload stubs below decide alone.
 _forged_calls = []
 mg.forged_gate_check = lambda *a, **k: _forged_calls.append(a)
+# The security lane runs after it (real behavior: test_forged_gate.py MergeGuardSecurityLane); recorded too.
+_lane_calls = []
+mg.security_lane_check = lambda *a, **k: _lane_calls.append(a)
 
 
 def pr(**kwargs):
@@ -315,8 +318,15 @@ try:
     _forged_calls.clear()
     assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") is None
     assert [c[:4] for c in _forged_calls] == [("owner", "target", 42, head)], _forged_calls
+    assert [c[:4] for c in _lane_calls[-1:]] == [("owner", "target", 42, head)], _lane_calls
     mg.forged_gate_check = lambda *a, **k: "forged here"
+    _lane_calls.clear()
     assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") == "forged here"
+    assert _lane_calls == []  # a forged block is the result; the lane does not run
+    mg.forged_gate_check = lambda *a, **k: None
+    mg.security_lane_check = lambda *a, **k: "lane here"
+    assert mg.check_one("gh -R owner/target pr merge 42 --squash", cwd="/tmp") == "lane here"
+    mg.security_lane_check = lambda *a, **k: _lane_calls.append(a)
     mg.forged_gate_check = lambda *a, **k: _forged_calls.append(a)
     _forged_calls.clear()
     mg.gate.pr_payload = lambda *a, **k: pr(body=f"{R}\n\nno attestation\n", headRefOid=head, reviews={"nodes": []})

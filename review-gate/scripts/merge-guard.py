@@ -3755,6 +3755,18 @@ def _deadline() -> float:
     return (_HOOK_STARTED if _HOOK_STARTED is not None else time.monotonic()) + HOOK_BUDGET_S
 
 
+def _budgeted_run():
+    """subprocess.run with a timeout of whatever is left of check_one's budget (or a fresh one)."""
+    deadline = gate._GH_DEADLINE.get() or _deadline()
+
+    def run(args, **kw):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(args, 0)
+        return subprocess.run(args, capture_output=True, text=True, timeout=left, **kw)
+    return run
+
+
 def forged_gate_check(
     owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
 ) -> str | None:
@@ -3766,16 +3778,9 @@ def forged_gate_check(
     not evaluate), or running out of the time budget all block. A well-formed empty listing blocks only
     where the repo has the gate workflow.
     """
-    deadline = gate._GH_DEADLINE.get() or _deadline()  # check_one's budget when called from there
+    run = _budgeted_run()
     base = dict(env if env is not None else os.environ)
     host = ["--hostname", hostname] if hostname else []
-
-    def run(args, **kw):
-        left = deadline - time.monotonic()
-        if left <= 0:
-            raise subprocess.TimeoutExpired(args, 0)
-        return subprocess.run(args, capture_output=True, text=True, timeout=left, **kw)
-
     try:
         listing = run(["gh", "api", *host, "--paginate",
                        f"repos/{owner}/{name}/commits/{head}/check-runs?per_page=100&filter=all"], env=base)
@@ -3805,6 +3810,44 @@ def forged_gate_check(
     return f"review-gate blocked merge: forged-check step exited {proc.returncode}:\n- {detail}"
 
 
+SECURITY_LANE = FORGED_CHECK.with_name("check-security-scan.py")
+
+
+def security_lane_check(
+    owner: str, name: str, number: int, head: str, hostname: str | None, env: dict[str, str] | None
+) -> str | None:
+    """Run the Review Gate's security lane (check-security-scan.py) locally before a merge; None when it passes.
+
+    CI's gate run can be minutes old: the default branch may have changed the scan config or policy since, or
+    the scan may have aged out. The lane re-reads all of it now. A repo without the scan workflow on its
+    default branch exits 0 ("not enabled"). Fails closed: a lane exit 1 (failed) or 2 (could not evaluate),
+    a missing script, an unreadable default branch, or running out of the time budget all block.
+    """
+    run = _budgeted_run()
+    base = dict(env if env is not None else os.environ)
+    host = ["--hostname", hostname] if hostname else []
+    try:
+        repo = run(["gh", "api", *host, f"repos/{owner}/{name}"], env=base)
+        try:
+            branch = json.loads(repo.stdout).get("default_branch") if repo.returncode == 0 else None
+        except (ValueError, AttributeError):
+            branch = None
+        if not isinstance(branch, str) or not branch:
+            detail = repo.stderr.strip() or "no output"
+            return f"review-gate: could not read the default branch of {owner}/{name} for the security lane: {detail}"
+        child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number), "SHA": head, "DEFAULT_BRANCH": branch}
+        if hostname:
+            child["GH_HOST"] = hostname
+        proc = run([sys.executable, "-I", str(SECURITY_LANE)], env=child)
+    except subprocess.TimeoutExpired:
+        return (f"review-gate blocked merge: the security lane did not finish within {HOOK_BUDGET_S:.0f} s "
+                "of the hook starting (GitHub slow or unreachable); retry the merge")
+    if proc.returncode == 0:
+        return None
+    detail = proc.stderr.strip().replace("::error::", "") or "no output"
+    return f"review-gate blocked merge: security lane exited {proc.returncode}:\n- {detail}"
+
+
 def check_one(segment: str, cwd: str | None) -> str | None:
     deadline = _deadline()  # one budget for every gh call below, PR resolution included
     number, repo, err, scrub_gh_repo = resolve_pr_number(segment, cwd=cwd, deadline=deadline)
@@ -3822,7 +3865,9 @@ def check_one(segment: str, cwd: str | None) -> str | None:
             reasons = gate.evaluate(pr)
             if reasons:
                 return "review-gate blocked merge:\n" + "\n".join(f"- {r}" for r in reasons)
-            return forged_gate_check(owner, name, number, pr.get("headRefOid") or "", hostname, child_env)
+            head = pr.get("headRefOid") or ""
+            return (forged_gate_check(owner, name, number, head, hostname, child_env)
+                    or security_lane_check(owner, name, number, head, hostname, child_env))
     except Exception as e:  # noqa: BLE001
         # Fail closed: infra / GraphQL errors must not silently allow merges.
         return f"review-gate: gate check failed: {e}"

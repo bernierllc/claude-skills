@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 3.5.0
+version: 3.6.0
 author: Bernier LLC
 ---
 
@@ -62,6 +62,8 @@ aec run-script skill:review-gate reply-close.py -- -R my-org/my-app --pr 12 --th
 Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
 
 3.4.0 adds `scripts/reply-close.py` (above) and `tests/test_reply_close.py`. Authors run it through `aec run-script`; it is not vendored into repos, and the workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor.
+
+Upgrading to 3.6.0 (security lane freshness, SKILLS-SEC-CLAIM-2): a passing scan no longer stands forever. The lane adds check (g): the scan's notice must name this PR, head and base ref, the default branch's current scan workflow and policy revision, no expired exception, and a completion within 36 h, or the gate fails with the reason and "re-run Security Scan". New `templates/review-gate-security-refresh.yml` (Security Refresh) re-dispatches the scan for every open PR when the default branch changes the scan workflow, `.github/security-scan/**` or the policy files, and daily, and re-runs a PR's gate when its scan completes; the lane accepts a `workflow_dispatch` scan only from the default branch and titled for the PR and head. `install-workflow.py` installs it when `.github/workflows/review-gate-security-scan.yml` exists, and the doctor warns when it is missing or differs. The merge-guard hook now also runs `check-security-scan.py` after the forged step, inside the same 20 s budget, so a slow GitHub blocks the merge with a retry message. The scanner side needs nevar-security-review 1.2.0 (the new notice fields and dispatch inputs): a 1.1.0 scan fails (g). Install both together: re-run `install-workflow.py --force`, copy the 1.2.0 scan workflow and `.github/security-scan/`, and commit the whole `.claude/skills/review-gate` directory. UNPROVEN until the canary runs: whether `workflow_run` fires for dispatched scans and whether the `GITHUB_TOKEN` re-run is allowed; both fail closed (the gate stays red, never green).
 
 Upgrading to 3.5.0: the fallback attestation now accepts `cursor` (`Fallback review: cursor on <head> — verdict: ...`), so a Cursor review, the third step of the chain Codex → agy → Cursor → Claude Sonnet, can be attested. Before 3.5.0 a Cursor pass could only be skipped or mislabelled. The reviewer list is now one tuple in the checker, `FALLBACK_REVIEWERS`, and the attestation regex, the gate's failure message and `lint-review-body.py`'s message are all built from it. A test checks that every step of adversarial-review's reviewer order names a token the gate accepts, and that both skills' allowed-reviewer lists equal the tuple. The change only widens the allow-list, so existing attestations still pass. The new linter needs the new checker beside it (it exits 2 with the fix otherwise). Re-run `install-workflow.py --force` and commit the whole `.claude/skills/review-gate` directory, so the repo's gate accepts `cursor`.
 
@@ -168,25 +170,32 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
 6. **Security lane** (3.3.0, marker renamed in 3.3.1, opt-in, PRs into every branch): active only when the DEFAULT branch has
    `.github/workflows/review-gate-security-scan.yml`. Activation, the scanner config digest and `check-security-scan.py` are all read
    from the default branch (f), so a PR cannot switch the lane off or change its own config. The scanner jobs are found
-   through the Actions API (every job, all attempts, of every `review-gate-security-scan.yml` `pull_request_target` run on the head),
+   through the Actions API (every job, all attempts, of every `review-gate-security-scan.yml` `pull_request_target` run on the head,
+   plus, since 3.6.0, every `workflow_dispatch` run of that file from the default branch titled `Security Scan - PR #<n> @ <head>`),
    never through check-run names, which anyone with `checks: write` can edit. When active the gate passes only when the
    newest such job, by its `started_at` then id, and its own check run are (a) from a run triggered by THIS PR (the forged
-   wrapper's provenance), the job listed under that run with a `check_run_url` naming its own id, and the check run's id,
+   wrapper's provenance) or a default-branch dispatch run titled for this PR and head, the job listed under that run with a `check_run_url` naming its own id, and the check run's id,
    `details_url` job id and name `Security Scan` all matching it, so a Checks API POST never counts and a renamed check
    fails instead of dropping out of freshness; (b) published by `github-actions`; (c) on the current head; (d) completed,
    with status and conclusion read from the job (an older success never masks a newer failure); (e) carrying exactly one
-   `security-scan` annotation `outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha>`, where the sha is
-   the default branch's current tree of `.github/security-scan/` and the outcome agrees with the conclusion. Any other
+   `security-scan` annotation `outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha> pr=<n> head=<sha>
+   base-ref=<ref> workflow=<blob> policy=<sha256> exceptions-until=<date|none>`, where config-tree is the default branch's
+   current tree of `.github/security-scan/` and the outcome agrees with the conclusion; (g, 3.6.0) still fresh: it names
+   this PR, head and base ref, the default branch's current scan-workflow blob and policy revision (`--policy-revision`
+   over the gate workflow and its scripts), no relied-on exception has expired, and the job completed within 36 h. Any other
    Actions job's check run named `Security Scan` is forged. An unreadable listing, an annotation count that disagrees with `annotations_count`, or a head that moved
    exits 2 and fails closed. A line in `## Review`, or any `Security review:` / `Security scan:` line, that names a scanner
    (gitleaks, osv-scanner, zizmor, semgrep) with a pass word, negated or not (reword a failure report without one, 3.3.2), fails the gate unless the verified scan passed; with the lane
    off such a claim always fails, provided `scripts/check-security-scan.py` is on the default branch (without it the
    lane is skipped and the claim is not checked; tracked as SKILLS-SEC-CLAIM-1). `Security review:` lines are printed as ADVISORY/UNVERIFIED and never count.
-   Enforceable now: a-f and the claim rule, in this gate. Waits on trust: the scanner workflow (nevar-security-review
-   template) and its canary proving the annotation and the re-fire; until then no repo enables the lane.
-   Residuals: the scan usually finishes after the gate's own run, so the gate reads it incomplete until it is re-fired
-   (label toggle) once the scan completes; the merge-guard hook does not re-run the lane (only the forged step), so
-   re-fire before handing a PR to merge; a pass claim worded outside `## Review` and the labelled lines is not detected
+   Enforceable now: a-g and the claim rule, in this gate and the merge guard. Waits on trust: the scanner workflow (nevar-security-review
+   template) and its canary proving the annotation, the dispatch re-scan and the gate re-run; until then no repo enables the lane.
+   Security Refresh (`templates/review-gate-security-refresh.yml`, installed beside the scan, 3.6.0) re-dispatches the scan for
+   every open PR on a default-branch change to the scan workflow, `.github/security-scan/**` or the policy files, and daily,
+   then re-runs each PR's gate; when a scan completes it re-runs that PR's gate, so no label toggle is needed. The merge-guard
+   hook runs the lane (`check-security-scan.py`) after the forged step, so a scan gone stale since CI blocks the merge.
+   Residuals: GitHub can delay or drop the daily run (36 h leaves 12 h of margin); a re-run gate keeps its original
+   workflow file; a PR retargeted to another base waits for the daily refresh; a merge through the web UI skips the hook; a pass claim worded outside `## Review` and the labelled lines is not detected
    (and is still not evidence); a default branch that moves after the scan changes the digest, which fails with
    "re-run Security Scan"; every job of `review-gate-security-scan.yml` counts as a scanner job, so the template keeps a single job;
    finding runs by `head_sha` assumes the `pull_request_target` run records the PR head, as provenance already does, and

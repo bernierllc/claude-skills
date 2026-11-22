@@ -209,6 +209,17 @@ def local_checks(root: Path) -> int:
             "WARN missing .github/workflows/review-gate.yml — copy from "
             "skill review-gate/templates/review-gate.yml"
         )
+    workflows = root / ".github" / "workflows"
+    refresh = workflows / "review-gate-security-refresh.yml"
+    refresh_template = template.with_name(refresh.name)
+    if (workflows / "review-gate-security-scan.yml").is_file():
+        # without it a default-branch change to the scan config or policy leaves every open PR's gate red (stale)
+        if not refresh.is_file() or refresh.read_bytes() != refresh_template.read_bytes():
+            problems += 1
+            print(f"WARN {refresh.relative_to(root)} is missing or differs from this skill's template; re-run "
+                  "install-workflow.py --force and merge it to the default branch")
+        else:
+            print(f"OK workflow {refresh.relative_to(root)}")
     installer = _load_installer()
     for name in installer.VENDORED_SCRIPTS:
         script = root / "scripts" / name

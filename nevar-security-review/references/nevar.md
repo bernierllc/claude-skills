@@ -190,7 +190,9 @@ The lane stays off in a repo until the template is installed on its default bran
 
 ### Install the scanner workflow (opt-in, per repo)
 
-1. Install `review-gate` 3.3.1 or later, with `scripts/check-security-scan.py` vendored. A `## Review`
+1. Install `review-gate` 3.6.0 or later, with `scripts/check-security-scan.py` vendored
+   (1.2.0's notice fields need 3.6.0's freshness check; an older lane ignores them, a newer
+   lane fails a 1.1.0 scan). A `## Review`
    line that names a scanner with any pass word, even "did not pass", is a claim; report failures
    without one ("semgrep reported 2 findings").
 2. Rename any other Actions job whose check run is named `Security Scan`. With the lane on,
@@ -205,6 +207,12 @@ The lane stays off in a repo until the template is installed on its default bran
    only, so the PR that adds it does not turn the lane on for itself. Its own scan fails with
    a zizmor `dangerous-triggers` finding (see Exceptions). From the next PR on, the gate needs
    a passing `Security Scan` on every head.
+6. Re-run `review-gate`'s `install-workflow.py` in the same PR. With the scan workflow present
+   it adds `.github/workflows/review-gate-security-refresh.yml` (Security Refresh), which
+   re-dispatches the scan for every open PR when the default branch changes the scan
+   workflow, `.github/security-scan/**` or review-gate's policy files, and daily, and
+   re-runs a PR's gate when its scan completes. Without it a passing scan goes stale and the
+   gate stays red until someone re-runs the scan.
 
 What the workflow does:
 
@@ -239,8 +247,15 @@ What the workflow does:
     for, inside a pinned container with no network and a read-only mount. A repo that adds
     rules for another language adds its extensions to `CODE_EXT` in `scan.py` too.
 - A scanner with nothing to scan reports `not-applicable` in the job summary.
-- It prints exactly one `::notice title=security-scan::outcome=<o> config-tree=<sha>` line.
-  `<sha>` is the git tree of `.github/security-scan` on the default branch. Everything
+- It also runs on `workflow_dispatch` with inputs `pr` and `head`: the re-scan Security
+  Refresh dispatches. Dispatching needs `actions: write`; the lane counts a dispatch run only
+  from the default branch, titled `Security Scan - PR #<pr> @ <head>`, with a notice naming both.
+- It prints exactly one `::notice title=security-scan::outcome=<o> config-tree=<sha> pr=<n>
+  head=<sha> base-ref=<ref> workflow=<blob> policy=<sha256> exceptions-until=<date|none>` line.
+  config-tree is the git tree of `.github/security-scan` on the default branch, workflow the
+  blob of this workflow file at the run's commit, policy review-gate's policy revision of the
+  default-branch checkout (`check-security-scan.py --policy-revision`), and exceptions-until
+  the earliest expiry among exceptions this scan relied on. Everything
   derived from the PR is printed inside `::stop-commands::`, so a file name cannot emit a
   second notice.
 
@@ -300,6 +315,8 @@ above, merged first.
 | Lane activation read from the default branch only; a PR adding or deleting the marker changes nothing | Enforced (`review-gate` 3.3.1, rule 6) |
 | Scanner job found through the Actions API, run by this PR's `pull_request_target` run, check run from `github-actions` on the exact head, newest job decides (trust checks a-d) | Enforced once the template is on the default branch |
 | One `security-scan` annotation whose outcome matches the conclusion and whose config tree equals the default branch's `.github/security-scan` (checks e-f) | Enforced once the template is on the default branch |
+| Scan still fresh: names this PR, head and base ref, the default branch's current scan workflow and policy revision, no expired exception, completed within 36 h (check g); merge guard re-runs the lane | Enforced (`review-gate` 3.6.0) once the template is on the default branch |
+| Re-scan after a default-branch scanner or policy change, and daily (Security Refresh) | Installed by `review-gate` 3.6.0; unproven until the canary |
 | Body claim of a scanner pass without a verified passing scan fails | Enforced where the lane script is vendored |
 | Model review coverage (`Security review:` line) | **Advisory / unverified**: the author can edit the body |
 | A job elsewhere in the repo with `checks: write` creating a same-name check | Detected as forged, not prevented without a ruleset source pin |
@@ -307,10 +324,13 @@ above, merged first.
 
 ### Residuals
 
-- The scan usually finishes after the gate's own run, so the gate reads it incomplete until
-  it is re-fired (a label toggle).
-- A default branch that moves after the scan changes the config digest. The gate then asks
-  for a re-run of Security Scan.
+- The scan usually finishes after the gate's own run; Security Refresh re-runs the gate when
+  the scan completes. Whether `workflow_run` fires for a dispatched scan and whether the
+  `GITHUB_TOKEN` may re-run the gate are unproven until the canary; both fail closed.
+- A scan goes stale (review-gate check g) when the default branch changes the scan workflow,
+  `.github/security-scan/` or the policy files, an exception it relied on expires, the PR is
+  retargeted, or 36 h pass. Security Refresh re-dispatches on such a change and daily; a
+  retarget waits for the daily run. The daily re-scan of every open PR costs CI minutes.
 - Fork PRs are unverified: the template checks out the head sha from the base repository,
   and GitHub serves fork heads there. The canary covers same-repo PRs only.
 - Files over the scanners' size limits and binary files are scanned as gitleaks sees them.

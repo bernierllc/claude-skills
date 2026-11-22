@@ -1,6 +1,6 @@
 ---
 name: nevar-security-review
-version: 1.1.0
+version: 1.2.0
 author: Bernier LLC
 license: MIT (adapted from davila7/claude-code-templates vulnerability-scanner; see PROVENANCE.md)
 description: Security review of a code change or repository that proves each finding from source to sink, tries to refute it, and reports P0/P1/P2 findings with stable ids, evidence, refuted leads and an explicit not-covered list. Covers authentication vs authorization, role provenance, admin/editor/anonymous guards, Supabase RLS and service-role bypass, tenant identity, API and MCP key scopes, webhooks and jobs, fail-open error handling, prompt injection into agents, MCP and RAG, CI workflows, secrets and dependencies. Use when a PR touches auth, RLS or migrations, routes, MCP tools, CI workflows, shared guards, manifests, skills or dependencies, when asked to security-review or audit code, or before shipping. Read-only by default.
@@ -177,7 +177,9 @@ author can edit, so it is not authenticated evidence. Merge enforcement comes fr
 `review-gate` (inline threads resolved, head-bound review). Scanner evidence comes from
 the opt-in scanner workflow in `templates/`. Install it as
 `.github/workflows/review-gate-security-scan.yml` with its config at `.github/security-scan/`.
-`review-gate`'s security lane then requires a passing `Security Scan` on every head. For
+`review-gate`'s security lane then requires a passing, still-fresh `Security Scan` on every head,
+and its Security Refresh workflow (installed by re-running review-gate's installer) re-scans when
+the default branch's scanner or policy changes, and daily. For
 install, exceptions, rollback and what is enforced, see `references/nevar.md` ->
 Review-loop integration. Do not describe a model review as a fail-closed security gate.
 
