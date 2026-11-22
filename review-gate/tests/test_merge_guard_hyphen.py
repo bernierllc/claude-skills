@@ -199,8 +199,9 @@ def counted(cmd):
 # Counted calls cannot see work done inside one C call or in bytecode (slicing, `str.count` on a growing prefix,
 # regex backtracking), so the child's CPU time is compared too. It self-normalizes to the runner's speed: a 10x
 # longer command (about 16 KB to 160 KB) must cost under SIZE_RATIO * CPU_SLACK times the CPU. Today's guard
-# measures 3.9-12.9x (mildly superlinear past 80 KB); a quadratic `cmd[:i].count(...)` in shell_comments 35-55x.
-SIZE_RATIO, CPU_SLACK = 10, 2
+# measures 3.9-15x, up to ~17x under contention (superlinear from stdlib shlex token growth); a quadratic
+# `cmd[:i].count(...)` in shell_comments 35-62x. The 30x limit leaves about the same margin on both sides.
+SIZE_RATIO, CPU_SLACK = 10, 3
 
 
 def cpu_growth(build, small=2, reps=3):
