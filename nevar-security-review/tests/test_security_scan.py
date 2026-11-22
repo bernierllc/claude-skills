@@ -7,6 +7,9 @@ trusts, so the two skills cannot drift apart.
 Integration tests run the real scanners when SECURITY_SCAN_BIN_DIR names a directory holding
 gitleaks, osv-scanner and zizmor (and SEMGREP_BIN a semgrep binary); osv-scanner queries
 osv.dev, so it also needs SECURITY_SCAN_NETWORK=1. Without them those tests skip.
+
+Requires pyyaml (CI pins 6.0.2). Without it the module fails at import instead of skipping:
+the workflow-shape tests are the trust checks, so a missing parser must not read as a pass.
 """
 import contextlib
 import datetime as dt
