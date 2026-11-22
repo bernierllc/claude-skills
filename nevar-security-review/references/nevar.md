@@ -212,12 +212,16 @@ What the workflow does:
   data only and is never executed, imported, installed or built.
 - It lists the PR's changed files through the API and copies the regular ones into a
   staging dir. Symlinks are not copied. Author-side scanner configs and ignore files are
-  renamed in staging, so they are scanned as data and never loaded.
+  renamed in staging with an `.author-copy` suffix, so they are scanned as data and never
+  loaded. A changed file whose name already ends with `.author-copy` is a `scanner-error`,
+  so a rename never overwrites another file and no file can borrow another path's exception.
 - Each scanner runs only on the files it applies to:
   - gitleaks on every changed file;
   - osv-scanner on lockfiles;
   - zizmor on workflows, actions and Dependabot config;
-  - semgrep on code, inside a pinned container with no network and a read-only mount.
+  - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
+    for, inside a pinned container with no network and a read-only mount. A repo that adds
+    rules for another language adds its extensions to `CODE_EXT` in `scan.py` too.
 - A scanner with nothing to scan reports `not-applicable` in the job summary.
 - It prints exactly one `::notice title=security-scan::outcome=<o> config-tree=<sha>` line.
   `<sha>` is the git tree of `.github/security-scan` on the default branch. Everything

@@ -48,8 +48,8 @@ LOCKFILES = {
     "go.mod", "Gemfile.lock", "composer.lock", "pubspec.lock", "mix.lock", "gradle.lockfile",
     "packages.lock.json", "renv.lock",
 }
-CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rb", ".java",
-            ".php", ".sh", ".bash"}
+# Only the languages semgrep.yml has rules for: semgrep skips any other target, which reads as target-skipped.
+CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 OUTCOMES = ("passed", "not-applicable", "findings", "scanner-error")
 
 
@@ -104,6 +104,11 @@ def stage(head_dir, rels, stage_dir):
     """
     head = Path(head_dir).resolve()
     staged, notes = [], []
+    # The suffix is reserved, so a renamed file never lands on another PR file and real_path's
+    # strip only ever undoes a rename (else a sibling could inherit an exact-path exception).
+    reserved = [rel for rel in rels if rel.endswith(RENAMED)]
+    if reserved:
+        raise ScanError(f"{reserved[0]!r} ends with {RENAMED}, a suffix the scan reserves; rename the file")
     for rel in rels:
         src = head / rel
         try:
@@ -125,7 +130,7 @@ def stage(head_dir, rels, stage_dir):
 
 
 def real_path(p, stage_dir):
-    """A scanner-reported path, relative to staging and with the author-copy suffix removed."""
+    """A scanner-reported path, relative to staging, with an author-config rename undone (stage reserves the suffix)."""
     p = str(p)
     root = str(Path(stage_dir).resolve())
     for prefix in (root + "/", str(stage_dir).rstrip("/") + "/", "/src/"):

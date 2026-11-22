@@ -190,6 +190,28 @@ class Inputs(unittest.TestCase):
             self.assertFalse((st / "link.txt").exists() or (st / "dirlink").exists())
             self.assertEqual(len(notes), 3)
 
+    # Codex P1 x2: a PR path with the reserved suffix would collide with a renamed config, or
+    # inherit another path's exact-path exception through real_path's strip; it fails closed
+    def test_stage_rejects_the_reserved_suffix(self):
+        with tempfile.TemporaryDirectory() as t:
+            head, st = Path(t, "head"), Path(t, "stage")
+            head.mkdir()
+            for name in (".gitleaksignore", ".gitleaksignore.author-copy", "fixture.txt.author-copy"):
+                (head / name).write_text("x\n")
+            for rels in ([".gitleaksignore", ".gitleaksignore.author-copy"], ["fixture.txt.author-copy"]):
+                with self.assertRaisesRegex(scan.ScanError, "reserves"):
+                    scan.stage(head, rels, st)
+            self.assertFalse(st.exists() and any(st.iterdir()))  # rejected before anything is copied
+
+    def test_semgrep_targets_only_languages_with_rules(self):
+        rules = yaml.safe_load((TEMPLATES / "security-scan" / "semgrep.yml").read_text())["rules"]
+        langs = {lang for r in rules for lang in r["languages"]}
+        by_ext = {".py": "python", ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
+                  ".cjs": "javascript", ".ts": "typescript", ".tsx": "typescript"}
+        self.assertEqual(set(by_ext), scan.CODE_EXT)
+        self.assertTrue(set(by_ext.values()) <= langs, langs)
+        self.assertEqual(scan.applicable("semgrep", ["main.go", "a.rb", "b.sh", "c.py"]), ["c.py"])
+
     def test_real_path(self):
         st = Path("/w/stage")
         self.assertEqual(scan.real_path("/w/stage/a/.gitleaks.toml.author-copy", st), "a/.gitleaks.toml")
