@@ -57,6 +57,9 @@ PASSING = {"passed", "not-applicable"}
 SCANNER = re.compile(r"\b(gitleaks|osv-scanner|zizmor|semgrep|security scan)\b", re.I)
 PASS_WORD = re.compile(r"\b(pass|passed|passes|clean|green|success|succeeded|ok)\b", re.I)
 LABELLED = re.compile(r"^\s*security (review|scan):", re.I)
+# A pass word right after a negation ("did not pass", "is not clean", "failed to pass") is a failure report.
+NEGATED = re.compile(r"\b(?:not|never|no|cannot|\w+n['’]t|fail(?:s|ed|ing)?\s+to)\s+(?:\w+\s+)?"
+                     r"(?:pass|passed|passes|clean|green|success|succeeded|ok)\b", re.I)
 
 
 def _load(name, filename):
@@ -71,12 +74,15 @@ def _lines(body):
 
 
 def claims(body):
-    """Body lines that claim a scanner pass: in `## Review`, or labelled `Security review:` / `Security scan:`."""
+    """Body lines that claim a scanner pass: in `## Review`, or labelled `Security review:` / `Security scan:`.
+
+    A negated pass word ("semgrep did not pass", "is not clean") reports a failure, not a pass.
+    """
     found, in_review = [], False
     for line in _lines(body):
         if line.startswith("## "):
             in_review = line.rstrip() == "## Review"
-        if (in_review or LABELLED.match(line)) and SCANNER.search(line) and PASS_WORD.search(line):
+        if (in_review or LABELLED.match(line)) and SCANNER.search(line) and PASS_WORD.search(NEGATED.sub(" ", line)):
             found.append(line.strip())
     return found
 

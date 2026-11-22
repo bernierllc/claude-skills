@@ -190,7 +190,7 @@ The lane stays off in a repo until the template is installed on its default bran
 
 ### Install the scanner workflow (opt-in, per repo)
 
-1. Install `review-gate` 3.3.1 or later, with `scripts/check-security-scan.py` vendored.
+1. Install `review-gate` 3.3.2 or later (it reads "semgrep did not pass" as a failure report, not a pass claim), with `scripts/check-security-scan.py` vendored.
 2. Rename any other Actions job whose check run is named `Security Scan`. With the lane on,
    the gate reads such a check as forged and fails.
 3. Copy `templates/review-gate-security-scan.yml` to
