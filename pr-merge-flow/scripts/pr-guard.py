@@ -52,24 +52,32 @@ OPERATORS = set(";&|\n()")
 ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Words that run a later word as a command. Their options aren't parsed (an env option parser regressed four
 # review rounds running): every later word is tried as the command, and it runs in an unknown directory and root.
-WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec"}
+WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec", "builtin"}
+# Commands whose words are code the shell runs: every word given to a shell is parsed as a script (its -c string,
+# a here-string; a file name parses to a harmless one-word command), and eval's words joined by spaces.
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 WRAPPED = "$WRAPPER"  # the cd target segments() gives a command behind a wrapper: dir and root unknown
 # Scope markers segments() yields: compared by identity (`is`), never by value, so an argument that splits to
 # `)` or `cd $WRAPPER` (`env printf ' )'`) is an ordinary command and can't close or open a real scope.
-OPEN, CLOSE, CD_WRAPPED = ["("], [")"], ["cd", WRAPPED]
+# TOO_DEEP stands for code nested past MAX_NESTING levels or MAX_BODIES bodies; check() blocks on it.
+OPEN, CLOSE, CD_WRAPPED, TOO_DEEP = ["("], [")"], ["cd", WRAPPED], ["$TOO_DEEP"]
+MAX_NESTING, MAX_BODIES = 8, 200
+SUB = "\uE0FE"  # where strip_comments_and_heredocs found a substitution body: segments() runs it with its command
 # Quoted/escaped operator chars are swapped for private-use stand-ins before shlex,
 # which drops quoting, so `printf '('` stays an argument; swapped back after.
 HIDE = {ord(c): 0xE000 + k for k, c in enumerate(";&|()\n")}
 # Raw words (segments(raw=True)) also carry these markers, which UNHIDE drops: a word the hook can't be
 # sure it reads as bash does never passes literal().
 ANSI = "\uE0FF"  # a $'...' word, which this parser decodes only approximately
-UNHIDE = {**{v: k for k, v in HIDE.items()}, ord(ANSI): None}
+# Inside a substitution's span, the characters that would end or split the word it stands in are hidden too.
+SPAN = {**HIDE, **{ord(c): 0xE010 + k for k, c in enumerate("'\"\\ \t\r")}}
+UNHIDE = {**{v: k for k, v in SPAN.items()}, ord(ANSI): None, ord(SUB): None}
 # The only body-file paths and cd targets the hook resolves: plain characters, no quoting needed, nothing
 # the shell rewrites (no ~, $, glob, brace, backslash, newline, zsh `=cmd` / `=(...)`, `<(...)`).
 PLAIN = re.compile(r"[A-Za-z0-9_./+,:@%-][A-Za-z0-9_./+,:@%=-]*")
 
 
-def strip_comments_and_heredocs(cmd, comments=None):
+def strip_comments_and_heredocs(cmd, comments=None, bodies=None):
     """Drop `#` comments and heredoc bodies, keeping the newlines that end them.
 
     shlex gets both wrong: its comments swallow the newline (and start mid-word),
@@ -77,13 +85,66 @@ def strip_comments_and_heredocs(cmd, comments=None):
     command. Bash rules: `#` starts a comment only at the start of an unquoted word.
     Dropped comments are appended to `comments` when given (see shell_comments).
 
-    ponytail: `$(...)`/backtick nesting isn't tracked; a `#` or `<<` inside one is
-    treated as top-level. Worst case is a missed or extra block, never a crash.
+    A backtick or `$(...)` the shell runs from inside a word (a backtick anywhere unquoted, either one inside
+    double quotes or an unquoted heredoc body) stays in its word, hidden from shlex and marked with SUB; its code
+    is appended to `bodies` in order, for segments() to check. An unquoted `$(...)` is left to shlex, whose
+    parens already split it into a subshell.
     """
-    out, i, n, quote, pending = [], 0, len(cmd), None, []
+    text, _, quote = _strip(cmd, 0, comments, bodies, False, 0)
+    # An unclosed quote hid everything after it; un-hide so the fallback checks it all.
+    return text.translate(UNHIDE) if quote else text
+
+
+MAX_SCAN = 64  # `$(` nesting the scanner follows before taking the rest as one body (segments() caps it lower)
+
+
+def _sub_at(cmd, i, lvl):
+    """(end, code) for the backtick or `$(...)` substitution starting at cmd[i], else None."""
+    if cmd[i] == "`":
+        j = i + 1
+        while j < len(cmd) and cmd[j] != "`":
+            j += 2 if cmd[j] == "\\" else 1
+        return min(j + 1, len(cmd)), re.sub(r"\\([\\`$])", r"\1", cmd[i + 1:j])
+    if cmd.startswith("$(", i):
+        end = _strip(cmd, i + 2, None, None, True, lvl + 1)[1] if lvl < MAX_SCAN else len(cmd)
+        return min(end + 1, len(cmd)), cmd[i + 2:end]
+    return None
+
+
+def _subs(text, lvl):
+    """The substitution bodies in an unquoted heredoc body, where quotes are plain text."""
+    found, i = [], 0
+    while i < len(text):
+        sub = _sub_at(text, i, lvl) if text[i] in "`$" else None
+        if sub:
+            i = sub[0]
+            found.append(sub[1])
+        else:
+            i += 2 if text[i] == "\\" else 1
+    return found
+
+
+def _strip(cmd, i, comments, bodies, close, lvl):
+    """strip_comments_and_heredocs from cmd[i]: (text, end, open quote). With close, cmd[i:] is the inside of a
+    `$(`: the scan stops at the `)` that ends it, and end is that index (len(cmd) when none does).
+
+    shortcut: a `case` pattern's `)` inside `$(...)` ends the substitution early; parse case if it shows up.
+    """
+    out, n, quote, pending, depth = [], len(cmd), None, [], 0
+
+    def sub(at):
+        end, code = _sub_at(cmd, at, lvl)
+        if bodies is not None:
+            bodies.append(code)
+        out.append(SUB + cmd[at:end].translate(SPAN))
+        return end
+
     while i < n:
         c = cmd[i]
         if quote:
+            if quote == '"' and (c == "`" or cmd.startswith("$(", i)):
+                i = sub(i)
+                continue
             out.append(c.translate(HIDE))
             if c == "\\" and quote == '"' and i + 1 < n:
                 out.append(cmd[i + 1])
@@ -94,6 +155,8 @@ def strip_comments_and_heredocs(cmd, comments=None):
         elif c == "\\" and i + 1 < n:
             out.append("\\" + cmd[i + 1].translate(HIDE))
             i += 2
+        elif c == "`":
+            i = sub(i)
         elif cmd.startswith("$'", i):
             # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
             # so re-emit it double-quoted. ponytail: escapes like \n become the letter.
@@ -122,30 +185,42 @@ def strip_comments_and_heredocs(cmd, comments=None):
                     delim = "".join(shlex.split(re.sub(r"\$(?=['\"])", "", m.group(2))))
                 except ValueError:
                     delim = m.group(2)
-                pending.append((delim, bool(m.group(1))))
+                # any quoting in the delimiter makes the body plain text; otherwise its substitutions run
+                pending.append((delim, bool(m.group(1)), bool(re.search(r"['\"\\]", m.group(2)))))
                 out.append(m.group(0))
                 i += m.end()
             else:
                 out.append(c)
                 i += 1
         elif c == "\n" and pending:
-            out.append(c)
-            lines, j = cmd[i + 1:].split("\n"), i + 1
-            for delim, dash in pending:
+            lines, j, found = cmd[i + 1:].split("\n"), i + 1, []
+            for delim, dash, quoted in pending:
                 for k, line in enumerate(lines):
                     if (line.lstrip("\t") if dash else line) == delim:
+                        if not quoted:
+                            found += _subs("\n".join(lines[:k]), lvl)
                         j += sum(len(x) + 1 for x in lines[:k + 1])
                         lines = lines[k + 1:]
                         break
                 else:  # no terminator: keep the rest, so nothing after it goes unchecked
                     break
+            if found:  # the bodies run with the heredoc's command: their markers go on its line
+                if bodies is not None:
+                    bodies += found
+                out.append(" " + SUB * len(found))
+            out.append(c)
             pending = []
             i = min(j, n)
+        elif close and c in "()":
+            if c == ")" and not depth:
+                return "".join(out), i, quote
+            depth += 1 if c == "(" else -1
+            out.append(c)
+            i += 1
         else:
             out.append(c)
             i += 1
-    # An unclosed quote hid everything after it; un-hide so the fallback checks it all.
-    return "".join(out).translate(UNHIDE) if quote else "".join(out)
+    return "".join(out), n, quote
 
 
 def shell_comments(cmd):
@@ -208,23 +283,50 @@ def based(seg):
     return [seg[0].rsplit("/", 1)[-1] or seg[0]] + seg[1:] if seg and "/" in seg[0] else seg
 
 
-def segments(cmd, raw=False):
+def segments(cmd, raw=False, _depth=0, _budget=None):
     """Split a shell command into argv lists, one per simple command.
 
     Tokenizes first, so operators inside quotes stay in their argument and
     backslash-newline continues the command, as in Bash. With raw, words keep their hidden
     characters and markers (see literal).
+
+    Code the shell runs from inside a word is split the same way, inside OPEN/CLOSE: a substitution body
+    (before the command it stands in, which runs after it), every word given to a shell (SHELLS) and eval's
+    words. Past MAX_NESTING levels or MAX_BODIES bodies in one call it yields TOO_DEEP instead.
     """
-    cmd = strip_comments_and_heredocs(cmd)
+    budget = [MAX_BODIES] if _budget is None else _budget
+    bodies = []
+    cmd = strip_comments_and_heredocs(cmd, bodies=bodies)
     tokens = shell_tokens(cmd)
     if tokens is None:
         # shlex can't parse it (unbalanced or $'..' quotes): split on every operator
         # character, quoted or not. Over-splitting only means more gets checked.
         tokens = [t for part in re.split(r"([;&|()\n])", cmd)
                   for t in ([part] if part in OPERATORS else part.split())]
-    argv = []
+
+    def nested(code):
+        budget[0] -= 1
+        if _depth >= MAX_NESTING or budget[0] < 0:
+            yield TOO_DEEP
+            return
+        yield OPEN
+        yield from segments(code, raw, _depth + 1, budget)
+        yield CLOSE
+
+    def run_bodies(a):
+        words = [w.translate(UNHIDE) for w in a[1:]]
+        if a[0] in SHELLS:
+            for w in words:
+                yield from nested(w)
+        elif a[0] == "eval" and words:
+            yield from nested(" ".join(words))
+
+    argv, pending, taken = [], [], 0
     for t in tokens + [";"]:
         if t and set(t) <= OPERATORS:
+            for b in pending:
+                yield from nested(b)
+            pending = []
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
                 argv.pop(0)
@@ -255,18 +357,35 @@ def segments(cmd, raw=False):
                         k = 2 if pre[:1] in (["-C"], ["--chdir"]) and len(pre) > 1 else 1 if m else 0
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
-                    yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, based(argv[i:]), CLOSE] if d
-                                else [based(argv[i:])])
+                    cand = based(argv[i:])
+                    if d:
+                        yield from [OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED]
+                    yield cand
+                    yield from run_bodies(cand)
+                    if d:
+                        yield CLOSE
                     sp = wrapped_words(argv[i])
                     for j in range(len(sp) if sp != argv[i:i + 1] else 0):
-                        yield from [OPEN, CD_WRAPPED, based(sp[j:] + argv[i + 1:]), CLOSE]
+                        cand = based(sp[j:] + argv[i + 1:])
+                        yield from [OPEN, CD_WRAPPED, cand]
+                        yield from run_bodies(cand)
+                        yield CLOSE
             elif argv:
                 yield argv
+                yield from run_bodies(argv)
             argv = []
             # Subshell bounds go through as their own segments so callers can scope `cd`.
             yield from (OPEN if c == "(" else CLOSE for c in t if c in "()")
         else:
-            argv.append(t if raw else t.translate(UNHIDE))
+            k = t.count(SUB)
+            pending += bodies[taken:taken + k]
+            taken += k
+            if t.strip(SUB):  # a heredoc's markers alone are not a word
+                argv.append(t if raw else t.translate(UNHIDE))
+    for b in bodies[taken:]:  # markers lost to an unclosed quote: still checked, where nothing is known
+        yield from [OPEN, CD_WRAPPED]
+        yield from nested(b)
+        yield CLOSE
 
 
 # Any word that may change directory, anywhere in the raw command (over-matching is fine: it only fails closed).
@@ -1092,6 +1211,9 @@ def check(cmd, cwd, notes=None):
     # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
     # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
     raw, cmd = cmd, join_continuations(cmd)
+    if any(a is TOO_DEEP for a in segments(cmd)):
+        return (f"Blocked: code nested too deep to check (over {MAX_NESTING} levels of substitutions, shells and "
+                f"eval, or over {MAX_BODIES} nested bodies). Run the inner commands directly.")
     if polls(cmd):
         return ("Blocked: never poll: run `gh pr checks <n> --watch --fail-fast` in the background "
                 "and let the harness wake you.")

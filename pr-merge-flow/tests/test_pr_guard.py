@@ -1110,5 +1110,58 @@ assert m and "required check Test & Build is MISSING" in m, m
 assert not [c for c in calls_seen if "/contents/" in " ".join(c) and "ref" in " ".join(c)], calls_seen
 
 
+# 1.6.1 (claude-skills #132 round 2): code the shell runs from inside a word is checked like top-level code:
+# backtick and `$(...)` bodies (also inside double quotes and unquoted heredocs), `sh|bash|zsh|dash|ksh` and
+# `eval` arguments, and `builtin` as a wrapper. Each case first runs under /bin/bash with a harmless `gh` that
+# only records its argv, so the test proves bash really executes the merge the guard must block.
+_bin = Path(tempfile.mkdtemp())
+_log = _bin / "argv.log"
+(_bin / "gh").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{_log}"\n')
+(_bin / "gh").chmod(0o755)
+
+def bash_runs(c):
+    """The gh argv lines /bin/bash records running c with the recorder first on PATH."""
+    _log.write_text("")
+    _run(["/bin/bash", "-c", c], env={"PATH": f"{_bin}:/usr/bin:/bin", "HOME": str(_bin)},
+         stdin=g.subprocess.DEVNULL, stdout=g.subprocess.DEVNULL, stderr=g.subprocess.DEVNULL, timeout=20)
+    return _log.read_text().splitlines()
+
+NESTED = [
+    # the seven review threads on #132 (round 1 was closed by the split-string block; round 2 by nesting)
+    "/usr/bin/env -S'gh pr merge 17 --admin'", "env -vS'gh pr merge 17 --admin'",
+    "env -S 'env -S \"gh pr merge 17 --admin\"'", "env -S \"`printf gh` pr merge 17 --auto\"",
+    "builtin exec env -S 'gh pr merge 17 --admin'", "echo `env -S 'gh pr merge 17 --admin'`",
+    "bash -c \"env -S 'gh pr merge 17 --admin'\"", "sh -c \"env -S 'gh pr merge 17 --admin'\"",
+    "/bin/bash -c \"env -S 'gh pr merge 17 --auto'\"", "/bin/sh -c \"env -S 'gh pr merge 17 --admin'\"",
+    # the same class without env -S
+    "builtin exec gh pr merge 17 --admin", "echo `gh pr merge 17 --admin`",
+    'echo "$(gh pr merge 17 --admin)"', 'echo "`gh pr merge 17 --admin`"', 'x="$(gh pr merge 17 --auto)"',
+    "bash -c 'gh pr merge 17 --admin'", "bash -ec 'gh pr merge 17 --admin'", "sh -c 'true; gh pr merge 17 --admin'",
+    "bash -c \"bash -c 'gh pr merge 17 --admin'\"", "bash <<< 'gh pr merge 17 --admin'",
+    "eval 'gh pr merge 17 --admin'", "eval gh pr merge 17 --admin", "builtin eval \"gh pr merge 17 --auto\"",
+    "echo `echo \\`gh pr merge 17 --admin\\``", 'echo "$(echo ")"; gh pr merge 17 --admin)"',
+    "cat <<EOF\n$(gh pr merge 17 --admin)\nEOF", "cat <<EOF\n`gh pr merge 17 --auto`\nEOF",
+]
+for c in NESTED:
+    ran = bash_runs(c)
+    assert any(r.startswith("pr merge 17 --") for r in ran), (c, ran)
+    m = merge(c, rollup=ok)
+    assert m and ("--admin" in m or "--auto" in m or SPLIT in m), (c, m)
+# Text the shell never runs stays text: single quotes, escaped backticks, quoted heredocs, echo arguments.
+for c in ("echo '`gh pr merge 17 --admin`'", "echo '$(gh pr merge 17 --admin)'", 'echo "\\`gh pr merge 17 --admin\\`"',
+          "cat <<'EOF'\n$(gh pr merge 17 --admin)\n`gh pr merge 17 --auto`\nEOF",
+          "bash -c 'echo gh pr merge 17 --admin'", "gh pr comment 5 --body 'never `gh pr merge --admin`'"):
+    assert not any(r.startswith("pr merge") for r in bash_runs(c)), c
+    assert merge(c, rollup=ok) is None, c
+# A substitution runs where it stands, so its directory is the one at that point, not an unknown one.
+assert forks('URL="$(gh pr create --title x --body y)"') == ["/hook"]
+assert forks('cd /some/fork && echo "$(gh pr create --title x --body y)"; cd /elsewhere') == ["/some/fork"]
+# Nesting past the depth cap fails closed.
+deep = "gh pr view 1"
+for _ in range(g.MAX_NESTING + 1):
+    deep = "echo \"$(" + deep + ")\""
+assert "nested too deep" in (merge(deep, rollup=ok) or ""), deep
+
+
 def test_pr_guard():
     """pytest entry point: the asserts above run at import, so a failure is a collection error."""

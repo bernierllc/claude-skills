@@ -92,8 +92,8 @@ hooks dormant). It blocks:
   quotes (`'@co\<newline>dex'`) is not a mention, since the shell keeps both characters there (1.5.2); in double
   quotes or unquoted the line joins and it blocks. When the command holds quoting a flat scan can't follow (a
   heredoc, `$(...)`, a backtick, `$'...'`, a quote in a comment) every backslash-newline is joined, so such a
-  split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
-  `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
+  split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time`,
+  `exec` and `builtin` (1.6.1) every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
   `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); a quoted or attached split string
   (`-Sgh`, `--split-string=gh pr merge`) is split and each of its words tried too; `env` given any split-string
   option (`-S`, `-vS`, `-uXS`, `--split-string`, `--sp=…`) is blocked outright, since env expands and ends that string
@@ -106,14 +106,13 @@ hooks dormant). It blocks:
   there blocks unless it passes `-R owner/repo`, since the fork check can't run in an unknown directory. `env -i`/`env -u` before a body file are new false
   blocks (accepted). WONTFIX: a `gh …` that is only an argument after a wrapper (`env echo gh pr merge 1`) is
   checked as a command, since telling `echo` from a wrapper is the wrapper knowledge the guard avoids; rare,
-  fails closed, workaround: drop the `env`. Out of scope: `bash -c 'cd …'`. A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
+  fails closed, workaround: drop the `env`. A value consumed by `--body`/`-b` or another value flag is never read as a flag, an
   attached value (`-b<text>`) is scanned like a separate one, and short-flag clusters parse as gh's pflag does (`-iF body=@f`, `-iXPOST`). The mention is
   the at-sign plus `codex` as its own word, so an email address such as `bob@codex.io` does not count.
   Known limits, not checked: a body built by command substitution (`--body "$(cat f)"`) or a variable;
-  a file written by an earlier command; stdin piped from another command; `gh` not run as a bare word
-  (an absolute path, `bash -c`); `gh pr create`/`edit` and `gh issue create`
-  bodies; a comment line ending in a backslash, which folds the next line into the comment; and a heredoc
-  nested in `$(...)` inside quotes. A heredoc that feeds no posting command (`cat > notes.md`) is never blocked;
+  a file written by an earlier command; stdin piped from another command; `gh` reached through a variable;
+  `gh pr create`/`edit` and `gh issue create`
+  bodies; and a comment line ending in a backslash, which folds the next line into the comment. A heredoc that feeds no posting command (`cat > notes.md`) is never blocked;
 - a `sleep` plus a status query (`gh pr checks|view|status`, `gh run view|watch|list`) in one
   command, loop or not. The wanted shape is `gh pr checks <n> --watch --fail-fast` run in the
   background.
@@ -124,8 +123,12 @@ The sync and draft rules fail open when there's no open PR, `gh` is unavailable,
 commands agents habitually run, not a determined evasion. Backslash-newline is joined first,
 as the shell does, outside single quotes (the mention scan also reads the unjoined text), then comments and heredoc
 bodies are dropped, and input `shlex` can't parse is split on every operator character. Wrappers fail closed
-(every later word is tried as the command, in an unknown directory). Any shell form that rewrites the command after
-the hook sees it is out of scope: `bash -c`, `eval`, variables and command substitution. A parity test
+(every later word is tried as the command, in an unknown directory). Code the shell runs from inside a word is checked like
+top-level code (1.6.1): backtick and `$(...)` bodies (also inside double quotes and unquoted heredoc bodies), every
+word given to `sh`/`bash`/`zsh`/`dash`/`ksh` (a `-c` string, a here-string) and `eval`'s words. Code nested more than
+8 levels deep, or more than 200 bodies in one command, blocks. Still out of scope, since the shell builds the code
+after the hook sees it: variables, stdin piped or a heredoc fed to a shell (`echo … | bash`, `bash <<EOF`), sourced
+files, and a `case` pattern's `)` inside `$(...)`, which ends the substitution early. A parity test
 (`tests/test_pr_guard_parity.py`, in CI) replays every test and fixture input against the previous release and
 fails when a block is lost, unless the input is listed in its `ALLOWED_FLIPS` with a reason.
 
