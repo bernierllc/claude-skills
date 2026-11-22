@@ -1177,12 +1177,14 @@ ROUND3 = [
 ]
 # bash 4.2+ parses ${...} and a case pattern's `)` inside $(...) and decodes $'\u...'; 3.2 (macOS /bin/bash) does none
 # of these, so those cases run under bash 4.2+.
+import shutil
 BASH4 = next((b for b in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash", "/usr/bin/bash") if Path(b).exists()
               and _run([b, "-c", "((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 402))"]).returncode == 0), None)
 for c, want in ROUND3:
     new_bash = any(k in c for k in ("${x%)}", "\\u", "case "))
-    if new_bash and not BASH4:
-        print(f"note: no bash 4.2+, recorder skipped for {c!r}")
+    sh = c.split()[0]
+    if new_bash and not BASH4 or sh.endswith("sh") and not shutil.which(sh, path="/usr/bin:/bin"):
+        print(f"note: shell not installed here, recorder skipped for {c!r}")  # the guard block below still runs
     else:
         ran = bash_runs(c, BASH4 if new_bash else "/bin/bash")
         assert any(r.startswith("pr merge 17 ") and "--auto" in r for r in ran), (c, ran)
