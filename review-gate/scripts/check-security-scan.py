@@ -57,6 +57,10 @@ PASSING = {"passed", "not-applicable"}
 SCANNER = re.compile(r"\b(gitleaks|osv-scanner|zizmor|semgrep|security scan)\b", re.I)
 PASS_WORD = re.compile(r"\b(pass|passed|passes|clean|green|success|succeeded|ok)\b", re.I)
 LABELLED = re.compile(r"^\s*security (review|scan):", re.I)
+# Every pass word counts, negated or not. Parsing negation ("did not pass") was evaded three ways in review
+# (SKILLS-SEC-CLAIM-2), so a failure report is reworded without a pass word instead; REWORD says how.
+REWORD = ("if that line reports a failure, reword it without a pass word, "
+          "e.g. 'semgrep reported 2 findings'")
 
 
 def _load(name, filename):
@@ -71,7 +75,10 @@ def _lines(body):
 
 
 def claims(body):
-    """Body lines that claim a scanner pass: in `## Review`, or labelled `Security review:` / `Security scan:`."""
+    """Body lines that claim a scanner pass: in `## Review`, or labelled `Security review:` / `Security scan:`.
+
+    A failure report that uses a pass word ("semgrep did not pass") counts too: fail closed, see REWORD.
+    """
     found, in_review = [], False
     for line in _lines(body):
         if line.startswith("## "):
@@ -196,7 +203,7 @@ def main():
     if not active:
         if claimed:
             print(f"::error::security lane: the PR body claims a scanner pass ({claimed[0]!r}) but {ref} has no "
-                  "Security Scan workflow, so nothing verifies it; remove the claim", file=sys.stderr)
+                  f"Security Scan workflow, so nothing verifies it; remove the claim ({REWORD})", file=sys.stderr)
             return 1
         print("security lane not enabled (no .github/workflows/review-gate-security-scan.yml on the default branch)")
         return 0
@@ -204,7 +211,7 @@ def main():
         print(f"::error::security lane: {why}", file=sys.stderr)
         if claimed:
             print(f"::error::security lane: the PR body claims a scanner pass ({claimed[0]!r}) that the verified "
-                  "Security Scan does not show", file=sys.stderr)
+                  f"Security Scan does not show ({REWORD})", file=sys.stderr)
         return 1
     print("security lane ok: the trusted Security Scan passed on the PR head with the default branch's config")
     return 0

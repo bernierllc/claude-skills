@@ -2,6 +2,7 @@
 import json
 import logging
 import sqlite3
+from contextlib import closing
 
 log = logging.getLogger("auth")
 SCHEMA = "create table if not exists sessions(token text primary key, user_id text not null);"
@@ -12,13 +13,13 @@ class AuthBackendError(Exception):
 
 
 def init_db(path):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(SCHEMA)
 
 
 def lookup_user(db_path, token):
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=rw", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=rw", uri=True)) as db, db:
             row = db.execute("select user_id from sessions where token = ?", (token,)).fetchone()
     except sqlite3.Error as exc:
         raise AuthBackendError(str(exc)) from exc

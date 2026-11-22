@@ -180,24 +180,141 @@ Apply `ai-and-agents.md` with these Nevar specifics:
 
 ## Review-loop integration
 
-Version 1.0.0 of this skill ships the review procedure only. The `review-gate` security
-lane and the scanner workflow template ship separately; until they are installed in a
-repo, every row below except inline threads is design, not enforcement.
+Three pieces together make a security pass enforceable:
 
-What the review loop can enforce, and when:
+- this skill's model review, which is advisory;
+- `review-gate`'s security lane (3.3.1 and later), rule 6;
+- the scanner workflow template in `templates/`, shipped in 1.1.0.
 
-| Control | Status |
+The lane stays off in a repo until the template is installed on its default branch.
+
+### Install the scanner workflow (opt-in, per repo)
+
+1. Install `review-gate` 3.3.1 or later, with `scripts/check-security-scan.py` vendored. A `## Review`
+   line that names a scanner with any pass word, even "did not pass", is a claim; report failures
+   without one ("semgrep reported 2 findings").
+2. Rename any other Actions job whose check run is named `Security Scan`. With the lane on,
+   the gate reads such a check as forged and fails.
+3. Copy `templates/review-gate-security-scan.yml` to
+   `.github/workflows/review-gate-security-scan.yml`. That exact name is the lane's
+   activation marker. Never install it as `security-scan.yml`: a repo may already have its
+   own file with that name.
+4. Copy `templates/security-scan/` to `.github/security-scan/`. That directory holds
+   `scan.py`, `gitleaks.toml`, `semgrep.yml`, `osv-scanner.toml` and `exceptions.json`.
+5. Merge both to the default branch in one PR. The marker is read from the default branch
+   only, so the PR that adds it does not turn the lane on for itself. Its own scan fails with
+   a zizmor `dangerous-triggers` finding (see Exceptions). From the next PR on, the gate needs
+   a passing `Security Scan` on every head.
+
+What the workflow does:
+
+- It runs on `pull_request_target`, with `permissions: {}` at the top and `contents: read`
+  plus `pull-requests: read` for its one job.
+- It checks out the default branch (the driver and configs) and the PR head. The head is
+  data only and is never executed, imported, installed or built.
+- It lists the PR's changed files through the API and copies the regular ones into a
+  staging dir. Symlinks are not copied. Author-side scanner configs and ignore files are
+  renamed in staging with an `.author-copy` suffix, so they are scanned as data and never
+  loaded. A changed file whose name already ends with `.author-copy` is a `scanner-error`,
+  so a rename never overwrites another file and no file can borrow another path's exception.
+- Each scanner runs only on the files it applies to:
+  - gitleaks on every changed file;
+  - osv-scanner on lockfiles and on the names it reads as pip requirements files (a base
+    name ending `.txt` that contains `requirements`, such as `requirements-dev.txt`). Each
+    input must yield packages on its own, so one it finds none in (a broken file, a `-r`
+    include that is missing) is a `no-packages` finding even when another input in the same
+    run was read. It is never a pass, and takes a dated exception when the file is
+    legitimately empty. osv-scanner's parsers read dependency files differently from pip
+    and yarn (includes, encodings, line separators, environment variables, quoting, long
+    lines that truncate the parse), and a partial read still yields packages, so every
+    changed dependency file, lockfiles included, is also a `not-covered` finding on that
+    file, whatever its content: the scan cannot prove it saw what the package manager
+    installs. That includes a dependency file staging skipped, such as a symlink, since the
+    package manager still reads it, and one the PR deletes or renames away, since that
+    changes what gets installed. Advisories are still reported. It fails unless an
+    owned, expiring exception names that file. Proving coverage, one format at a time, is
+    `plans/2026-11-22-security-scan-osv-include-resolution.md`;
+  - zizmor on workflows, actions and Dependabot config;
+  - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
+    for, inside a pinned container with no network and a read-only mount. A repo that adds
+    rules for another language adds its extensions to `CODE_EXT` in `scan.py` too.
+- A scanner with nothing to scan reports `not-applicable` in the job summary.
+- It prints exactly one `::notice title=security-scan::outcome=<o> config-tree=<sha>` line.
+  `<sha>` is the git tree of `.github/security-scan` on the default branch. Everything
+  derived from the PR is printed inside `::stop-commands::`, so a file name cannot emit a
+  second notice.
+
+Outcomes:
+
+- `passed`, or `not-applicable` (no scanner had a file to scan) let the PR merge.
+- `findings` fails.
+- `scanner-error` fails. It covers:
+  - a scanner that exits with an error or runs past 10 minutes;
+  - a malformed `exceptions.json`;
+  - a PR at the API's 3000-file listing cap;
+  - a head that moved while its files were listed.
+- The job exits 0 only for the two passing outcomes, so its conclusion matches the notice.
+
+Scanner binaries are pinned by version and sha256. semgrep is pinned by image digest and
+`actions/checkout` by commit. Bump a pin by editing the workflow on the default branch.
+
+Rollback: delete `.github/workflows/review-gate-security-scan.yml` from the default branch.
+On its next run, Review Gate prints `security lane not enabled` and the lane no longer
+blocks. `.github/security-scan/` can stay; without the marker it does nothing.
+
+### Exceptions
+
+`.github/security-scan/exceptions.json` lives on the default branch, so a PR cannot add an
+exception for its own findings:
+
+```json
+{"version": 1, "exceptions": [
+  {"scanner": "zizmor", "rule": "dangerous-triggers",
+   "path": ".github/workflows/review-gate-security-scan.yml",
+   "owner": "platform-team", "expires": "2027-01-31",
+   "reason": "pull_request_target is required; the head is checked out as data only"}
+]}
+```
+
+Rules:
+
+- Every entry needs exactly `scanner`, `rule`, `path`, `owner`, `expires` (`YYYY-MM-DD`) and
+  `reason`, all non-empty. Anything else is `scanner-error`.
+- An entry matches scanner, rule and path exactly. For gitleaks, osv-scanner and zizmor the
+  rule is the scanner's rule id, or `no-packages` / `not-covered` for an osv-scanner input
+  it could not read or prove complete. For semgrep it is the rule id in `semgrep.yml`, or
+  `target-error` / `target-skipped` for a file semgrep could not parse or skipped.
+- After its expiry date an exception stops suppressing, so the finding returns and is
+  listed in the summary.
+- An exception never absolves a P0/P1 from the model review.
+
+A PR that edits the scanner workflow gets zizmor's `dangerous-triggers` finding on that file,
+because zizmor runs with `--no-ignores`. Such a PR needs a dated exception like the example
+above, merged first.
+
+### Trust: enforceable now vs waits on trust
+
+| Control | State |
 |---|---|
-| Inline P0/P1 threads unresolved block merge (`review-gate`) | enforced today where `review-gate` is installed |
-| Trigger: which PRs need a security pass, computed from the diff by a base-side script under `pull_request_target`, so deleting the trigger file in the PR has no effect | planned: enforceable once the `review-gate` security lane lands (no trusted publisher needed) |
-| Head binding: evidence must name the full 40-hex head SHA; a push makes it stale | planned: same as the trigger |
-| Scanner results (gitleaks, osv-scanner, zizmor, semgrep) read from a check run on the exact head, published by the base-side workflow; app id, workflow path and ref, head SHA and report digest verified | enforceable once the scanner workflow lands, same residual as `review-gate`: a job in the repo with `checks: write` can still create a same-name check, detected by the forged-check detector but not prevented without a ruleset source pin |
-| Model review coverage (`Security review:` line in the PR body: surface examined, not covered, refuted leads) | **advisory / unverified**: the PR author can edit the body, so the gate reports it but does not treat it as evidence |
+| Inline P0/P1 threads unresolved block merge (`review-gate`) | Enforced where `review-gate` is installed |
+| Lane activation read from the default branch only; a PR adding or deleting the marker changes nothing | Enforced (`review-gate` 3.3.1, rule 6) |
+| Scanner job found through the Actions API, run by this PR's `pull_request_target` run, check run from `github-actions` on the exact head, newest job decides (trust checks a-d) | Enforced once the template is on the default branch |
+| One `security-scan` annotation whose outcome matches the conclusion and whose config tree equals the default branch's `.github/security-scan` (checks e-f) | Enforced once the template is on the default branch |
+| Body claim of a scanner pass without a verified passing scan fails | Enforced where the lane script is vendored |
+| Model review coverage (`Security review:` line) | **Advisory / unverified**: the author can edit the body |
+| A job elsewhere in the repo with `checks: write` creating a same-name check | Detected as forged, not prevented without a ruleset source pin |
+| A repo-admin edit to the default branch's workflow or configs | Out of scope: whoever controls the default branch controls the scanner |
 
-Outcomes the gate reports for the security lane: `passed`, `not-applicable` (diff touches
-no trigger path), `incomplete` (missing, stale or partial evidence), `scanner-error`
-(scanner failed or timed out). Only `passed` and `not-applicable` let a PR merge, and a
-body claiming a scanner pass with no matching verified check run is `incomplete`.
+### Residuals
 
-A baseline or exception never absolves a P0/P1 finding. Exceptions name an owner and an
-expiry date; an expired exception is a finding again.
+- The scan usually finishes after the gate's own run, so the gate reads it incomplete until
+  it is re-fired (a label toggle).
+- A default branch that moves after the scan changes the config digest. The gate then asks
+  for a re-run of Security Scan.
+- Fork PRs are unverified: the template checks out the head sha from the base repository,
+  and GitHub serves fork heads there. The canary covers same-repo PRs only.
+- Files over the scanners' size limits and binary files are scanned as gitleaks sees them.
+  semgrep reports any target it skipped, as a finding.
+- osv-scanner sees only changed files. A changed file that is a dependency list only because
+  an unchanged requirements file includes it (for example `base.txt`) is not scanned by
+  osv-scanner. The requirements-coverage plan above closes this.

@@ -1,0 +1,14 @@
+# Base-side gitleaks config for the Security Scan lane (MIT, part of nevar-security-review).
+# Read from the default branch only; a PR's own .gitleaks.toml / .gitleaksignore is never loaded.
+title = "security-scan"
+
+[extend]
+useDefault = true
+
+# Typed-prefix credentials (api_ / mcp_ keys) are low-entropy by design, so the default
+# generic-api-key rule misses them.
+[[rules]]
+id = "typed-prefix-credential"
+description = "Typed-prefix API or MCP credential"
+regex = '''\b(?:api|mcp)_(?:live|test)_[A-Za-z0-9_]{16,}'''
+keywords = ["api_live_", "api_test_", "mcp_live_", "mcp_test_"]

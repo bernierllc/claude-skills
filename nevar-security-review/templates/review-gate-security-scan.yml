@@ -1,0 +1,83 @@
+# Security Scan: gitleaks, osv-scanner, zizmor and semgrep on a PR's changed files.
+# Installed by nevar-security-review as .github/workflows/review-gate-security-scan.yml (that
+# exact name is review-gate's security-lane activation marker), with its config tree at
+# .github/security-scan/ (scan.py, gitleaks.toml, semgrep.yml, osv-scanner.toml,
+# exceptions.json). The lane turns on only when BOTH are on the default branch.
+#
+# Trust model (review-gate rule 6 checks every one of these):
+# - pull_request_target, so the workflow, the driver and every scanner config come from the
+#   base side. The PR head is checked out into head/ as DATA ONLY: never executed, imported,
+#   installed, built or used as scanner config (author-side configs are renamed in staging).
+# - One job, named "Security Scan": review-gate counts every job of this workflow as a scanner
+#   job and decides on the newest. No job-level `if` and no concurrency cancel, either of which
+#   would make a skipped or cancelled job the newest.
+# - Exactly one `security-scan` notice: outcome=<o> config-tree=<sha of .github/security-scan
+#   on the default branch>. PR-derived output is printed inside ::stop-commands::.
+# - Scanner binaries and the action are pinned by sha256 / commit; errors and timeouts fail.
+#
+# Rollback: delete this file from the default branch; the lane reports "security lane not
+# enabled" on the next Review Gate run.
+name: Security Scan
+
+on:
+  # zizmor: ignore[dangerous-triggers] base-side code only; the head is checked out as data and never run
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the default branch and the PR head
+      pull-requests: read # list the PR's changed files and re-read its head sha
+    steps:
+      - name: Check out the default branch (driver and configs)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+
+      - name: Check out the PR head as data (never executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+
+      - name: Install pinned scanners
+        env:
+          GITLEAKS: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          OSV: https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          OSV_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+          ZIZMOR: https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+          SEMGREP_IMAGE: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"; dl="$RUNNER_TEMP/dl"; mkdir -p "$bin" "$dl"
+          fetch() { curl -fsSL --retry 3 -o "$dl/$2" "$1"; echo "$3  $dl/$2" | sha256sum -c -; }
+          fetch "$GITLEAKS" gitleaks.tgz "$GITLEAKS_SHA256"; tar -xzf "$dl/gitleaks.tgz" -C "$bin" gitleaks
+          fetch "$OSV" osv-scanner "$OSV_SHA256"; install -m 0755 "$dl/osv-scanner" "$bin/osv-scanner"
+          fetch "$ZIZMOR" zizmor.tgz "$ZIZMOR_SHA256"; tar -xzf "$dl/zizmor.tgz" -C "$bin" zizmor
+          docker pull --quiet "$SEMGREP_IMAGE"
+
+      - name: Scan the changed files
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SEMGREP_IMAGE: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+        run: |
+          set -euo pipefail
+          export BASE_DIR="$GITHUB_WORKSPACE/base" HEAD_DIR="$GITHUB_WORKSPACE/head"
+          export WORK_DIR="$RUNNER_TEMP/security-scan" BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$WORK_DIR"
+          cd "$RUNNER_TEMP"
+          python3 -I "$BASE_DIR/.github/security-scan/scan.py"

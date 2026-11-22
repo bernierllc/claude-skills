@@ -1,0 +1,67 @@
+# Base-side semgrep rules for the Security Scan lane (MIT, written for nevar-security-review).
+# Small and high-signal on purpose: the model review (nevar-security-review) covers the rest.
+rules:
+  - id: python-eval-exec
+    languages: [python]
+    severity: ERROR
+    message: eval or exec on a value that is not a literal runs arbitrary code
+    patterns:
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: exec($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: exec("...", ...)
+  - id: python-shell-true
+    languages: [python]
+    severity: ERROR
+    message: subprocess with shell=True and a non-literal command allows command injection
+    patterns:
+      - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+      - pattern-not: subprocess.$F("...", ..., shell=True, ...)
+  - id: python-unsafe-deserialize
+    languages: [python]
+    severity: ERROR
+    message: pickle or yaml.load without a safe loader deserializes attacker-controlled objects
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: yaml.load($X)
+      - pattern: yaml.load($X, Loader=yaml.Loader)
+      - pattern: yaml.load($X, Loader=yaml.UnsafeLoader)
+  - id: tls-verify-disabled
+    languages: [python]
+    severity: ERROR
+    message: TLS certificate verification is disabled
+    pattern: requests.$F(..., verify=False, ...)
+  - id: js-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval or new Function on a value that is not a literal runs arbitrary code
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(..., $X)
+      - pattern-not: eval("...")
+  - id: js-child-process-exec
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: child_process exec with a non-literal command allows command injection
+    patterns:
+      - pattern-either:
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+      - pattern-not: $CP.exec("...", ...)
+      - pattern-not: $CP.execSync("...", ...)
+      - metavariable-regex:
+          metavariable: $CP
+          regex: ^(child_process|cp|childProcess|require\("child_process"\))$
+  - id: jwt-verify-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: jsonwebtoken decode is not verification; use jwt.verify with an algorithms allowlist
+    pattern: jwt.decode(...)
+  - id: python-jwt-verify-disabled
+    languages: [python]
+    severity: ERROR
+    message: PyJWT decode with signature verification disabled
+    pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
