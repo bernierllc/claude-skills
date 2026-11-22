@@ -1,0 +1,20 @@
+name: PR labeler
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: npm ci --ignore-scripts && npm run label
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: echo "Labeling $PR_TITLE"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
