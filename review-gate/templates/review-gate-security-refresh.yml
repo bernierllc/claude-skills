@@ -10,6 +10,9 @@
 #   which fails until the new scan lands (its old scan is now stale or the new one is queued).
 # - Security Scan completing (workflow_run): re-run that PR's newest Review Gate run, waiting up to 2 min for
 #   one still in progress, so the gate reads the finished scan without a label toggle.
+# Drafts are skipped. A re-run keeps its original review-gate.yml, so after that file changes the lane fails each
+# re-run (check h) until a person pushes, closes and reopens, or toggles a label: events from this workflow's
+# GITHUB_TOKEN start no workflow, and a dispatched gate's check lands on the default-branch commit, not the PR head.
 # The push paths are check-security-scan.py's POLICY_FILES plus the scan workflow and its config tree; a test
 # pins them to that list.
 #

@@ -42,6 +42,14 @@ created_path = os.path.join(state, "created.json")
 created = json.load(open(created_path)) if os.path.exists(created_path) else []
 if path.count("/") == 2:  # repos/<owner>/<repo>: the security refresh's default-branch read
     print(json.dumps({"default_branch": fixture.get("default_branch", "main")})); sys.exit(0)
+if "/branches/" in path:  # the security lane's read of the default branch tip
+    print(json.dumps({"commit": {"sha": fixture.get("branch_tip", "c" * 40)}})); sys.exit(0)
+if "/compare/" in path:  # the security lane's ancestry check of a dispatch run's head_sha against that tip
+    base, head = path.split("/compare/")[1].split("...")
+    if fixture.get("compare_fails"):
+        sys.exit(1)
+    status = fixture.get("compare", {}).get(head, "identical" if base == head else "diverged")
+    print(json.dumps({"status": status})); sys.exit(0)
 if "-X" in args and "POST" in args and ("/dispatches" in path or path.endswith("/rerun")):  # the security refresh
     with open(os.path.join(state, "posts.log"), "a") as posts:
         posts.write(" ".join(args) + "\n")
@@ -121,7 +129,8 @@ if "/contents/.claude" in path:  # the policy revision's merge-guard directory: 
     print(json.dumps(listing)); sys.exit(0)
 if "/contents/.github" in path:  # the security lane's directory listings, keyed by "<dir>?ref=<ref>"
     key = path.split("/contents/", 1)[1]
-    default = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?") else None
+    default = ([{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?")
+               else {"type": "file", "sha": "0" * 40} if key.startswith(".github/workflows/review-gate.yml?ref=") else None)
     listing = fixture.get("contents", {}).get(key, default)
     if listing is None:
         sys.exit(1)
@@ -247,7 +256,8 @@ class ForgedGateWorkflow(unittest.TestCase):
                  "own_jobs": [job("Review Gate", int(i)) for i in own_ids], **(fixture or {})}))
             workdir = tmp / "job"; workdir.mkdir()
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
-                       PR_NUMBER="7", REPO="o/r", SHA="a" * 40, DEFAULT_BRANCH="main")
+                       PR_NUMBER="7", REPO="o/r", SHA="a" * 40, DEFAULT_BRANCH="main",
+                       GITHUB_ACTIONS="true", GITHUB_WORKFLOW_SHA="9" * 40)  # what the runner always sets
             # The block writes the trusted scripts to /tmp/<name>; point that at this test's own dir.
             script = run_block().replace("/tmp/", f"{workdir}/")
             self.rcs = []

@@ -6,6 +6,7 @@ Override: include `# review-gate-ok: <reason>` in the Bash command.
 """
 from __future__ import annotations
 
+import base64
 import functools
 import importlib.util
 import json
@@ -3821,7 +3822,9 @@ def security_lane_check(
     CI's gate run can be minutes old: the default branch may have changed the scan config or policy since, or
     the scan may have aged out. The lane re-reads all of it now. A repo without the scan workflow on its
     default branch exits 0 ("not enabled"). Fails closed: a lane exit 1 (failed) or 2 (could not evaluate),
-    a missing script, an unreadable default branch, or running out of the time budget all block.
+    a missing script, an unreadable default branch, or running out of the time budget all block. A block from a
+    lane that is not the default branch's scripts/check-security-scan.py says to re-vendor review-gate: re-running
+    Security Scan cannot clear a verdict the gate's own lane would not give.
     """
     run = _budgeted_run()
     base = dict(env if env is not None else os.environ)
@@ -3836,15 +3839,29 @@ def security_lane_check(
             detail = repo.stderr.strip() or "no output"
             return f"review-gate: could not read the default branch of {owner}/{name} for the security lane: {detail}"
         child = {**base, "REPO": f"{owner}/{name}", "PR_NUMBER": str(number), "SHA": head, "DEFAULT_BRANCH": branch}
+        for key in ("GITHUB_ACTIONS", "GITHUB_WORKFLOW_SHA"):  # this is not a gate run, even inside Actions (check h)
+            child.pop(key, None)
         if hostname:
             child["GH_HOST"] = hostname
         proc = run([sys.executable, "-I", str(SECURITY_LANE)], env=child)
+        if proc.returncode != 0:
+            lane = run(["gh", "api", *host, f"repos/{owner}/{name}/contents/scripts/check-security-scan.py?ref={branch}"],
+                       env=base)
     except subprocess.TimeoutExpired:
         return (f"review-gate blocked merge: the security lane did not finish within {HOOK_BUDGET_S:.0f} s "
                 "of the hook starting (GitHub slow or unreachable); retry the merge")
     if proc.returncode == 0:
         return None
     detail = proc.stderr.strip().replace("::error::", "") or "no output"
+    try:
+        differs = lane.returncode == 0 and base64.b64decode(json.loads(lane.stdout)["content"]) != SECURITY_LANE.read_bytes()
+    except (ValueError, KeyError, TypeError, OSError):
+        differs = False  # unreadable: nothing shows the lanes differ, and the plain block below still blocks
+    if differs:
+        return (f"review-gate blocked merge: security lane exited {proc.returncode}, and this machine's lane "
+                f"({SECURITY_LANE}) is not {branch}'s scripts/check-security-scan.py, so it may not give the gate's "
+                "verdict: re-vendor review-gate so the local skill and the repo's installed copy match, then retry "
+                f"the merge:\n- {detail}")
     return f"review-gate blocked merge: security lane exited {proc.returncode}:\n- {detail}"
 
 

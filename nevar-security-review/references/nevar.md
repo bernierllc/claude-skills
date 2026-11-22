@@ -316,6 +316,7 @@ above, merged first.
 | Scanner job found through the Actions API, run by this PR's `pull_request_target` run, check run from `github-actions` on the exact head, newest job decides (trust checks a-d) | Enforced once the template is on the default branch |
 | One `security-scan` annotation whose outcome matches the conclusion and whose config tree equals the default branch's `.github/security-scan` (checks e-f) | Enforced once the template is on the default branch |
 | Scan still fresh: names this PR, head and base ref, the default branch's current scan workflow and policy revision, no expired exception, completed within 36 h (check g); merge guard re-runs the lane | Enforced (`review-gate` 3.6.0) once the template is on the default branch |
+| The gate run executes the default branch's current `review-gate.yml`, so a re-run of an old gate file fails (check h) | Enforced (`review-gate` 3.6.0) |
 | Re-scan after a default-branch scanner or policy change, and daily (Security Refresh) | Installed by `review-gate` 3.6.0; unproven until the canary |
 | Body claim of a scanner pass without a verified passing scan fails | Enforced where the lane script is vendored |
 | Model review coverage (`Security review:` line) | **Advisory / unverified**: the author can edit the body |
@@ -330,7 +331,10 @@ above, merged first.
 - A scan goes stale (review-gate check g) when the default branch changes the scan workflow,
   `.github/security-scan/` or the policy files, an exception it relied on expires, the PR is
   retargeted, or 36 h pass. Security Refresh re-dispatches on such a change and daily; a
-  retarget waits for the daily run. The daily re-scan of every open PR costs CI minutes.
+  retarget waits for the daily run. The daily re-scan of every open non-draft PR costs CI minutes.
+- After the default branch changes `review-gate.yml`, every open PR's gate fails (review-gate
+  check h) until a person pushes, closes and reopens the PR, or toggles a label. Security
+  Refresh can only re-run the gate, and a re-run keeps its original workflow file.
 - Fork PRs are unverified: the template checks out the head sha from the base repository,
   and GitHub serves fork heads there. The canary covers same-repo PRs only.
 - Files over the scanners' size limits and binary files are scanned as gitleaks sees them.

@@ -10,7 +10,8 @@ The scanner jobs are found through the Actions API, never through check-run name
 details_url and annotations are writable by anyone with checks: write): every job, all attempts, of
   - every .github/workflows/review-gate-security-scan.yml pull_request_target run on the head, and
   - every workflow_dispatch run of that file created in the last MAX_AGE on the default branch and titled
-    RUN_TITLE for this PR and head: the re-scan the Security Refresh workflow (`--refresh`, below) dispatches.
+    RUN_TITLE for this PR and head, whose head_sha is the default branch's tip or an ancestor of it (a tag or
+    another ref of the same name is not the branch): the re-scan Security Refresh (`--refresh`, below) dispatches.
 When active, the gate passes only when the NEWEST such job (by the job's started_at, then id) and its own check
 run are
   a. from a run triggered by THIS PR (check-forged-review-gate.py's run_provenance; a dispatch run instead runs
@@ -32,6 +33,10 @@ run are
      expired (exceptions-until); and the job completed within MAX_AGE. A change to any of these on the default
      branch therefore fails every open PR's lane until it is re-scanned, which the Security Refresh workflow
      (templates/review-gate-security-refresh.yml) dispatches on that push, daily, and after each scan.
+  h. run by the current gate: in GitHub Actions, the review-gate.yml this run executes (GITHUB_WORKFLOW_SHA) is
+     the default branch's current blob. A re-run keeps its original workflow file, so re-running a run from before
+     the gate was re-vendored fails instead of passing on the old YAML; push, close and reopen, or toggle a label
+     to start a fresh run. Outside Actions (the merge guard) there is no gate run, and the check is skipped.
 Any other Actions job's check run named `Security Scan` is forged and fails the gate; a Checks API POST
 is never a scanner job, so it is never evidence.
 
@@ -41,8 +46,10 @@ ADVISORY/UNVERIFIED and never count as evidence. A body line in `## Review`, or 
 Residual: a pass claim worded elsewhere in the body is not detected, and is still not evidence.
 
 Residual: the scan usually finishes after the gate's own run. The Security Refresh workflow re-runs the PR's
-newest Review Gate run when a scan completes; a re-run keeps that run's review-gate.yml (the scripts it loads are
-the default branch's current ones), and where it cannot re-run, close and reopen the PR.
+newest Review Gate run when a scan completes. Only a re-run is possible: events from the workflow's GITHUB_TOKEN
+start no workflow, and a dispatched gate run's check lands on the default branch commit, not the PR head the
+required check reads. So after review-gate.yml changes on the default branch, every open PR's gate fails (h) until
+a person pushes, toggles a label, or closes and reopens it.
 Residual: MAX_AGE (36 h) assumes the daily refresh: GitHub can delay or drop a scheduled run, so the margin is
 12 h. A PR retargeted to another base is re-scanned by the next daily refresh, or on close and reopen.
 Residual: every job of review-gate-security-scan.yml counts as a scanner job, so the template keeps a single job. Runs are
@@ -52,7 +59,8 @@ Residual: with the lane on, any other Actions job whose check run is named `Secu
 and fails the gate, so a repo enabling the lane renames such a job of its own first.
 
 env: REPO, PR_NUMBER, DEFAULT_BRANCH (required); SHA (the event's head; must still be the PR's head);
-SECURITY_LANE_NOW (optional, timezone-aware ISO time; moves the clock forward only, for tests).
+SECURITY_LANE_NOW (optional, timezone-aware ISO time; moves the clock forward only, for tests); GITHUB_ACTIONS and
+GITHUB_WORKFLOW_SHA (the runner's own, check h).
 Exit 0: lane passed or not enabled. 1: failed (reason on stderr). 2: could not evaluate (fails closed).
 
 `--policy-revision <checkout>` prints the POLICY_FILES revision of a local git checkout's HEAD (the scan
@@ -183,12 +191,17 @@ def remote_policy(w, repo, ref):
     return _revision(blobs)
 
 
+def _time(text):
+    """An ISO 8601 time. GitHub writes UTC as a trailing Z, which fromisoformat rejects before Python 3.11."""
+    return datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+
+
 def now_utc():
     """The current UTC time; SECURITY_LANE_NOW can only move it forward (a test of expiry), never back."""
     now = datetime.now(timezone.utc)
     forced = os.environ.get("SECURITY_LANE_NOW")
     if forced:
-        later = datetime.fromisoformat(forced)
+        later = _time(forced)
         if later.tzinfo is None:
             raise ValueError("SECURITY_LANE_NOW must carry a timezone")
         now = max(now, later)
@@ -230,14 +243,18 @@ def _verdict(w, detector, repo, pr, pull, head, ref, workflows, now):
             return f"'{NAME}' run {run['id']} is not this PR's scan: {why}"
         jobs += _jobs(w, repo, run, head)
     since = (now - MAX_AGE).strftime("%Y-%m-%dT%H:%M:%SZ")
-    title = RUN_TITLE.format(pr=pr, head=head)
+    title, tip = RUN_TITLE.format(pr=pr, head=head), None
     for run in _listing(w, f"repos/{repo}/actions/workflows/{wf}/runs?" + urllib.parse.urlencode(
             {"event": DISPATCH, "branch": ref, "created": f">={since}", "per_page": 100}), "workflow_runs"):
         # (a) a re-scan: the default branch's own workflow, dispatched for this PR and head (writers and the
         # refresh workflow only: dispatching needs actions: write). Another PR's or head's re-scan is skipped.
         if ((w._text(run, "path").split("@", 1)[0], w._text(run, "event")) == (TRUSTED[0], DISPATCH)
                 and run.get("head_branch") == ref and run.get("display_title") == title):
-            jobs += _jobs(w, repo, run, w._text(run, "head_sha"))
+            # head_branch is a bare name, which a tag can share: the commit must be on the branch itself
+            tip = tip or w._text(w._api_json(f"repos/{repo}/branches/{ref}"), "commit", "sha")
+            sha = w._text(run, "head_sha")
+            if w._text(w._api_json(f"repos/{repo}/compare/{tip}...{sha}"), "status") in ("identical", "behind"):
+                jobs += _jobs(w, repo, run, sha)
     scanner = {j["id"] for j, _ in jobs}
     named = _listing(w, f"repos/{repo}/commits/{head}/check-runs?"
                      + urllib.parse.urlencode({"check_name": NAME, "filter": "all", "per_page": 100}), "check_runs")
@@ -310,9 +327,26 @@ def _stale(w, repo, pr, pull, head, ref, workflows, now, notice, job):
         return f"it ran under policy revision {notice['policy'][:12]}, not {ref}'s current {policy[:12]}"
     if notice["until"] != "none" and date.fromisoformat(notice["until"]) < now.date():
         return f"an exception it relied on expired after {notice['until']}"
-    completed = datetime.fromisoformat(w._text(job, "completed_at"))
+    completed = _time(w._text(job, "completed_at"))
     if completed.tzinfo is None or completed < now - MAX_AGE:
         return f"it completed at {job['completed_at']}, more than {MAX_AGE.total_seconds() / 3600:.0f} h ago"
+    return None
+
+
+def _gate_file(w, repo, ref, workflows):
+    """(h) Why this gate run is not the default branch's current review-gate.yml, or None (see the docstring)."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return None  # the merge guard, or a local run: no gate run to check
+    sha = os.environ.get("GITHUB_WORKFLOW_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise w.Ambiguous("GITHUB_WORKFLOW_SHA is unset or malformed: cannot tell which review-gate.yml this run executes")
+    ran = w._text(w._api_json(f"repos/{repo}/contents/.github/workflows/{GATE_FILE}?"
+                              + urllib.parse.urlencode({"ref": sha})), "sha")
+    current = w._text(workflows.get(GATE_FILE), "sha")
+    if ran != current:
+        return (f"this Review Gate run executes review-gate.yml blob {ran[:12]}, not {ref}'s current {current[:12]} "
+                "(a re-run keeps its original workflow file); push, close and reopen, or toggle a label on the PR "
+                "to start a fresh run")
     return None
 
 
@@ -384,6 +418,9 @@ def refresh(w):
     else:
         for pull in _pages(w, f"repos/{repo}/pulls?state=open&per_page=100"):
             pr, head = str(pull["number"]), w._text(pull, "head", "sha")
+            if pull.get("draft") is True:  # marking it ready re-scans it (the scan's ready_for_review trigger)
+                print(f"security refresh: PR #{pr} is a draft; skipped")
+                continue
             try:
                 w._gh(f"repos/{repo}/actions/workflows/{TRUSTED[0].rsplit('/', 1)[1]}/dispatches", "-X", "POST",
                       "-f", f"ref={ref}", "-f", f"inputs[pr]={pr}", "-f", f"inputs[head]={head}")
@@ -438,7 +475,8 @@ def main():
         now = now_utc()
         workflows = _entries(w, repo, ".github/workflows", ref)
         active = "review-gate-security-scan.yml" in workflows  # (f) default branch only
-        why = verdict(w, detector, repo, pr, pull, head, ref, workflows, now) if active else None
+        why = (_gate_file(w, repo, ref, workflows) or verdict(w, detector, repo, pr, pull, head, ref, workflows, now)
+               if active else None)
     except (ValueError, KeyError, TypeError, AttributeError, subprocess.CalledProcessError, w.Ambiguous) as exc:
         print(f"::error::security lane: could not evaluate, failing closed: {exc}", file=sys.stderr)
         return 2

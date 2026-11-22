@@ -43,7 +43,9 @@
 # A scan that predates the default branch's scan workflow, .github/security-scan/ or policy code, or is over
 # 36 h old, is stale (check g, 3.6.0). Security Refresh (review-gate-security-refresh.yml) re-dispatches the
 # scan on such a change and daily, and re-runs this gate when a scan completes; the merge-guard hook runs
-# the lane again before `gh pr merge`.
+# the lane again before `gh pr merge`. A re-run keeps its original workflow file, so the lane also fails a run
+# whose review-gate.yml (blob at the runner's GITHUB_WORKFLOW_SHA) is not the default branch's (check h): after
+# this file changes, push, close and reopen, or toggle a label on each open PR.
 name: Review Gate
 # Names the PR in the Actions run list. Quoted: unquoted, YAML reads " #" as a comment (3.2.7).
 run-name: "Review Gate - PR #${{ github.event.pull_request.number }}"
