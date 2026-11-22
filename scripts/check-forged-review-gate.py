@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Review Gate's forged-check step: the vendored aec detector, scoped to the `Review Gate` name.
 
-check-forged-gate-names.py is vendored byte-identical from
+check-forged-gate-names.py was vendored byte-identical from
 bernierllc/agents-environment-config@41f629945c291c4e0a84f20f14a077852e7dd9dc (exits 2 on empty, malformed,
 runless or truncated input; pins the main-via-staging guard job) (scripts/check-forged-gate-names.py; plan
-plans/2026-11-16-unforgeable-required-checks.md, step S5).
-Re-vendor it by copying that file unchanged; never edit it here.
+plans/2026-11-16-unforgeable-required-checks.md, step S5). 3.7.0 adds the `Notion Sync` pin to this copy first
+(claude-skills #152); aec's copy is re-synced from it. A consuming repo re-vendors with install-workflow.py --force
+and never edits it.
 
 WHY THIS WRAPPER EXISTS: the vendored PROTECTED map also protects "PRs into main must come from
 staging" (pinned to main-via-staging.yml pull_request_target since 3.2.20). Several downstream repos still publish that name from a plain

@@ -676,6 +676,50 @@ class WrapperDetector(unittest.TestCase):
                 self.assertEqual(rc, 2, err)
 
 
+class DetectorProtectedNames(unittest.TestCase):
+    """claude-skills #152: the real check-forged-gate-names.py, unscoped, as main-via-staging.yml runs it."""
+    NOTION_RUN = ".github/workflows/notion-sync.yml\tpull_request_target"
+
+    def detector(self, check_runs, runs):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
+            (bindir / "fixture.json").write_text(json.dumps({"runs": runs}))
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, REPO="o/r")
+            stdin = json.dumps({"total_count": len(check_runs), "check_runs": check_runs})
+            proc = subprocess.run([sys.executable, str(SCRIPTS / "check-forged-gate-names.py")], input=stdin,
+                                  env=env, capture_output=True, text=True)
+            return proc.returncode, proc.stderr
+
+    def test_the_pinned_notion_sync_job_is_clean(self):
+        rc, err = self.detector([job("Notion Sync", 601)], {"601": self.NOTION_RUN})
+        self.assertEqual(rc, 0, err)
+
+    def test_notion_sync_from_another_workflow_or_event_is_forged(self):
+        for pair in (".github/workflows/forge.yml\tpull_request_target",
+                     ".github/workflows/forge.yml\tpull_request",
+                     ".github/workflows/notion-sync.yml\tpull_request",  # a PR-edited notion-sync.yml
+                     ".github/workflows/notion-sync.yml\tpush"):
+            with self.subTest(pair=pair):
+                rc, err = self.detector([job("Notion Sync", 602)], {"602": pair})
+                self.assertEqual(rc, 1, err)
+                self.assertIn("forged check 'Notion Sync'", err)
+                self.assertIn("runs/602", err)
+
+    def test_forged_notion_sync_beside_the_genuine_one_is_still_forged(self):
+        rc, err = self.detector([job("Notion Sync", 601), job("Notion Sync", 603)],
+                                {"601": self.NOTION_RUN, "603": ".github/workflows/forge.yml\tpull_request"})
+        self.assertEqual(rc, 1, err)
+        self.assertIn("runs/603", err)
+        self.assertNotIn("runs/601", err)
+
+    def test_notion_sync_daily_is_not_protected(self):
+        # Exact-name match: the daily audit's job (schedule, its own file) shares only a prefix.
+        rc, err = self.detector([job("Notion Sync (daily)", 604), job("Notion Sync", 601)],
+                                {"604": ".github/workflows/notion-sync-daily.yml\tschedule", "601": self.NOTION_RUN})
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("Notion Sync (daily)", err)
+
+
 class MergeGuardForgedStep(unittest.TestCase):
     """3.2.13 (SEC-MVS-01 rung 1): merge-guard runs the forged-check wrapper before a merge, fail closed."""
 

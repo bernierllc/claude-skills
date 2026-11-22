@@ -44,6 +44,8 @@ import sys
 PROTECTED = {
     "PRs into main must come from staging": {(".github/workflows/main-via-staging.yml", "pull_request_target")},
     "Review Gate": {(".github/workflows/review-gate.yml", "pull_request_target")},
+    # claude-skills #152: nevar.io's trusted Notion Sync job. Names match exactly, so `Notion Sync (daily)` is not covered.
+    "Notion Sync": {(".github/workflows/notion-sync.yml", "pull_request_target")},
 }
 _JOB_URL = re.compile(r"/actions/runs/(\d+)/job/")
 

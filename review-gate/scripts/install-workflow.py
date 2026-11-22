@@ -31,6 +31,7 @@ KNOWN_OLD = frozenset({
     "33315bb0adb6e535ff98ee7105e3fe91fec9797a7d67446c634ab94c814163ce",  # aec 5054ef7
     "06cae65f3e93f2bca211ed248969392d07331a2cd396084d4481ceea56117c65",  # aec dba592db, review-gate 3.2.2/3.2.3
     "ae587812f39f5fe4e8b67feb2f9289aabae0dbc1ceb7022fae0ec07df4047295",  # aec b4a8c9c pin-less map, review-gate 3.2.4-3.2.19
+    "15044e42b03aa9005ecda101e09f75814c913b091a3011e3b096fb471ab075ce",  # aec 41f6299, review-gate 3.2.20-3.6.0 (no Notion Sync)
 })
 
 

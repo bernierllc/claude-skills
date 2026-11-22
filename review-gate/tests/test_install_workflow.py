@@ -135,6 +135,22 @@ class VendoredDetector(unittest.TestCase):
             self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / "check-forged-gate-names.py").read_bytes())
             self.assertNotIn("KEPT", proc.stdout)
 
+    def test_the_3_6_0_detector_without_notion_sync_is_replaced_with_force(self):
+        # 3.7.0 (#152): repos vendored from 3.2.20-3.6.0 must get the Notion Sync pin, not KEEP the old map.
+        old = subprocess.run(["git", "show", "8b4b267:review-gate/scripts/check-forged-gate-names.py"],
+                             cwd=SKILL, capture_output=True)
+        if old.returncode:
+            self.skipTest("no git history (vendored layout)")
+        self.assertNotIn(b"Notion Sync", old.stdout)
+        with tempfile.TemporaryDirectory() as repo:
+            dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
+            dest.parent.mkdir()
+            dest.write_bytes(old.stdout)
+            proc = install(repo, "--force")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / "check-forged-gate-names.py").read_bytes())
+            self.assertNotIn("KEPT", proc.stderr)
+
     def test_known_older_vendored_detector_is_replaced_with_force(self):
         # #87 Codex P1: the 3.2.1-bundled detector (aec 46580fa) must be upgraded, not KEPT.
         import importlib.util
