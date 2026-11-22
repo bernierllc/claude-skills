@@ -46,7 +46,7 @@ Codes stay clear of 1 (Python's uncaught-exception exit) and 2 (argparse's usage
 
 | code | `report` | `preflight` | `reconcile` | `audit` | `status` |
 |---|---|---|---|---|---|
-| 0 | merged at the given head; recorded; every delivery done | merged at the given head; recorded; nothing delivered | every listed merge recorded and delivered | at or under the limit | healthy |
+| 0 | merged at the given head; recorded; every delivery done | merged at the given head; recorded; nothing delivered | every listed merge recorded and delivered | missing at or under `--max-missing-pct`, default 5 | healthy |
 | 10 | merged at the given head; recorded; a delivery queued | n/a | a delivery queued | n/a | n/a |
 | 11 | not confirmed: gh error, still OPEN after the re-reads, or no merge commit yet; nothing recorded | not confirmed; nothing recorded | a gh read failed; that repo's watermark not advanced | a gh or sink read failed | n/a |
 | 12 | CLOSED unmerged | OPEN, or CLOSED unmerged | n/a | n/a | n/a |
@@ -59,7 +59,7 @@ Codes stay clear of 1 (Python's uncaught-exception exit) and 2 (argparse's usage
 - **Config errors (14):** corrupt `preferences.json`, an unknown value, a missing target for `jsonl` or `github-issue`, or `ackline` with any sink other than `github-issue`.
 - **`reconcile` precedence:** it handles many PRs and exits with the highest-precedence code it saw, in the order 19, 14, 11, 10, 0.
 - **Sink `none`:** a delivery is done once the receipt is recorded, so `none` never leaves anything queued.
-- **13 under `report`:** this means the cop's `--match-head-commit` sha is not what GitHub merged. `report` records nothing. `reconcile` later records the merge as `source: reconcile`, which attests only that GitHub says it merged, and `audit` counts it in the reconcile share.
+- **13 under `report`:** this means the cop's `--match-head-commit` sha is not what GitHub merged. `report` records nothing. `reconcile` later records the merge as `source: reconcile`, which attests only that GitHub says it merged, and `audit` counts it in the share of receipts not from `report`.
 - **No exit code means "merge again".** The script has no code path that calls `gh pr merge`. `SKILL.md` states, in a line of its own, that none of these codes is grounds to rerun a merge: GitHub is the record of the merge, and the receipt only reports it.
 
 ### 3. `report` and `preflight`: confirm, then record
@@ -98,12 +98,12 @@ The head check belongs to the call: a stale `--head` only changes that call's ex
 
 It requires the `github-issue` sink (otherwise exit 14).
 
-**`ackline` delivery:** for a merged PR, the run takes every wait on that ref (matched case-insensitively) and applies two tests:
-- the wait was **open at merge time**: its latest event with `created_at <= mergedAt` is `ACK` or `HANDOFF`;
-- the wait has **no event after the merge**.
+**`ackline` delivery:** events are grouped by the parser's own wait key: the exact ref plus the sorted {from, to}. Case-insensitive matching only decides which keys belong to the merged PR. Only opener (`ACK`, `HANDOFF`) and closer (`DONE`, `LANDED`) events count, since the parser ignores every other kind. Events are ordered by comment `created_at`, ties broken by comment id, and the line's `HH:MMZ` field is ignored, as in the parser. For each key on the ref, the run applies two tests:
+- the wait was **open at merge time**: its last opener or closer with `created_at < mergedAt` (strictly) is an opener, so a HANDOFF posted in the same second as the merge counts as after it, and stays open;
+- **no opener or closer follows the merge**.
 
 For each wait that passes both, it posts one comment. The comment's first line is `LANDED <that wait's exact ref> | from=<a> | to=<b> | merged <head> as <merge_commit> via <source> | <HH:MM>Z`, with the time taken from `mergedAt` in UTC. Its second line is the receipt key.
-- That rule is the dedupe. A `LANDED` already posted is an event after the merge, so the wait is not posted again. Two machines racing post at most a duplicate `LANDED` on a wait that is already closed, and that changes nothing.
+- That rule is the dedupe. A `LANDED` already posted is a closer after the merge, so the wait is not posted again. Two machines racing post at most a duplicate `LANDED` on a wait that is already closed, and that changes nothing.
 - A wait **opened after the merge** (a HANDOFF to whoever checks the deploy, say) is about post-merge work. It is not the receipt's to close, so it is never closed.
 - A merged PR with no wait open at merge time gets no post. Nothing is written to the issue that the parser cannot read.
 - `shortcut:` this re-implements the protocol's line rules in Python. Rollout step 4 adds a test, in the parser owner's repo, that runs both parsers on the same fixtures.
@@ -136,12 +136,12 @@ The failure this plan exists for is a cop that stops between the merge and the m
    - The watermark is stored per repo in `<state dir>/watermarks.json`. It is the earliest `mergedAt` among records with a queued delivery, or else `B` of the last run that listed the repo without error.
    - The first run for a repo needs `=<adopted ISO timestamp>` and starts there; later runs use the watermark. There is no backfill before adoption.
 3. **Record and deliver.** A merged PR with no record is recorded with `source: reconcile`. Then every queued or due delivery is attempted. Under `ackline`, every listed PR is re-checked against the sink, so a wait the last run missed is closed now.
-4. **Heartbeat.** A run that finishes writes `last_reconcile_at`.
+4. **Heartbeat.** A run in which every `-R` repo listed without error (exit 0 or 10) writes `last_success_at`. A run that exits 11, broken `gh` auth for example, does not.
 
 `merge-receipt.py status` is local only. It prints:
 - the queued deliveries, with their attempts and last error;
 - the age of the newest record;
-- `last_reconcile_at`.
+- `last_success_at`.
 
 It exits 15 when the heartbeat is older than twice `merge_receipt_interval_min`, or a delivery has been queued for over a day. A machine that runs `reconcile` can alarm on it.
 
@@ -165,19 +165,19 @@ The skill is public: nothing in it names an org, a person, an issue number or a 
 
 ### 7. Audit, and how success is measured
 
-`merge-receipt.py audit -R <owner/repo>=<adopted ISO timestamp> [-R ...] [--until <ts>]` uses the same covering listing as `reconcile`, over every base. It reads only GitHub and the sink, never the local state dir, so an auditor on any machine gets the same answer.
+`merge-receipt.py audit -R <owner/repo>=<adopted ISO timestamp> [-R ...] [--until <ts>]` uses the same covering listing as `reconcile`, over every base. It reads only GitHub and the sink, never the local state dir. With a `github-issue` sink, an auditor on any machine therefore gets the same answer. A `jsonl` audit needs that machine's file, passed with `--target`.
 
 - **The window:** for each repo, from its adoption timestamp to `--until`. The default is now minus twice `merge_receipt_interval_min`, so a merge in the last few minutes is not yet counted as missing.
 - **The unit, `plain` or `jsonl`:** each merged PR. It is delivered when the sink holds its receipt key, and missing otherwise.
-- **The unit, `ackline`:** each wait that was open at merge time on a merged PR (point 4). It is closed when it has an event after the merge, and missing otherwise. A PR with no such wait contributes nothing: there was nothing to close.
+- **The unit, `ackline`:** each wait that was open at merge time on a merged PR (point 4). It is closed when a closer follows the merge. It is `held`, counted separately and left out of the units, when an opener re-touched it after the merge and nothing closed it, because that is post-merge work. It is missing otherwise. A PR with no such wait contributes nothing: there was nothing to close.
 - **Reported:**
   - the counts;
   - the refs of every missing unit;
-  - the p95 time from `mergedAt` to the sink's timestamp (the comment's `created_at` or the object's `delivered_at`);
-  - the share of receipts whose `source` is `reconcile`, which measures merges that bypassed `report`.
+  - the p95 time from `mergedAt` to the receipt's timestamp: the `created_at` of a comment whose second line is the receipt key, or the object's `delivered_at`. A human `DONE` is not a receipt and never counts;
+  - the share of receipts whose `source` is not `report`, which measures merges that bypassed the cop's `report`.
 - **Not measurable:** it exits 15 with `not measurable` for the `none` sink, or with fewer than 20 units across all `-R` pairs. 5% of a handful is zero.
 
-**Success measure:** across all adopted repos, at most 5% of units in each repo's first 3 days after its adoption timestamp are missing. The Engineering Effectiveness Auditor runs it 3 days after the last repo's adoption timestamp. It records the result, the p95 latency and the reconcile share on the Tracker row. Below 20 units, the window extends a day at a time until there are 20.
+**Success measure:** across all adopted repos, at most 5% of units in each repo's first 3 days after its adoption timestamp are missing. The Engineering Effectiveness Auditor runs it 3 days after the last repo's adoption timestamp. It records the result, the p95 latency and the share of receipts not from `report` on the Tracker row. Below 20 units, the window extends a day at a time until there are 20.
 
 ## Rollout
 
@@ -224,7 +224,7 @@ The skill is public: nothing in it names an org, a person, an issue number or a 
    1. Is `LANDED`, not `DONE` and not a new `MERGED` kind, the right close for "merged"? `MERGED` is not a parser token today: `OPENS` is `ACK`/`HANDOFF` and `CLOSES` is `DONE`/`LANDED`. A `MERGED PR #…` line therefore lands in `unparsed`, and today's cop ping closes nothing in the view.
    2. Is the `|` format current? The parser reads only the `|` format with `owner/repo#n` refs (PAV-6). The platform-ops README, the single source for the ACK protocol, still documents the `·` format (`<KIND> <ref> · from … · to … · <detail> · <HH:MMZ>`, ref `PR #<n>`), and lines in that format land in `unparsed`.
 
-   The view's repo adds one test that feeds shared fixtures through both its exported `parseLine`/`openWaits` and the `ackline` preset's parser. That test belongs to the parser's owner and is not copied into this public skill.
+   The skill's tests commit shared fixture files for the protocol, with generic refs and names. They pin the preset's behaviour here. The view's repo adds one test that feeds the same fixture files through its exported `parseLine`/`openWaits`, so a drift on either side fails a test. That test belongs to the parser's owner.
 5. **Adoption (outside this repo).**
    - The cop procedure's post-merge step runs `report` and quotes the receipt.
    - Each adopted repo gets a `reconcile` schedule, started with `=<adopted timestamp>`, and the timestamp is recorded on the Tracker row.
