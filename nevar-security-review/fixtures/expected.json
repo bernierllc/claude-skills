@@ -1,5 +1,5 @@
 {
-  "_comment": "Ground truth for the fixtures. Each case has a vulnerable variant with the finding below and a safe variant that must produce no P0/P1 for that category. Never give this file to a blind reviewer.",
+  "_comment": "Ground truth for the fixtures. Each case has a vulnerable variant with the finding below and a safe variant that must produce no P0/P1 for that category.  Severities are for each case reviewed as a standalone repo (the blind copy, svcNN/a), where no fixture path or documented dummy format proves a value is a test value; inside this skill's fixtures/ directory the fake-secret key is exempt as a fixture path. Never give this file to a blind reviewer.",
   "cases": {
     "admin-guard": {"runtime": true, "category": "AUTHZ", "severity": "P0", "file": "app.py", "symbol": "current_role",
       "finding": "unknown or anonymous session defaults to admin (default-admin); anonymous reads and writes admin settings"},

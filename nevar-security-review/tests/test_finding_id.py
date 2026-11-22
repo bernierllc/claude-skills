@@ -14,6 +14,12 @@ class FindingIdTest(unittest.TestCase):
         self.assertRegex(a, r"^NSR-AUTHZ-[0-9a-f]{8}$")
         self.assertEqual(a, finding_id("AUTHZ", "./src/app/api/admin/route.ts", " PUT /api/admin/settings "))
 
+    def test_equivalent_paths_share_an_id(self):
+        base = finding_id("AUTHZ", "src/app.py", "f")
+        for spelling in ["src//app.py", "src/./app.py", "./src/app.py", "src\\app.py", "src/x/../app.py"]:
+            with self.subTest(spelling=spelling):
+                self.assertEqual(base, finding_id("AUTHZ", spelling, "f"))
+
     def test_inputs_change_id(self):
         base = finding_id("AUTHZ", "a.py", "f")
         self.assertNotEqual(base, finding_id("TENANT", "a.py", "f"))
@@ -22,6 +28,8 @@ class FindingIdTest(unittest.TestCase):
 
     def test_rejects_bad_input(self):
         for args in [("a", "x.py", "f"), ("AUTHZ", "/abs/x.py", "f"), ("AUTHZ", "../x.py", "f"),
+                     ("AUTHZ", "C:/x.py", "f"), ("AUTHZ", "c:x.py", "f"), ("AUTHZ", "\\\\host\\x.py", "f"),
+                     ("AUTHZ", "a/../../x.py", "f"), ("AUTHZ", ".", "f"),
                      ("AUTHZ", "x.py", " "), ("AU-THZ", "x.py", "f")]:
             with self.subTest(args=args), self.assertRaises(ValueError):
                 finding_id(*args)

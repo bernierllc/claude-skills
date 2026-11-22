@@ -7,6 +7,7 @@ The id hashes category, normalized path and symbol, never line numbers, so it su
 edits that move code. Same inputs always give the same id.
 """
 import hashlib
+import posixpath
 import re
 import sys
 
@@ -17,10 +18,12 @@ def finding_id(category: str, path: str, symbol: str) -> str:
     category = category.strip().upper()
     if not CATEGORY.match(category):
         raise ValueError(f"category must be 2-16 letters/digits, got {category!r}")
-    path = path.strip().replace("\\", "/")
-    while path.startswith("./"):
-        path = path[2:]
-    if not path or path.startswith("/") or ".." in path.split("/"):
+    raw = path.strip().replace("\\", "/")
+    # Reject absolute paths (POSIX, UNC, Windows drive), then collapse ./, // and a/../b.
+    if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError(f"path must be repo-relative, got {path!r}")
+    path = posixpath.normpath(raw)
+    if path == "." or path == ".." or path.startswith("../"):
         raise ValueError(f"path must be repo-relative, got {path!r}")
     symbol = symbol.strip()
     if not symbol:

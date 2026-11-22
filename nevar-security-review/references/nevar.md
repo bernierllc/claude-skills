@@ -75,9 +75,12 @@ asserts editor and anonymous are refused, so a new route without a guard fails C
 - Every table in an exposed schema (`public` by default) has `enable row level security`
   and policies for each command it allows. A table without RLS is readable and writable
   with the anon key: P0 for tenant or private data.
-- Policies use `auth.uid()` and membership joins, not columns the caller controls. An
-  `insert` policy needs `with check`; an `update` policy without `with check` lets a user
-  move a row into another tenant.
+- Policies use `auth.uid()` and membership joins, not columns the caller controls.  An
+  `insert` policy needs `with check`. An `update` policy without `with check` reuses its
+  `using` expression for new rows, so judge the effective check: a `using` that pins the
+  tenant also blocks moving rows; one that only checks ownership (`user_id = auth.uid()`)
+  lets a user move their row into another tenant. Permissive policies on the same command
+  are OR-ed; read them together.
 - `security definer` functions bypass RLS: check they set `search_path` and re-check the
   caller's tenant. Views run as their owner unless `security_invoker = true`.
 - The service-role key bypasses RLS. Any handler using a service-role client must do its
@@ -181,13 +184,13 @@ Version 1.0.0 of this skill ships the review procedure only. The `review-gate` s
 lane and the scanner workflow template ship separately; until they are installed in a
 repo, every row below except inline threads is design, not enforcement.
 
-What the review loop can enforce and what waits on a trusted publisher:
+What the review loop can enforce, and when:
 
 | Control | Status |
 |---|---|
-| Trigger: which PRs need a security pass, computed from the diff by a base-side script under `pull_request_target`, so deleting the trigger file in the PR has no effect | enforceable now |
-| Head binding: evidence must name the full 40-hex head SHA; a push makes it stale | enforceable now |
-| Inline P0/P1 threads unresolved block merge (`review-gate`) | enforceable now |
+| Inline P0/P1 threads unresolved block merge (`review-gate`) | enforced today where `review-gate` is installed |
+| Trigger: which PRs need a security pass, computed from the diff by a base-side script under `pull_request_target`, so deleting the trigger file in the PR has no effect | planned: enforceable once the `review-gate` security lane lands (no trusted publisher needed) |
+| Head binding: evidence must name the full 40-hex head SHA; a push makes it stale | planned: same as the trigger |
 | Scanner results (gitleaks, osv-scanner, zizmor, semgrep) read from a check run on the exact head, published by the base-side workflow; app id, workflow path and ref, head SHA and report digest verified | enforceable once the scanner workflow lands, same residual as `review-gate`: a job in the repo with `checks: write` can still create a same-name check, detected by the forged-check detector but not prevented without a ruleset source pin |
 | Model review coverage (`Security review:` line in the PR body: surface examined, not covered, refuted leads) | **advisory / unverified**: the PR author can edit the body, so the gate reports it but does not treat it as evidence |
 

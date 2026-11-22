@@ -239,6 +239,9 @@ class StaticFixtures(unittest.TestCase):
         self.assertNotIn("pull_request_target", safe)
         self.assertNotRegex(safe, r"run: .*\$\{\{")
         self.assertIn("permissions:", safe)
+        # The safe job runs PR code, so it must hold no write scope and no token.
+        self.assertNotRegex(safe, r":\s*write")
+        self.assertNotIn("TOKEN", safe)
         for uses in re.findall(r"uses: (\S+)", safe):
             self.assertRegex(uses, r"@[0-9a-f]{40}$")
 
@@ -262,7 +265,7 @@ class StaticFixtures(unittest.TestCase):
     def test_nothing_live(self):
         hosts = set()
         for f in FIXTURES.rglob("*"):
-            if f.is_file() and f.suffix in {".md", ".py", ".yml", ".js"}:
+            if f.is_file() and f.suffix in {".md", ".py", ".yml", ".js", ".json"}:
                 hosts.update(re.findall(r"https?://([^/\s\"'?]+)", f.read_text()))
         allowed = {"127.0.0.1:8080", "localhost"}
         self.assertTrue(all(h.endswith(".invalid") or h in allowed for h in hosts), hosts)

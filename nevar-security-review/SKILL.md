@@ -160,15 +160,20 @@ Then always:
 ### 6. Publish through the review loop
 
 In a PR review, publish each P0/P1 as an inline thread on the current head through
-`adversarial-review`'s inline publisher, with the finding id in the first line. Findings on
-lines outside the diff (a route the diff does not touch) go into that review's summary
-comment with path and line, not dropped. Never post a comment that mentions the Codex bot.
+`adversarial-review`'s inline publisher, with the finding id in the first line. A finding
+on a line outside the diff (a route the diff does not touch) still gets an inline thread:
+anchor it on the changed line that exposes it (the guard, helper, policy or config the
+diff touched) and name the vulnerable path and line in the thread, so it blocks merge like
+any other. A P0/P1 that no changed line relates to predates the PR: put it in the review
+summary with path and line and file it for its owner; never drop it. Never post a comment
+that mentions the Codex bot.
 
 A model-written review is **advisory**: its report lives in a PR body or comment that the
 author can edit, so it is not authenticated evidence. Merge enforcement comes from
-`review-gate` (inline threads resolved, head-bound review) and from scanner check runs
-whose publisher the gate verifies (`references/nevar.md` -> Review-loop integration). Do
-not describe a model review as a fail-closed security gate.
+`review-gate` (inline threads resolved, head-bound review). The security lane that checks
+the trigger, head binding and verified scanner check runs is planned, not shipped
+(`references/nevar.md` -> Review-loop integration). Do not describe a model review as a
+fail-closed security gate.
 
 ## Fix principles for agent systems
 
