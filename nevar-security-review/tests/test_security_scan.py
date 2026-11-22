@@ -248,7 +248,8 @@ class Parsers(unittest.TestCase):
             got = scan.scan_one("osv-scanner", ["app/poetry.lock"], Path("/cfg"), self.st, Path("/w"))
         finally:
             scan.run = real
-        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"}])
+        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"},
+                               {"scanner": "osv-scanner", "rule": "not-covered", "path": "app/poetry.lock"}])
 
     # Cop P1 on 12dc7a7: OSV exits 0 when one input yields nothing (here a broken lockfile)
     # and another has packages, so every input is accounted for on its own
@@ -263,8 +264,9 @@ class Parsers(unittest.TestCase):
             both = scan.scan_one("osv-scanner", ["app/poetry.lock", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
         finally:
             scan.run = real
-        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"}])
-        self.assertEqual(both, [])
+        read = lambda fs: [f for f in fs if f["rule"] != "not-covered"]
+        self.assertEqual(read(got), [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"}])
+        self.assertEqual(read(both), [])
         # Codex P1 on c849c19: without --all-packages a clean lockfile has no result entry at all
         self.assertTrue(all("--all-packages" in a for a in argvs))
 
@@ -362,22 +364,35 @@ class Outcome(unittest.TestCase):
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
-    # Codex P1s on c849c19, f277bbf, f95bd30 and 9c21c1e: pip and osv-scanner read a requirements
-    # file differently (includes, encoding declarations, line separators, environment variables), so
-    # every changed requirements file is not-covered, whatever OSV read from it
-    # (plans/2026-11-22-security-scan-osv-include-resolution.md).
-    def test_every_requirements_file_is_not_covered(self):
+    # Codex P1s on c849c19 through ffb4239: osv-scanner's parsers read requirements files and
+    # lockfiles differently from pip and yarn (includes, encodings, separators, environment
+    # variables, a quoted yarn version, a long yarn comment that truncates the read), and a
+    # partial read still yields packages, so every changed dependency file is not-covered,
+    # whatever OSV read from it (plans/2026-11-22-security-scan-osv-include-resolution.md).
+    def test_every_dependency_file_is_not_covered(self):
         texts = ["six==1.16.0\n", "six==1.16.0\n--no-index -r base.txt\n", "# coding: utf-7\nsix==1.16.0\n+AC0-r base.txt\n",
                  "six==1.16.0\n# comment\rdjango==1.2\n", "six==1.16.0\ndjango==${VERSION}\n"]
+        files = ["requirements-dev.txt", "poetry.lock", "yarn.lock"]
         for text in texts:
             with self.subTest(text=text), tempfile.TemporaryDirectory() as t:
                 st = Path(t)
                 (st / "requirements-dev.txt").write_text(text)
                 rep = {"results": [{"source": {"path": f"{st}/{p}"}, "packages": [{"package": {"name": "six"}}]}
-                                   for p in ("requirements-dev.txt", "poetry.lock")]}
+                                   for p in files]}
                 with mock.patch.object(scan, "run", lambda *a, **k: (0, json.dumps(rep))):
-                    got = scan.scan_one("osv-scanner", ["requirements-dev.txt", "poetry.lock"], Path("/cfg"), st, Path("/w"))
-                self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "not-covered", "path": "requirements-dev.txt"}])
+                    got = scan.scan_one("osv-scanner", files, Path("/cfg"), st, Path("/w"))
+                self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "not-covered", "path": p} for p in files])
+
+    # Codex P1 on ffb4239: stage() skips a symlinked requirements file, but pip still reads it
+    def test_unstaged_dependency_file_is_not_covered(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg = Path(t)
+            (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
+            with mock.patch.object(scan, "scan_one", lambda *a: self.fail("nothing is staged")):
+                res, found, _ = scan.scan([], cfg, cfg, cfg, dt.date(2026, 1, 1),
+                                          skipped=["requirements.txt", "src/link.py"])
+        self.assertEqual(res["osv-scanner"], "findings")
+        self.assertEqual(found, [{"scanner": "osv-scanner", "rule": "not-covered", "path": "requirements.txt"}])
 
     def test_not_covered_is_an_exceptable_per_file_finding(self):
         real = scan.scan_one
@@ -529,6 +544,7 @@ class RealScanners(unittest.TestCase):
         dep = FIXTURES / "vulnerable-dependency"
         bad = self.scan_files("osv-scanner", {"package-lock.json": dep / "vulnerable/package-lock.fixture.json"})
         self.assertTrue(bad and all(f["path"] == "package-lock.json" for f in bad))
+        self.assertTrue([f for f in bad if f["rule"] not in ("not-covered", "no-packages")])  # advisories still reported
 
     @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
     def test_osv_missing_include_beside_a_good_input_is_a_finding(self):

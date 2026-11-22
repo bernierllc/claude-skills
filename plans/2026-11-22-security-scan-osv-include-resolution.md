@@ -1,17 +1,20 @@
-# Security Scan: prove pip requirements coverage for osv-scanner
+# Security Scan: prove dependency file coverage for osv-scanner
 
 Status: planned. Follow-up to PR #147 (NEVAR-SEC-SKILL-1 PR C), which shipped osv-scanner
 descoped to what it can prove.
 
 ## Why this is a plan, not a fix in #147
 
-PR #147 produced twelve P1 findings in the osv-scanner exit and coverage area. The traffic cop
+PR #147 produced fifteen P1 findings in the osv-scanner exit and coverage area. The traffic cop
 set the rule after the fourth: one more P1 there and the PR descopes OSV and this plan takes
 the rest. The f277bbf re-check found four more, so the descope ran. The review of the descope
 head found a ninth in the include predicate, and the review of the option-line rule that
 replaced it found three more (10–12) that are not about includes at all: pip and osv-scanner
-read the same requirements bytes differently. #147 therefore proves nothing about any
-requirements file (below).
+read the same requirements bytes differently. The review of the requirements-only rule found
+three more (13–15): a requirements symlink escaped the rule because staging drops it, and
+two Yarn lockfile inputs make osv-scanner's parser read less than yarn does while still
+yielding packages. Under the third-round rule #147 therefore proves nothing about any
+dependency file, lockfiles included (below).
 
 | # | Head | Finding |
 |---|------|---------|
@@ -27,21 +30,26 @@ requirements file (below).
 | 10 | 9c21c1e | an encoding declaration (`# coding: utf-7`) makes pip decode `+AC0-r base.txt` to `-r base.txt`; the predicate read UTF-8 |
 | 11 | 9c21c1e | a `\r` or `\f` separator ends a line for pip's `splitlines()` but not for osv-scanner, which keeps the next requirement inside a comment |
 | 12 | 9c21c1e | an environment variable anywhere in a requirement (`django==${V}`) is expanded by pip and skipped by osv-scanner |
+| 13 | ffb4239 | a changed requirements file replaced by a symlink is dropped by staging, so it gets no `not-covered` finding |
+| 14 | ffb4239 | a single-quoted Yarn Berry version (`version: '4.17.20'`) is read as version `""`, so its advisories are hidden |
+| 15 | ffb4239 | a Yarn comment longer than about 70000 characters silently truncates the extractor's parse; earlier packages still count as read |
 
 Plus one P2 on f277bbf: an exception keyed on the including file covers every unresolved
 include in it.
 
 ## What #147 ships (the proven scope)
 
-- osv-scanner runs with `--all-packages` on changed lockfiles and on the names osv-scanner
-  2.7.0 reads as requirements files (a base name ending `.txt` that contains
-  `requirements`, case-sensitive; probed against the pinned binary). Every input must yield
-  packages on its own (`no-packages` otherwise), and its advisories are reported.
-- Every changed requirements file is also a `not-covered` finding on that file, whatever its
-  content, because nothing proves osv-scanner read what pip installs from it. It fails the
-  gate unless an exact, owned, expiring exception names that file. No content predicate
-  exists, so findings 5–12 cannot occur. A repo that changes requirements files needs a
-  per-file exception until this plan lands; lockfiles are unaffected.
+- osv-scanner runs with `--all-packages` on changed lockfiles (`LOCKFILES`) and on the names
+  osv-scanner 2.7.0 reads as requirements files (a base name ending `.txt` that contains
+  `requirements`, case-sensitive; probed against the pinned binary). Its advisories are
+  reported, and an input that yields no packages is a `no-packages` finding. Both are
+  advisory extras: neither proves the file was read completely.
+- Every changed dependency file is a `not-covered` finding on that file, whatever its
+  content and whatever osv-scanner read from it. That includes a dependency file staging
+  skipped (a symlink, a non-regular file), because the package manager still reads it. It
+  fails the gate unless an exact, owned, expiring exception names that file. No content
+  predicate exists, so findings 5–15 cannot turn into a pass. A repo that changes
+  dependency files needs a per-file exception until this plan lands a proven format.
 - The P2 becomes the intended semantics for now: the finding is about the file ("OSV cannot
   prove it read this file completely"), so one exception per file is the right key.
 - Known residual, documented in `nevar.md`: a changed file that is a dependency list only
@@ -80,12 +88,20 @@ is missing, so a partial read looks like a read.
 6. Key exceptions by (including file, include) so one exception never covers more than one
    include (the P2).
 7. gitleaks then sees the staged includes too. Decide whether that is wanted or filtered.
+8. Lockfiles, per format: prove osv-scanner's parser reads what the package manager does
+   (findings 14 and 15 for Yarn: quoting, long lines). Prefer the package manager's own
+   resolved output (for example `yarn info --json` run without lifecycle scripts, or the
+   lockfile's own parser library) over osv-scanner's extractor, and require a complete-parse
+   proof, such as a package count from the package manager matching osv-scanner's. Lift
+   `not-covered` one format at a time, each with a real-scanner test.
+9. Account for every changed dependency path before staging filters it (finding 13): a
+   symlink or non-regular dependency file stays a finding, never a silent skip.
 
 ## Affected surfaces
 
 - `nevar-security-review/templates/security-scan/scan.py`: staging, the OSV branch,
-  the unconditional requirements `not-covered` finding (removed when coverage is proven),
-  `applicable()`.
+  the unconditional dependency `not-covered` finding in `scan_one()` and `scan()` (removed
+  per format when coverage is proven), `applicable()`.
 - `nevar-security-review/tests/test_security_scan.py`: unit tests and real-scanner tests.
 - `nevar-security-review/references/nevar.md`: the OSV bullet, the `not-covered` rule, the
   residual.
@@ -95,7 +111,9 @@ is missing, so a partial read looks like a read.
 ## Done when
 
 A changed requirements file, and a changed file reachable only through an unchanged
-include, are scanned with what pip would install or fail with a named finding. Real-scanner
-tests cover nested, missing, escaping, symlinked, `--requirement`, continued and quoted
-includes, encoding declarations, `\r`/`\f` separators and environment variables (findings
-1–12), and the unconditional `not-covered` rule and the residual are removed from `nevar.md`.
+include, are scanned with what pip would install or fail with a named finding, and each
+lockfile format whose `not-covered` is lifted is proven read completely. Real-scanner tests
+cover nested, missing, escaping, symlinked, `--requirement`, continued and quoted includes,
+encoding declarations, `\r`/`\f` separators, environment variables, quoted Yarn versions
+and long Yarn lines (findings 1–15), and the unconditional `not-covered` rule and the
+residual are removed from `nevar.md`.

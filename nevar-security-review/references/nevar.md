@@ -224,12 +224,14 @@ What the workflow does:
     input must yield packages on its own, so one it finds none in (a broken file, a `-r`
     include that is missing) is a `no-packages` finding even when another input in the same
     run was read. It is never a pass, and takes a dated exception when the file is
-    legitimately empty. pip and osv-scanner read requirements files differently (includes,
-    encoding declarations, line separators, environment variables), so every changed
-    requirements file is also a `not-covered` finding on that file, whatever its content:
-    the scan cannot prove it saw what pip installs. Its advisories are still reported. It
-    fails unless an owned, expiring exception names that file; lockfiles are unaffected.
-    Proving requirements coverage is
+    legitimately empty. osv-scanner's parsers read dependency files differently from pip
+    and yarn (includes, encodings, line separators, environment variables, quoting, long
+    lines that truncate the parse), and a partial read still yields packages, so every
+    changed dependency file, lockfiles included, is also a `not-covered` finding on that
+    file, whatever its content: the scan cannot prove it saw what the package manager
+    installs. That includes a dependency file staging skipped, such as a symlink, since the
+    package manager still reads it. Advisories are still reported. It fails unless an
+    owned, expiring exception names that file. Proving coverage, one format at a time, is
     `plans/2026-11-22-security-scan-osv-include-resolution.md`;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules

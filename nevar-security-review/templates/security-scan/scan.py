@@ -165,12 +165,17 @@ def is_requirements(p):
     return name.endswith(".txt") and "requirements" in name
 
 
+def is_dependency_file(p):
+    """A lockfile or requirements file: a file osv-scanner reads dependencies from."""
+    return PurePosixPath(p).name in LOCKFILES or is_requirements(p)
+
+
 def applicable(scanner, staged):
     """The staged paths a scanner applies to; empty means not-applicable for that scanner."""
     if scanner == "gitleaks":
         return list(staged)  # secrets in docs are still secrets
     if scanner == "osv-scanner":
-        return [p for p in staged if PurePosixPath(p).name in LOCKFILES or is_requirements(p)]
+        return [p for p in staged if is_dependency_file(p)]
     if scanner == "zizmor":
         return [p for p in staged
                 if fnmatch.fnmatch(p, ".github/workflows/*.y*ml")
@@ -244,13 +249,13 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
                 for r in report.get("results", []) if r.get("packages")}
         # Each input must yield packages: one OSV could not read (a missing include, a broken file)
         # exits 0 when another input in the same run had packages, so per-input is the only check.
-        # shortcut: pip reads a requirements file differently from osv-scanner (includes, encoding
-        # declarations, line separators, environment variables), so no changed requirements file is
-        # proven fully read: each one is not-covered; upgrade when
-        # plans/2026-11-22-security-scan-osv-include-resolution.md lands.
+        # shortcut: osv-scanner's parsers read files differently from pip and yarn (includes, encodings,
+        # line separators, environment variables, quoting, truncation), and a partial read still yields
+        # packages, so no changed dependency file is proven fully read: each one is not-covered; upgrade
+        # per format when plans/2026-11-22-security-scan-osv-include-resolution.md proves it.
         return parse_osv(report, stage_dir) + [
             {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read] + [
-            {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets if is_requirements(t)]
+            {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets]
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",
@@ -341,25 +346,32 @@ def github_api(token):
     return api
 
 
-def scan(staged, cfg, stage_dir, work, today):
-    """Per-scanner results, findings and summary lines for the staged paths."""
+def scan(staged, cfg, stage_dir, work, today, skipped=()):
+    """Per-scanner results, findings and summary lines for the staged paths.
+
+    skipped: changed paths stage() did not copy (symlinks, non-regular, absent); a dependency
+    file among them is still not-covered, since the package manager can read it.
+    """
     active, expired = load_exceptions(cfg / "exceptions.json", today)
     results, findings, lines = {}, [], []
     for scanner in SCANNERS:
         targets = applicable(scanner, staged)
-        if not targets:
+        unstaged = [{"scanner": scanner, "rule": "not-covered", "path": p} for p in skipped
+                    if scanner == "osv-scanner" and is_dependency_file(p)]
+        if not targets and not unstaged:
             results[scanner] = "not-applicable"
             lines.append(f"- {scanner}: not-applicable (no matching changed files)")
             continue
         try:
-            found = scan_one(scanner, targets, cfg, stage_dir, work)  # no target is an AUTHOR_CONFIGS name
+            # no target is an AUTHOR_CONFIGS name
+            found = (scan_one(scanner, targets, cfg, stage_dir, work) if targets else []) + unstaged
         except (ScanError, KeyError, ValueError, TypeError) as e:
             results[scanner] = "scanner-error"
             lines.append(f"- {scanner}: scanner-error: {e}")
             continue
         kept, excepted = apply_exceptions(found, active)
         results[scanner] = "findings" if kept else "passed"
-        lines.append(f"- {scanner}: {results[scanner]} on {len(targets)} file(s), "
+        lines.append(f"- {scanner}: {results[scanner]} on {len(targets) + len(unstaged)} file(s), "
                      f"{len(kept)} finding(s), {len(excepted)} excepted")
         findings += kept
     for e in expired:
@@ -380,7 +392,8 @@ def main():
         stage_dir.mkdir(parents=True, exist_ok=False)
         rels = list_changed(github_api(env["GITHUB_TOKEN"]), env["REPO"], env["PR_NUMBER"], env["HEAD_SHA"])
         staged, notes = stage(head, rels, stage_dir)
-        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date())
+        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date(),
+                                        [r for r in rels if r not in staged])
         lines += [f"- note: {n}" for n in notes]
         result = outcome(results)
     except (ScanError, OSError, ValueError, KeyError) as e:
