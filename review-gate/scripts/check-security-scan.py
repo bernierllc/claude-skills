@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Review Gate's security lane: accept a `Security Scan` result only from the trusted scanner job.
 
-Opt-in. The lane is active when the DEFAULT BRANCH has .github/workflows/security-scan.yml (the OSS scanner
-template). A PR that adds or deletes that file changes nothing: activation, the config digest and this script
+Opt-in. The lane is active when the DEFAULT BRANCH has .github/workflows/review-gate-security-scan.yml (the OSS scanner
+template; 3.3.1 renamed it from security-scan.yml, a name a repo's own unrelated workflow can already
+have). A PR that adds or deletes that file changes nothing: activation, the config digest and this script
 are all read from the default branch (trust check f).
 
 The scanner jobs are found through the Actions API, never through check-run names (a check run's name,
 details_url and annotations are writable by anyone with checks: write): every job, all attempts, of every
-.github/workflows/security-scan.yml pull_request_target run on the head. When active, the gate passes only
+.github/workflows/review-gate-security-scan.yml pull_request_target run on the head. When active, the gate passes only
 when the NEWEST such job (by the job's started_at, then id) and its own check run are
   a. from a run triggered by THIS PR (check-forged-review-gate.py's run_provenance), the job listed under
      that run, its check_run_url naming its own id, and the check run's id, details_url job id and name
@@ -30,9 +31,11 @@ Residual: a pass claim worded elsewhere in the body is not detected, and is stil
 
 Residual: the scan usually finishes after the gate's own run, so the gate reports it incomplete until it is
 re-fired (label toggle) once the scan completes.
-Residual: every job of security-scan.yml counts as a scanner job, so the template keeps a single job. Runs are
+Residual: every job of review-gate-security-scan.yml counts as a scanner job, so the template keeps a single job. Runs are
 found by head_sha, which assumes the pull_request_target run records the PR head (run_provenance relies on the
 same); the scanner template's canary must prove it.
+Residual: with the lane on, any other Actions job whose check run is named `Security Scan` is read as forged
+and fails the gate, so a repo enabling the lane renames such a job of its own first.
 
 env: REPO, PR_NUMBER, DEFAULT_BRANCH (required); SHA (the event's head; must still be the PR's head).
 Exit 0: lane passed or not enabled. 1: failed (reason on stderr). 2: could not evaluate (fails closed).
@@ -46,7 +49,7 @@ import urllib.parse
 from pathlib import Path
 
 NAME = "Security Scan"
-TRUSTED = (".github/workflows/security-scan.yml", "pull_request_target")
+TRUSTED = (".github/workflows/review-gate-security-scan.yml", "pull_request_target")
 CONFIG_DIR = "security-scan"  # .github/security-scan on the default branch
 ANNOTATION = "security-scan"
 OUTCOME = re.compile(r"outcome=(passed|not-applicable|findings|scanner-error) config-tree=([0-9a-f]{40})")
@@ -185,7 +188,7 @@ def main():
             if line.lower().startswith("security review:"):
                 print(f"ADVISORY/UNVERIFIED (model review, not evidence): {line.strip()}")
         claimed = claims(body)
-        active = "security-scan.yml" in _entries(w, repo, ".github/workflows", ref)  # (f) default branch only
+        active = "review-gate-security-scan.yml" in _entries(w, repo, ".github/workflows", ref)  # (f) default branch only
         why = verdict(w, detector, repo, pr, head, ref) if active else None
     except (ValueError, KeyError, TypeError, AttributeError, subprocess.CalledProcessError, w.Ambiguous) as exc:
         print(f"::error::security lane: could not evaluate, failing closed: {exc}", file=sys.stderr)
@@ -195,7 +198,7 @@ def main():
             print(f"::error::security lane: the PR body claims a scanner pass ({claimed[0]!r}) but {ref} has no "
                   "Security Scan workflow, so nothing verifies it; remove the claim", file=sys.stderr)
             return 1
-        print("security lane not enabled (no .github/workflows/security-scan.yml on the default branch)")
+        print("security lane not enabled (no .github/workflows/review-gate-security-scan.yml on the default branch)")
         return 0
     if why:
         print(f"::error::security lane: {why}", file=sys.stderr)
