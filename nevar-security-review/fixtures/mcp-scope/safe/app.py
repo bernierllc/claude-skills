@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+from contextlib import closing
 
 SCHEMA = """
 create table if not exists keys(hash text primary key, tenant text not null,
@@ -13,7 +14,7 @@ create table if not exists docs(id integer primary key, tenant text not null, bo
 
 
 def init_db(path):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(SCHEMA)
 
 
@@ -49,7 +50,7 @@ TOOLS = {"list_docs": (tool_list_docs, "docs:read"), "delete_doc": (tool_delete_
 
 def make_app(db_path):
     def app(environ, start_response):
-        with sqlite3.connect(db_path) as db:
+        with closing(sqlite3.connect(db_path)) as db, db:
             caller = authenticate(db, environ)
             if caller is None:
                 start_response("401 Unauthorized", [])

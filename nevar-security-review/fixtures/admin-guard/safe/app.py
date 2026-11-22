@@ -1,6 +1,7 @@
 """Admin settings API (fixture: no real service)."""
 import json
 import sqlite3
+from contextlib import closing
 
 SCHEMA = """
 create table if not exists sessions(token text primary key, user_id text not null);
@@ -10,7 +11,7 @@ create table if not exists settings(key text primary key, value text);
 
 
 def init_db(path):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(SCHEMA)
 
 
@@ -28,7 +29,7 @@ def current_user(db, environ):
 
 def make_app(db_path):
     def app(environ, start_response):
-        with sqlite3.connect(db_path) as db:
+        with closing(sqlite3.connect(db_path)) as db, db:
             if environ["PATH_INFO"] != "/admin/settings":
                 start_response("404 Not Found", [])
                 return [b""]
