@@ -1160,6 +1160,7 @@ assert g.payload_cwd({"cwd": 5}, {"dir_path": ["x"]}) == os.getcwd()
 # Through the real guard (not a stub): a command that is not a string must block, never read as "no command".
 for _bad in ({"tool_name": "Bash", "tool_input": {"command": ["gh", "pr", "merge", "5", "--auto"]}},
              {"tool_name": "Bash", "tool_input": {"command": {"a": "gh pr merge 5 --auto"}}},
+             {"tool_name": "Bash", "tool_input": "gh pr merge 5 --auto"},
              {"tool_name": "mcp__x__Bash", "tool_input": {"command": "gh pr merge 5 --auto"}},
              {"toolName": "Bash", "input": {"cmd": "gh pr merge 5 --auto"}}):
     _r = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / "pr-guard.py")], input=json.dumps(_bad),

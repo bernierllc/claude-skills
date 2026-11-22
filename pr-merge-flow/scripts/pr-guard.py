@@ -1189,7 +1189,9 @@ def main():
     except ValueError:
         return 0
     inp = data.get("tool_input") or data.get("input") or {}
-    if not isinstance(inp, dict):  # a text-argument tool such as apply_patch is not a shell call
+    if not isinstance(inp, dict):  # a text-argument tool such as apply_patch is not a shell call, a shell tool is
+        if re.search(r"bash|shell", str(data.get("tool_name") or data.get("toolName") or ""), re.I):
+            raise TypeError(f"{type(inp).__name__} tool_input on a shell tool")
         return 0
     cmd = inp.get("command") or inp.get("cmd") or ""
     if not cmd:  # a tool with no command (Edit, Read) is not a shell call
