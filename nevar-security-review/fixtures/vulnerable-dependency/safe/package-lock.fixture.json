@@ -1,0 +1,19 @@
+{
+  "name": "fixture-search-api",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixture-search-api",
+      "version": "1.0.0",
+      "dependencies": {
+        "minimist": "1.2.8"
+      }
+    },
+    "node_modules/minimist": {
+      "version": "1.2.8",
+      "resolved": "https://registry.npmjs.invalid/minimist/-/minimist-1.2.8.tgz"
+    }
+  }
+}

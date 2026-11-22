@@ -93,6 +93,10 @@ jobs:
           python3 -m pip install --quiet pyyaml==6.0.2
           for t in review-gate/tests/test_*.py; do echo "== $t"; python3 "$t"; done
 
+      - name: nevar-security-review tests
+        # Fixture apps serve on 127.0.0.1 only; nothing leaves the runner.
+        run: python3 -I -m unittest discover -s nevar-security-review/tests -p 'test_*.py'
+
       - name: Changed skills bump their version
         if: github.event_name == 'pull_request'
         env:

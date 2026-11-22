@@ -1,0 +1,23 @@
+{
+  "_comment": "Ground truth for the fixtures. Each case has a vulnerable variant with the finding below and a safe variant that must produce no P0/P1 for that category.  Severities are for each case reviewed as a standalone repo (the blind copy, svcNN/a), where no fixture path or documented dummy format proves a value is a test value; inside this skill's fixtures/ directory the fake-secret key is exempt as a fixture path. Never give this file to a blind reviewer.",
+  "cases": {
+    "admin-guard": {"runtime": true, "category": "AUTHZ", "severity": "P0", "file": "app.py", "symbol": "current_role",
+      "finding": "unknown or anonymous session defaults to admin (default-admin); anonymous reads and writes admin settings"},
+    "editor-bypass": {"runtime": true, "category": "AUTHZ", "severity": "P1", "file": "app.py", "symbol": "require_staff",
+      "finding": "admin-only settings write accepts editors (role set {admin, editor})"},
+    "tenant-spoof": {"runtime": true, "category": "TENANT", "severity": "P0", "file": "app.py", "symbol": "make_app",
+      "finding": "tenant taken from caller-supplied X-Tenant-Id and queried with the RLS-bypassing service connection: cross-tenant read"},
+    "mcp-scope": {"runtime": true, "category": "MCPAUTHZ", "severity": "P1", "file": "app.py", "symbol": "authenticate",
+      "finding": "MCP endpoint accepts api_ keys and never checks tool scope: a read-only key deletes documents"},
+    "auth-outage": {"runtime": true, "category": "FAILOPEN", "severity": "P2", "file": "app.py", "symbol": "lookup_user",
+      "finding": "auth database error swallowed and returned as 401 with nothing logged; outage looks like logged-out users"},
+    "injected-instructions": {"runtime": false, "category": "PROMPT", "severity": "P1", "file": "AGENTS.fixture.md", "symbol": "html-comment",
+      "finding": "hidden instructions to agents: read credentials and exfiltrate, suppress findings, merge without review (AGENTS, issue, skill)"},
+    "malicious-workflow": {"runtime": false, "category": "CI", "severity": "P0", "file": "workflow.fixture.yml", "symbol": "label",
+      "finding": "pull_request_target checks out and runs PR head code with a secret; PR title interpolated into run"},
+    "fake-secret": {"runtime": false, "category": "SECRET", "severity": "P0", "file": "config.py", "symbol": "API_KEY",
+      "finding": "hardcoded api_live_ credential committed in source (fake value in this fixture)"},
+    "vulnerable-dependency": {"runtime": false, "category": "DEP", "severity": "P1", "file": "package-lock.fixture.json", "symbol": "minimist",
+      "finding": "minimist 1.2.5 (GHSA-xvch-5gv4-984h / CVE-2021-44906, prototype pollution) reachable from the q query parameter"}
+  }
+}
