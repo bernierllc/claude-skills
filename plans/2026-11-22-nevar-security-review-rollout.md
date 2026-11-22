@@ -66,7 +66,7 @@ Design, owned by review-gate. Both parts land, and are proven on the canary, bef
       6. the scan's age: OSV reads a live advisory database, so a dependency can become vulnerable with every other input unchanged. Advisory data cannot be pinned, so the result expires after a maximum age that the step 2 PR sets and documents (for example 24 hours), and the mechanism re-scans open PRs before that. Between scans, an advisory published after the last scan is a stated residual on each repo's Tracker row.
       A change to any input makes the result stale. The gate and the merge guard refuse it until a fresh scan passes, and the mechanism starts that scan. A new input found later is added to this list, not designed in a new section.
 2. Defense in depth: the merge guard checks the lane live. `merge-guard.py` calls `check-security-scan.py` with the live default-branch digest whenever the lane is on, and fails closed exactly as `forged_gate_check()` does. This blocks an agent merge at once, whatever state the re-fire is in.
-3. Kept residual: the UI-merge window. Invalidation is asynchronous. From the config push until the re-run `Review Gate` finishes, the old green check stands, and a merge in the GitHub UI succeeds. When the re-fire workflow is queued or failing, the window lasts until it runs. The lane therefore claims only this much: an agent merge is blocked at once (part 2), and a UI merge is blocked once the re-fire lands (part 1). Only an evaluation at merge time can close the window, such as a merge queue that re-runs required checks on `merge_group`. review-gate's workflows do not handle `merge_group` today, so that is a separate review-gate decision, outside this rollout. Each repo's Tracker row states the window, and config changes merge when no PR is about to merge.
+3. Kept residual: the UI-merge window. Invalidation is asynchronous, whichever requirement 7 input changes: a config or workflow push, a retarget, an exception expiring, or a result passing its maximum age. From that change until the re-run `Review Gate` finishes, the old green check stands, and a merge in the GitHub UI succeeds. When the re-fire workflow is queued or failing, the window lasts until it runs. The lane therefore claims only this much: an agent merge is blocked at once (part 2), and a UI merge is blocked once the re-fire lands (part 1). Only an evaluation at merge time can close the window, such as a merge queue that re-runs required checks on `merge_group`. review-gate's workflows do not handle `merge_group` today, so that is a separate review-gate decision, outside this rollout. Each repo's Tracker row states the window, and config changes merge when no PR is about to merge.
 
 Canary proof needed:
 
@@ -116,7 +116,7 @@ Owner: `Traffic Cop · <repo>`. Measure again before each PR; the table below is
    4. Show that a fresh PR merges, and record that on the Tracker row.
 
    The configs can stay. Roll the vendored review-gate back to its previous tag only if review-gate itself regresses.
-8. Cost: Security Scan is one job per PR event. On private repos it bills Actions minutes (`ci-cost.md`), and nothing else turns on with it.
+8. Cost: Security Scan is one job per PR event, plus the finding 2 refreshes: a re-scan and gate run for every open PR on each input change, and periodic re-scans that keep each open PR inside the maximum age. The step 2 PR documents that cadence next to the maximum age. On private repos all of it bills Actions minutes (`ci-cost.md`).
 
 ## Per-repo table (measured 2026-11-22)
 
