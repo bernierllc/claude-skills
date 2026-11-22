@@ -94,7 +94,7 @@ for reviewer in ("codex", "agy", "antigravity", "cursor", "superpowers", "claude
 # near-miss reviewer tokens fail, and the failure lists every allowed reviewer
 for reviewer in ("cursor-agent", "cursors", "cursor auto", "sonnet", ""):
     result = attested(reviewer)
-    assert result and "<codex|agy|antigravity|cursor|superpowers|claude-sonnet>" in result[-1], (reviewer, result)
+    assert result and g.REVIEWER_CHOICES in result[-1], (reviewer, result)
 
 # The documented fallback chain and the gate cannot drift: each step of adversarial-review's "Reviewer order"
 # names the token it attests as, and the gate accepts it; both skills' "allowed reviewers" lists equal the checker's.
