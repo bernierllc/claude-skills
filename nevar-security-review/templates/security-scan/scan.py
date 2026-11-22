@@ -23,7 +23,6 @@ import datetime as dt
 import fnmatch
 import json
 import os
-import re
 import secrets
 import shutil
 import stat
@@ -51,8 +50,6 @@ LOCKFILES = {
 }
 # Only the languages semgrep.yml has rules for: semgrep skips any other target, which reads as target-skipped.
 CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
-# pip's join_lines: a backslash-ended line continues on the next, unless the line is a comment.
-COMMENT_LINE = re.compile(r"\s*#")
 OUTCOMES = ("passed", "not-applicable", "findings", "scanner-error")
 
 
@@ -168,28 +165,6 @@ def is_requirements(p):
     return name.endswith(".txt") and "requirements" in name
 
 
-def has_option_line(text):
-    """True when pip could read a line of this requirements file as an option line (first token "-").
-
-    Every include (-r, -c, any spelling, after any other option) lives on an option line, so this
-    over-reports instead of parsing pip's options. Lines are joined like pip's join_lines; a line
-    starting with "$" can expand to an option, and a NUL means a UTF-16/32 file read wrongly here.
-    shortcut: includes are not resolved (plans/2026-11-22-security-scan-osv-include-resolution.md), so
-    any option line, even --index-url or -e ., is not-covered until that plan lands.
-    """
-    if "\x00" in text:
-        return True
-    logical, cur = [], []
-    for line in text.lstrip("\ufeff").splitlines():
-        if line.endswith("\\") and not COMMENT_LINE.match(line):
-            cur.append(line.strip("\\"))  # pip strips backslashes from both ends of a continued line
-            continue
-        logical.append("".join(cur) + line)
-        cur = []
-    logical.append("".join(cur))
-    return any(line.lstrip()[:1] in ("-", "$") for line in logical)
-
-
 def applicable(scanner, staged):
     """The staged paths a scanner applies to; empty means not-applicable for that scanner."""
     if scanner == "gitleaks":
@@ -269,10 +244,13 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
                 for r in report.get("results", []) if r.get("packages")}
         # Each input must yield packages: one OSV could not read (a missing include, a broken file)
         # exits 0 when another input in the same run had packages, so per-input is the only check.
+        # shortcut: pip reads a requirements file differently from osv-scanner (includes, encoding
+        # declarations, line separators, environment variables), so no changed requirements file is
+        # proven fully read: each one is not-covered; upgrade when
+        # plans/2026-11-22-security-scan-osv-include-resolution.md lands.
         return parse_osv(report, stage_dir) + [
             {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read] + [
-            {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets
-            if is_requirements(t) and has_option_line((Path(stage_dir) / t).read_text(errors="replace"))]
+            {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets if is_requirements(t)]
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",

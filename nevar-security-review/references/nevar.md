@@ -224,12 +224,12 @@ What the workflow does:
     input must yield packages on its own, so one it finds none in (a broken file, a `-r`
     include that is missing) is a `no-packages` finding even when another input in the same
     run was read. It is never a pass, and takes a dated exception when the file is
-    legitimately empty. Includes are not resolved, so a changed requirements file with any
-    option line is a `not-covered` finding on that file: a line pip reads as options (its
-    first token starts with `-`, after pip joins continuation lines), which is the only place
-    pip follows an include, so the scan cannot prove what was pulled in. That also flags
-    options that are not includes, such as `--index-url` or `-e .`. It fails unless an owned,
-    expiring exception names that file. Resolving includes is
+    legitimately empty. pip and osv-scanner read requirements files differently (includes,
+    encoding declarations, line separators, environment variables), so every changed
+    requirements file is also a `not-covered` finding on that file, whatever its content:
+    the scan cannot prove it saw what pip installs. Its advisories are still reported. It
+    fails unless an owned, expiring exception names that file; lockfiles are unaffected.
+    Proving requirements coverage is
     `plans/2026-11-22-security-scan-osv-include-resolution.md`;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
@@ -314,4 +314,4 @@ above, merged first.
   semgrep reports any target it skipped, as a finding.
 - osv-scanner sees only changed files. A changed file that is a dependency list only because
   an unchanged requirements file includes it (for example `base.txt`) is not scanned by
-  osv-scanner. The include-resolution plan above closes this.
+  osv-scanner. The requirements-coverage plan above closes this.

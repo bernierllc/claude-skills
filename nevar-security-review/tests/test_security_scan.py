@@ -240,37 +240,30 @@ class Inputs(unittest.TestCase):
 class Parsers(unittest.TestCase):
     st = Path("/w/stage")
 
-    def setUp(self):  # the OSV branch reads each staged requirements file for include lines
-        t = tempfile.TemporaryDirectory()
-        self.addCleanup(t.cleanup)
-        self.osv_st = Path(t.name, "stage")
-        (self.osv_st / "app").mkdir(parents=True)
-        (self.osv_st / "app/requirements.txt").write_text("six==1.16.0\n")
-
     # Codex bot P1: osv-scanner exit 128 is "no packages found", so nothing was checked
     def test_osv_no_packages_is_a_finding_not_a_pass(self):
         real = scan.run
         scan.run = lambda argv, cwd=None, ok=(0,): (128, "")
         try:
-            got = scan.scan_one("osv-scanner", ["app/requirements.txt"], Path("/cfg"), self.osv_st, Path("/w"))
+            got = scan.scan_one("osv-scanner", ["app/poetry.lock"], Path("/cfg"), self.st, Path("/w"))
         finally:
             scan.run = real
-        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
+        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"}])
 
-    # Cop P1 on 12dc7a7: OSV exits 0 when one input yields nothing (here a missing -r include)
+    # Cop P1 on 12dc7a7: OSV exits 0 when one input yields nothing (here a broken lockfile)
     # and another has packages, so every input is accounted for on its own
     def test_osv_each_input_must_yield_packages(self):
-        st = str(self.osv_st)
+        st = str(self.st)
         rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
         real, argvs = scan.run, []
         scan.run = lambda argv, cwd=None, ok=(0,): (argvs.append(argv), (0, json.dumps(rep)))[1]
         try:
-            got = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.osv_st, Path("/w"))
-            rep["results"].append({"source": {"path": f"{st}/app/requirements.txt"}, "packages": [{}]})
-            both = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.osv_st, Path("/w"))
+            got = scan.scan_one("osv-scanner", ["app/poetry.lock", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
+            rep["results"].append({"source": {"path": f"{st}/app/poetry.lock"}, "packages": [{}]})
+            both = scan.scan_one("osv-scanner", ["app/poetry.lock", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
         finally:
             scan.run = real
-        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
+        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/poetry.lock"}])
         self.assertEqual(both, [])
         # Codex P1 on c849c19: without --all-packages a clean lockfile has no result entry at all
         self.assertTrue(all("--all-packages" in a for a in argvs))
@@ -369,35 +362,33 @@ class Outcome(unittest.TestCase):
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
-    # Codex P1s on c849c19, f277bbf and f95bd30: includes are not resolved (plans/2026-11-22-security-
-    # scan-osv-include-resolution.md). pip follows -r/-c only on an option line (first token "-",
-    # after join_lines), so every option line is not-covered and no option syntax is parsed.
-    def test_every_option_line_is_not_covered(self):
-        option_lines = ["-r base.txt", "-rbase.txt", "  -r\tbase.txt", "-c c.txt", "--requirement=base.txt",
-                        "--req base.txt", "--no-index -r base.txt", "-i https://example.invalid -r base.txt",
-                        "-\\\nr base.txt", "\\-r base.txt \\\n--no-index", "six==1.16.0\n\n--no-index \\\n-r base.txt",
-                        "\ufeff-r base.txt", "${OPT} base.txt", "-e .", "--index-url https://example.invalid/simple",
-                        "# note \\\n-r base.txt", "-\x00r\x00 base.txt"]
-        for text in option_lines:
-            with self.subTest(text=text):
-                self.assertTrue(scan.has_option_line(text))
-        # requirement lines, hashed continuations (pip-compile --generate-hashes) and comments
-        plain = ["six==1.16.0", "# -r base.txt", "  # --index-url x", "requests[security]==2.31.0 --hash=sha256:00",
-                 "six==1.16.0 \\\n    --hash=sha256:00 \\\n    --hash=sha256:11", "six==1.16.0 -r base.txt", ""]
-        for text in plain:
-            with self.subTest(text=text):
-                self.assertFalse(scan.has_option_line(text))
+    # Codex P1s on c849c19, f277bbf, f95bd30 and 9c21c1e: pip and osv-scanner read a requirements
+    # file differently (includes, encoding declarations, line separators, environment variables), so
+    # every changed requirements file is not-covered, whatever OSV read from it
+    # (plans/2026-11-22-security-scan-osv-include-resolution.md).
+    def test_every_requirements_file_is_not_covered(self):
+        texts = ["six==1.16.0\n", "six==1.16.0\n--no-index -r base.txt\n", "# coding: utf-7\nsix==1.16.0\n+AC0-r base.txt\n",
+                 "six==1.16.0\n# comment\rdjango==1.2\n", "six==1.16.0\ndjango==${VERSION}\n"]
+        for text in texts:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as t:
+                st = Path(t)
+                (st / "requirements-dev.txt").write_text(text)
+                rep = {"results": [{"source": {"path": f"{st}/{p}"}, "packages": [{"package": {"name": "six"}}]}
+                                   for p in ("requirements-dev.txt", "poetry.lock")]}
+                with mock.patch.object(scan, "run", lambda *a, **k: (0, json.dumps(rep))):
+                    got = scan.scan_one("osv-scanner", ["requirements-dev.txt", "poetry.lock"], Path("/cfg"), st, Path("/w"))
+                self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "not-covered", "path": "requirements-dev.txt"}])
 
-    def test_include_is_an_exceptable_not_covered_finding(self):
+    def test_not_covered_is_an_exceptable_per_file_finding(self):
         real = scan.scan_one
         def osv_only(scanner, *a):
             return real(scanner, *a) if scanner == "osv-scanner" else []
         with tempfile.TemporaryDirectory() as t:
             st, cfg = Path(t, "stage"), Path(t)
             (st / "app").mkdir(parents=True)
-            (st / "app/requirements-dev.txt").write_text("six==1.16.0\n-\\\nr base.txt\n")
-            (st / "app/requirements.txt").write_text("six==1.16.0\n")
             staged = ["app/requirements-dev.txt", "app/requirements.txt"]
+            for p in staged:
+                (st / p).write_text("six==1.16.0\n")
             rep = {"results": [{"source": {"path": f"{st}/{p}"}, "packages": [{"package": {"name": "six"}}]}
                                for p in staged]}
             def run_scan():
@@ -407,12 +398,13 @@ class Outcome(unittest.TestCase):
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
             res, found, _ = run_scan()
             self.assertEqual((res["osv-scanner"], found), ("findings", [
-                {"scanner": "osv-scanner", "rule": "not-covered", "path": "app/requirements-dev.txt"}]))
+                {"scanner": "osv-scanner", "rule": "not-covered", "path": p} for p in staged]))
             ok = dict(Exceptions.ok, scanner="osv-scanner", rule="not-covered",
                       path="app/requirements-dev.txt", expires="2026-01-01")
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": [ok]}))
-            res, found, _ = run_scan()
-            self.assertEqual((res["osv-scanner"], found), ("passed", []))
+            res, found, _ = run_scan()  # one exception covers its own file only
+            self.assertEqual((res["osv-scanner"], found), ("findings", [
+                {"scanner": "osv-scanner", "rule": "not-covered", "path": "app/requirements.txt"}]))
 
     def test_scan_isolates_errors_and_reports_not_applicable(self):
         def fake(scanner, targets, *a):
@@ -549,11 +541,12 @@ class RealScanners(unittest.TestCase):
         self.assertEqual(empty, ["app/requirements.txt"])  # go.mod was read; its own advisories may follow
 
     @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
-    def test_osv_clean_lockfile_passes(self):
+    def test_osv_clean_requirements_file_is_only_not_covered(self):
         with tempfile.TemporaryDirectory() as t:
             req = Path(t, "requirements.txt")
             req.write_text("six==1.16.0\n")
-            self.assertEqual(self.scan_files("osv-scanner", {"requirements.txt": req}), [])
+            self.assertEqual(self.scan_files("osv-scanner", {"requirements.txt": req}),
+                             [{"scanner": "osv-scanner", "rule": "not-covered", "path": "requirements.txt"}])
 
     @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
     def test_osv_reads_an_alternate_requirements_name(self):

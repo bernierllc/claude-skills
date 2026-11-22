@@ -1,15 +1,17 @@
-# Security Scan: resolve requirements includes for osv-scanner
+# Security Scan: prove pip requirements coverage for osv-scanner
 
 Status: planned. Follow-up to PR #147 (NEVAR-SEC-SKILL-1 PR C), which shipped osv-scanner
 descoped to what it can prove.
 
 ## Why this is a plan, not a fix in #147
 
-PR #147 produced nine P1 findings in the osv-scanner exit and coverage area. The traffic cop
+PR #147 produced twelve P1 findings in the osv-scanner exit and coverage area. The traffic cop
 set the rule after the fourth: one more P1 there and the PR descopes OSV and this plan takes
-include resolution. The f277bbf re-check found four more, so the descope ran. The review of
-the descope head found a ninth in the include predicate itself, so #147 stopped parsing
-include syntax at all (below).
+the rest. The f277bbf re-check found four more, so the descope ran. The review of the descope
+head found a ninth in the include predicate, and the review of the option-line rule that
+replaced it found three more (10–12) that are not about includes at all: pip and osv-scanner
+read the same requirements bytes differently. #147 therefore proves nothing about any
+requirements file (below).
 
 | # | Head | Finding |
 |---|------|---------|
@@ -22,6 +24,9 @@ include syntax at all (below).
 | 7 | f277bbf | physical-line matching misses continuations (`-\` then `r base.txt`); a quoted include (`-r "base.txt"`) gives a false unresolved finding |
 | 8 | f277bbf | alternate names such as `requirements-dev.txt` get no coverage |
 | 9 | f95bd30 | an include after another option on the same line (`--no-index -r base.txt`) is missed by the include predicate |
+| 10 | 9c21c1e | an encoding declaration (`# coding: utf-7`) makes pip decode `+AC0-r base.txt` to `-r base.txt`; the predicate read UTF-8 |
+| 11 | 9c21c1e | a `\r` or `\f` separator ends a line for pip's `splitlines()` but not for osv-scanner, which keeps the next requirement inside a comment |
+| 12 | 9c21c1e | an environment variable anywhere in a requirement (`django==${V}`) is expanded by pip and skipped by osv-scanner |
 
 Plus one P2 on f277bbf: an exception keyed on the including file covers every unresolved
 include in it.
@@ -31,23 +36,14 @@ include in it.
 - osv-scanner runs with `--all-packages` on changed lockfiles and on the names osv-scanner
   2.7.0 reads as requirements files (a base name ending `.txt` that contains
   `requirements`, case-sensitive; probed against the pinned binary). Every input must yield
-  packages on its own (`no-packages` otherwise).
-- A changed requirements file with any option line is a `not-covered` finding on that file.
-  pip 26.2.2 follows `-r`/`-c` only on an option line (its first token starts with `-`,
-  after `join_lines` and comment stripping), so `has_option_line()` joins continuation lines
-  the way pip does (never joining a comment line), strips a BOM, and flags any logical line
-  whose first character is `-`, or `$` (an environment variable can expand to an option), and
-  any text containing a NUL (a UTF-16/32 file this reader cannot see). It parses no option
-  syntax, so no spelling of an include can slip past it. pip-compile's hashed output
-  (`six==1 \` then `--hash=...`) joins into a requirement line and is not flagged. It fails
-  the gate unless an exact, owned, expiring exception names that file. Findings 5–9 cannot
-  occur: nothing is staged or resolved, and the predicate covers the alternate names.
-- Intended false positives: an option line that is not an include (`--index-url`, `-e .`,
-  `--require-hashes`) is also `not-covered` and needs a per-file exception until this plan
-  lands.
+  packages on its own (`no-packages` otherwise), and its advisories are reported.
+- Every changed requirements file is also a `not-covered` finding on that file, whatever its
+  content, because nothing proves osv-scanner read what pip installs from it. It fails the
+  gate unless an exact, owned, expiring exception names that file. No content predicate
+  exists, so findings 5–12 cannot occur. A repo that changes requirements files needs a
+  per-file exception until this plan lands; lockfiles are unaffected.
 - The P2 becomes the intended semantics for now: the finding is about the file ("OSV cannot
-  prove it read this file completely"), so one exception per file is the right key until
-  includes are resolved.
+  prove it read this file completely"), so one exception per file is the right key.
 - Known residual, documented in `nevar.md`: a changed file that is a dependency list only
   because an unchanged requirements file includes it (for example `base.txt`) is not scanned
   by osv-scanner, because only changed files are staged and its name is not one OSV reads.
@@ -65,10 +61,13 @@ is missing, so a partial read looks like a read.
 1. Build the include graph from the head checkout, read as data: every requirements-named
    file in the tree, not only changed ones, so a changed `base.txt` reached through an
    unchanged `requirements.txt` is found (closes the residual).
-2. Parse include lines with pip's own rules, not a regex: continuation joining, comment
-   stripping, quotes, `=`, glued short options, long-option prefixes, environment variables.
-   Prefer vendoring or calling pip's `req_file` parser on the text over reimplementing it,
-   and say why if that is not possible.
+2. Read every requirements file with pip's own rules, not a regex: encoding declarations
+   and BOMs, `splitlines()` separators, continuation joining, comment stripping, quotes, `=`,
+   glued short options, long-option prefixes, environment variables (pip expands only
+   `${NAME}` from the runner's environment; decide whether an unset or set variable is a
+   finding). Prefer calling pip's `req_file` parser on the text, then giving osv-scanner the
+   resolved requirement list it produced, over reimplementing pip; say why if that is not
+   possible.
 3. Stage the closure: nested, cycle-safe, through the existing `stage()` checks (regular
    files only, no symlink in any component, `safe_rel` paths). Traverse a file even when it
    is already staged (finding 5).
@@ -85,7 +84,8 @@ is missing, so a partial read looks like a read.
 ## Affected surfaces
 
 - `nevar-security-review/templates/security-scan/scan.py`: staging, the OSV branch,
-  `has_option_line()` (removed or kept as the not-covered fallback), `applicable()`.
+  the unconditional requirements `not-covered` finding (removed when coverage is proven),
+  `applicable()`.
 - `nevar-security-review/tests/test_security_scan.py`: unit tests and real-scanner tests.
 - `nevar-security-review/references/nevar.md`: the OSV bullet, the `not-covered` rule, the
   residual.
@@ -94,7 +94,8 @@ is missing, so a partial read looks like a read.
 
 ## Done when
 
-A changed requirements file with includes, and a changed file reachable only through an
-unchanged include, are scanned completely or fail with a named finding. Real-scanner tests
-cover nested, missing, escaping, symlinked, `--requirement`, continued and quoted includes,
-and the `not-covered` rule for includes and the residual are removed from `nevar.md`.
+A changed requirements file, and a changed file reachable only through an unchanged
+include, are scanned with what pip would install or fail with a named finding. Real-scanner
+tests cover nested, missing, escaping, symlinked, `--requirement`, continued and quoted
+includes, encoding declarations, `\r`/`\f` separators and environment variables (findings
+1–12), and the unconditional `not-covered` rule and the residual are removed from `nevar.md`.
