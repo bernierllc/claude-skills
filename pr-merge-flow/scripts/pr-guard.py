@@ -189,19 +189,23 @@ def runs_async(cmd):
     return False
 
 
-def wrapped_words(w, cut=True):
+def wrapped_words(w):
     """The words a wrapper argument may run: a split string (`env -S 'gh pr merge'`) is split as the shell
     would, and an attached option value (`-Sgh`, `--split-string=gh pr merge`) loses its flag. `\\_` is a separator
-    to env -S (`'gh\\_pr\\_merge'`), so it splits too. With cut, everything from `\\c` on is dropped, as env -S does
-    (`'gh\\c'` runs gh). Callers check both cuts: an escaped `\\\\c` or a single-quoted `'\\c'` does not end the string."""
+    to env -S (`'gh\\_pr\\_merge'`), so it splits too. A real env -S is blocked outright (env_split_string)."""
     w = w.replace("\\_", " ")
-    w = w.split("\\c")[0] if cut else w
     try:
         sp = shlex.split(w)
     except ValueError:
         sp = w.split()
     m = re.fullmatch(r"--[\w-]+=(.+)|-[A-Za-z](.+)", sp[0]) if sp else None
     return [m.group(1) or m.group(2)] + sp[1:] if m else sp
+
+
+def based(seg):
+    """seg with its command word cut to the executable's basename, so `/usr/bin/env` is `env` and
+    `/opt/homebrew/bin/gh` is `gh`. Markers (no `/`) come back as the same object."""
+    return [seg[0].rsplit("/", 1)[-1] or seg[0]] + seg[1:] if seg and "/" in seg[0] else seg
 
 
 def segments(cmd, raw=False):
@@ -224,6 +228,7 @@ def segments(cmd, raw=False):
             # Keywords and NAME=value prefixes don't change the command; neither does `env [-i] [-u NAME] [NAME=value]`.
             while argv and (argv[0] in KEYWORDS or ASSIGN.match(argv[0])):
                 argv.pop(0)
+            argv = based(argv)
             # `command [-p] [--] cmd …` runs cmd; `command -v/-V cmd` only looks it up. Only a plain `command`
             # keeps the dir and root known (an option such as -p is outside the allowlist below).
             opted = False
@@ -235,12 +240,14 @@ def segments(cmd, raw=False):
                         break
                     if "v" in opt or "V" in opt:
                         argv = []
+                argv = based(argv)
             if argv and (argv[0] in WRAPPERS or opted):
                 # Every later word may be the command (a false block from trying an argument is the accepted
                 # cost). Its dir and root are known only behind `env NAME=value…`; `env -C DIR`/`--chdir[=]DIR`
                 # then NAME=value… knows the root, not the dir. Anything else is unknown (WRAPPED): a wrapper
-                # name, any option (env -S/-i/-u, sudo -D/-R), a split string with a space in it.
-                for i in range(0 if opted else 1, len(argv)):
+                # name, any option (env -S/-i/-u, sudo -D/-R), a split string with a space in it. i == 0 yields the
+                # wrapper itself, so env_split_string sees a top-level `env -S`.
+                for i in range(len(argv)):
                     pre = argv[1:i] if argv[0] == "env" and not opted else None
                     d = WRAPPED
                     if pre is not None:
@@ -248,11 +255,11 @@ def segments(cmd, raw=False):
                         k = 2 if pre[:1] in (["-C"], ["--chdir"]) and len(pre) > 1 else 1 if m else 0
                         if all(ASSIGN.match(a) for a in pre[k:]):
                             d = None if not k else pre[1] if k == 2 else m.group(1) or m.group(2)
-                    yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, argv[i:], CLOSE] if d else [argv[i:]])
-                    # ponytail: both cuts instead of modelling env -S escapes and quotes; checking more only fails closed.
-                    for sp in dict.fromkeys(tuple(wrapped_words(argv[i], cut)) for cut in (True, False)):
-                        for j in range(len(sp) if list(sp) != argv[i:i + 1] else 0):
-                            yield from [OPEN, CD_WRAPPED, list(sp[j:]) + argv[i + 1:], CLOSE]
+                    yield from ([OPEN, ["cd", d] if d != WRAPPED else CD_WRAPPED, based(argv[i:]), CLOSE] if d
+                                else [based(argv[i:])])
+                    sp = wrapped_words(argv[i])
+                    for j in range(len(sp) if sp != argv[i:i + 1] else 0):
+                        yield from [OPEN, CD_WRAPPED, based(sp[j:] + argv[i + 1:]), CLOSE]
             elif argv:
                 yield argv
             argv = []
@@ -1019,6 +1026,43 @@ def not_green(ref, repo="", cwd=None, notes=None):
                                                  for s, w in h.failed)]))
 
 
+def env_split_string(cmd):
+    """True when an `env` command (any path, bare or behind a wrapper) takes a split-string option: any short
+    option word holding an `S` (`-S`, `-Sgh`, `-vS`, `-uXS`), `--split-string[=]` or a prefix
+    of it. The string is never parsed: re-implementing env's splitting lost a block in 1.5.2-1.5.4. A NAME=value
+    word ends env's options. Any other option word or option value that is not a plain word (`$`, a backtick,
+    a brace, `$'…'`, a glob) may become -S once the shell expands it, so it counts too."""
+    for argv in segments(cmd, raw=True):
+        if argv[:1] != ["env"]:
+            continue
+        k, value = 1, False
+        while k < len(argv):
+            w = argv[k]
+            k += 1
+            if not value and ASSIGN.match(w):
+                break
+            if not literal(w):
+                return True
+            if value:
+                value = False
+                continue
+            if w == "-":  # same as -i
+                continue
+            if w == "--" or not w.startswith("-"):
+                break
+            if w.startswith("--"):
+                name = w[2:].split("=", 1)[0]
+                if len(name) and "split-string".startswith(name):
+                    return True
+                value = "=" not in w and any(o.startswith(name) for o in ("unset", "chdir", "argv0"))
+                continue
+            if "S" in w:  # anywhere in the cluster, even as -u's value (`-uXS`): fail closed
+                return True
+            m = re.match(r"-[^uCPa]*[uCPa]", w)  # the first option taking a value; nothing glued = the next word
+            value = bool(m and m.end() == len(w))
+    return False
+
+
 def polls(cmd):
     segs = list(segments(cmd))
     return (any(a[0] == "sleep" for a in segs)
@@ -1103,6 +1147,10 @@ def check(cmd, cwd, notes=None):
             return (f"Blocked: {fork} has no `gh repo set-default`, so `gh pr create` would open the "
                     "PR on the upstream repo. Pass `-R <owner>/<repo>` or run "
                     "`gh repo set-default <owner>/<repo>` first.")
+    # Before the sync-base early return: that comment waives only the base-sync check, never this one.
+    if env_split_string(cmd):
+        return ("Blocked: `env -S` / `--split-string` runs a string the guard can't read the way env does. "
+                "Run the command directly, or as `env NAME=value gh …`.")
     if any(re.match(r"#\s*sync-base:", c) for c in shell_comments(cmd)):  # a real shell comment, not quoted text
         return None
     for d, sub, refs in sync_calls(cmd, cwd):
@@ -1163,6 +1211,10 @@ def fb_log(subject: str, severity: str, summary: str) -> None:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:
+    except Exception as exc:  # fail closed: PreToolUse blocks only on exit 2, and a crash (exit 1) would allow
         fb_log("hook:pr-merge-flow/pmf-pr-guard", "high", f"pr-guard crashed: {type(exc).__name__}")
-        raise
+        import traceback
+        traceback.print_exc()
+        print(f"Blocked: pr-guard crashed ({type(exc).__name__}: {exc}), so the command was not checked.",
+              file=sys.stderr)
+        sys.exit(2)

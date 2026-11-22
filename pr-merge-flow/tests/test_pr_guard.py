@@ -769,21 +769,39 @@ assert _blocked(f"env -S 'gh pr comment 1 -b' '{M} review'")
 assert calls("(cd wt && env printf ' )'; git merge origin/main)") == [("/r/wt", "merge", ["origin/main"])]
 assert calls("(cd wt && env printf ' ) ('; git merge origin/main); git merge origin/main") == [
     ("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
-# round 2 P2: env -S reads `\_` as a separator.
-for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
-          "env --split-string='gh\\_pr\\_merge' 1 --admin"):
-    assert "--admin" in merge(c, rollup=ok), c
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
-# 1.5.3 (nevar-content #16 review P2): env -S stops reading the string at `\c`, so `gh\c` runs gh.
-for c in ("env -S 'gh\\c' pr merge 1 --admin", "env -S 'gh\\cjunk' pr merge 1 --admin",
-          "env '-Sgh\\c' pr merge 1 --admin", "env --split-string='gh\\_pr\\c' merge 1 --admin"):
+# 1.6.1 (nevar-content #17, claude-skills #132): an env split-string option blocks on sight, any path or form.
+SPLIT = "`env -S` / `--split-string`"
+for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
+          "env --split-string='gh\\_pr\\_merge' 1 --admin", "env -S 'gh\\c' pr merge 1 --admin",
+          "env -S \"env X='\\c' gh\\c\" pr merge 1 --admin", "env -S '${GHCMD}' pr merge 17 --admin",
+          "/usr/bin/env -S'gh pr merge 17 --admin'", "env -vS'gh pr merge 17 --admin'",
+          "env -S 'env -S \"gh pr merge 17 --admin\"'", "env -S \"`printf gh` pr merge 17 --auto\"",
+          "env -iS x", "env -uXS x", "env -uC -S x", "env -iu X -S x", "env --unset X -S x", "env -u X -S x", "env --sp=x", "env --split-string x",
+          "sudo env -S x", "sudo /usr/bin/env -S x", "nice -n 5 env -S x", "env -S 'gh\\_pr\\_view' 1",
+          "env \"$OPT\" gh pr view 1", "env {-S,x} payload", "env $'\\x2dS' payload", "env -u $X gh pr view 1",
+          "env --chdir `pwd` -S x"):
+    assert g.env_split_string(c) and merge(c, rollup=ok), c
+assert SPLIT in merge("env -S 'gh pr view 1'", rollup=ok)
+# #157 review: a `# sync-base:` comment waives only the base-sync check, never env -S.
+assert SPLIT in merge("env -S '${GHCMD} pr merge 1 --admin' # sync-base: x", rollup=ok)
+# The review-round fixture rows that try a forbidden merge must block, not only stay unchanged under parity.
+for _cwd, c in (json.loads(l) for l in (Path(__file__).parent / "fixtures" / "pr_guard_inputs.txt").read_text()
+                .splitlines() if l.startswith("[")):
+    assert not re.search(r"--admin|--auto", c) or merge(c, rollup=ok), c
+for c in ("echo env -S '${GHCMD}'", "printf '%s' env -S 'a\\tb'", "env printf '%s' -S '${GHCMD}'",
+          "env FOO=1 gh pr view 1", "env -u S gh pr view 1", "env -C /tmp gh pr view 1",
+          "env -- -S", "git commit -S -m 'a\\nb'", "echo env; printf '\\c'",
+          "env GH_TOKEN=$TOKEN gh pr view 1", "env GH_TOKEN=\"$(cat t)\" A=`x` gh pr view 1",
+          "env -u HOME GH_TOKEN=$T gh pr view 1"):
+    assert not g.env_split_string(c), c
+    assert merge(c, rollup=ok) is None, c
+# claude-skills #132: a command word is matched by basename, so an absolute path is the same command.
+for c in ("/usr/bin/env gh pr merge 1 --admin", "/usr/bin/sudo gh pr merge 1 --admin",
+          "/opt/homebrew/bin/gh pr merge 1 --admin", "sudo /opt/homebrew/bin/gh pr merge 1 --admin"):
     assert "--admin" in merge(c, rollup=ok), c
-assert g.wrapped_words("gh\\c x y") == ["gh"]
-# 1.5.3 (#129 review P1): `\\\\c` is an escaped backslash and `'\\c'` is literal in single quotes, so neither ends the string.
-for c in ("env -S 'env X=\\\\c gh pr merge 1 --admin'", "env -S 'env X=\\\\c gh pr merge 1 --auto'",
-          "env -S \"env X='\\c' gh pr merge 1 --admin\""):
-    flag = "--auto" if "--auto" in c else "--admin"
-    assert flag in merge(c, rollup=ok), c
+assert merge("env FOO=1 gh pr view 1", rollup=ok) is None
+assert merge("gh pr merge 5 --squash --match-head-commit " + "a" * 40 + " -R owner/repo", rollup=ok) is None
 assert calls("command git merge origin/main") == [("/r", "merge", ["origin/main"])]
 _ps, g.pr_state = g.pr_state, lambda d: ("main", "CLEAN")
 for c in ("env git merge origin/main", "command git merge origin/main", "sudo git pull origin main",
@@ -1100,6 +1118,13 @@ m = guard([gate, doctor_ok], policy=TB_CI, rules=RULESET_GATE, base="release/x y
 assert m and "required check Test & Build is MISSING" in m, m
 assert not [c for c in calls_seen if "/contents/" in " ".join(c) and "ref" in " ".join(c)], calls_seen
 
+
+# 17. A guard crash blocks (exit 2), never allows: a JSON list makes main() raise AttributeError.
+_home = Path(tempfile.mkdtemp())
+_crash = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / "pr-guard.py")], input="[]",
+              capture_output=True, text=True, timeout=20,
+              env={"PATH": "/usr/bin:/bin", "HOME": str(_home), "CLAUDE_PROJECT_DIR": str(_home), "AGENT_FEEDBACK_BIN": ""})
+assert _crash.returncode == 2 and "pr-guard crashed" in _crash.stderr, (_crash.returncode, _crash.stderr)
 
 def test_pr_guard():
     """pytest entry point: the asserts above run at import, so a failure is a collection error."""

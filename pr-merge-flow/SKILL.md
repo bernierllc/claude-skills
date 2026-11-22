@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.6.0
+version: 1.6.1
 author: Bernier LLC
 ---
 
@@ -93,13 +93,15 @@ hooks dormant). It blocks:
   quotes or unquoted the line joins and it blocks. When the command holds quoting a flat scan can't follow (a
   heredoc, `$(...)`, a backtick, `$'...'`, a quote in a comment) every backslash-newline is joined, so such a
   split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
-  `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
-  `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); a quoted or attached split string
-  (`env -S 'gh pr merge' …`, `-Sgh`, `--split-string=gh pr merge`, env's `\_` separator, and its `\c`, which ends the string (1.5.3; both cuts checked, 1.5.4)) is split and each of its
-  words tried too; a word that splits to `(` or `)` is never read as a subshell bound. Their options are not parsed, so the command's
+  `exec` every later word is tried as the command, so no option argument hides `gh` or `git`
+  (`env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); `env` given any split-string
+  option (`-S`, `-Sgh`, `-vS`, `-uXS`, `--split-string`, `--sp=…`) is blocked outright, since env expands and ends that
+  string its own way, and so is an `env` option word or value the shell still expands (`$X`, a backtick, `{-S,x}`,
+  `$'\x2dS'`); a NAME=value word ends env's options, so `env GH_TOKEN=$T gh …` is fine; a `# sync-base:` comment
+  does not waive this check (1.6.1); a guard crash blocks with exit 2 instead of exiting 1, which let the command run (1.6.1); command words match by basename (`/usr/bin/env`, `/opt/homebrew/bin/gh`); a word that splits to `(` or `)` is never read as a subshell bound. Their options are not parsed, so the command's
   directory and root are known only behind no prefix, a plain `command`, or `env NAME=value…`; `env -C DIR` /
   `--chdir[=]DIR` keeps the root, so only an absolute plain body path is read. Behind anything else (any wrapper,
-  any option such as `env -i`/`-u`/`-S`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
+  any option such as `env -i`/`-u`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
   and a base sync or merge there runs in an unresolved directory, even with an absolute `git -C` (blocked;
   workaround: run `gh`/`git` without the wrapper, or pass `-R owner/repo` to `gh pr merge`). A `gh pr create`
   there blocks unless it passes `-R owner/repo`, since the fork check can't run in an unknown directory. `env -i`/`env -u` before a body file are new false
