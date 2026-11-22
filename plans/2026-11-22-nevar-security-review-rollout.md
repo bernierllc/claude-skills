@@ -62,7 +62,8 @@ Design, owned by review-gate. Both parts land, and are proven on the canary, bef
       2. the base it was compared against: a retarget changes the diff without changing the head, and the scan template does not trigger on `edited`;
       3. the config tree of `.github/security-scan/` on the default branch;
       4. the scan workflow's revision on the default branch: a re-run keeps its original workflow version, so the re-fire must run the current trusted definition;
-      5. the validity of every exception the scan applied: an exception that expires while the PR is open invalidates the result.
+      5. the validity of every exception the scan applied: an exception that expires while the PR is open invalidates the result;
+      6. the scan's age: OSV reads a live advisory database, so a dependency can become vulnerable with every other input unchanged. Advisory data cannot be pinned, so the result expires after a maximum age that the step 2 PR sets and documents (for example 24 hours), and the mechanism re-scans open PRs before that. Between scans, an advisory published after the last scan is a stated residual on each repo's Tracker row.
       A change to any input makes the result stale. The gate and the merge guard refuse it until a fresh scan passes, and the mechanism starts that scan. A new input found later is added to this list, not designed in a new section.
 2. Defense in depth: the merge guard checks the lane live. `merge-guard.py` calls `check-security-scan.py` with the live default-branch digest whenever the lane is on, and fails closed exactly as `forged_gate_check()` does. This blocks an agent merge at once, whatever state the re-fire is in.
 3. Kept residual: the UI-merge window. Invalidation is asynchronous. From the config push until the re-run `Review Gate` finishes, the old green check stands, and a merge in the GitHub UI succeeds. When the re-fire workflow is queued or failing, the window lasts until it runs. The lane therefore claims only this much: an agent merge is blocked at once (part 2), and a UI merge is blocked once the re-fire lands (part 1). Only an evaluation at merge time can close the window, such as a merge queue that re-runs required checks on `merge_group`. review-gate's workflows do not handle `merge_group` today, so that is a separate review-gate decision, outside this rollout. Each repo's Tracker row states the window, and config changes merge when no PR is about to merge.
@@ -78,6 +79,7 @@ Canary proof needed:
 - Workflow-only change: merge a change to the scan workflow alone. The old definition's result must not pass the gate, and a scan under the new definition must (requirement 7, input 4).
 - Same-head retarget: change a green PR's base to a branch that adds a changed file. The old result must stop passing, and a fresh scan of the new comparison must decide (requirement 7, input 2).
 - Exception expiry: a PR passes under a dated exception. Once that exception expires, the gate and the merge guard must refuse the old result. The step 2 PR unit-tests the boundary with an injected clock, and the canary shows it with an exception dated to expire during the proof (requirement 7, input 5).
+- Maximum age: the step 2 PR unit-tests the boundary with an injected clock, and the canary shows a result past its age refused until a re-scan passes (requirement 7, input 6).
 - Overlapping pushes and a moving head: merge two config changes back to back and show that the newest tree decides. Push to a PR while its re-fire runs and show that only the new head's runs count. Run a same-name job from another workflow and show it is neither re-run nor counted (requirement 4).
 - Install the lane on the canary with the extended installer, and show that the doctor passes only once every lane workflow is on the default branch (requirement 6).
 
@@ -152,7 +154,7 @@ Excluded: review-gate-sandbox, review-gate-repro14, and the canary (test repos).
 
 ## Done when
 
-- The finding 2 proof is recorded, with run URLs, on the Tracker and SKILLS-SEC-CLAIM-2 rows. It covers every bullet under "Canary proof needed": both bases, delayed invalidation, missing-run recovery, permissions, the workflow-only change, the same-head retarget, exception expiry, overlapping pushes and a moving head, foreign-run isolation, and the installer and doctor round trip.
+- The finding 2 proof is recorded, with run URLs, on the Tracker and SKILLS-SEC-CLAIM-2 rows. It covers every bullet under "Canary proof needed": both bases, delayed invalidation, missing-run recovery, permissions, the workflow-only change, the same-head retarget, exception expiry, maximum age, overlapping pushes and a moving head, foreign-run isolation, and the installer and doctor round trip.
 - A claude-skills tag and the matching AEC release exist, and the catalog pins to them.
 - Every repo in the table has either the lane on, with its proof row recorded, or a written reason on its Tracker row why it waits.
 - The single platform-ops issue 1 ask is answered and recorded. Either a required-workflow rule is proven on the canary and applied in the repos that took the lane, or the trust table keeps the same-name residual as detection only.
