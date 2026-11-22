@@ -42,9 +42,9 @@ VENDORED_SCRIPTS = ("check-review-gate.py", "check-forged-gate-names.py", "check
 
 
 WRAPPER = "check-forged-review-gate.py"
-# What the bundled wrapper calls on the detector. Checked by parsing, never by running: the
-# installer runs on a developer machine and must not execute repo code (#105 Codex P1).
-WRAPPER_FUNCS = {"forged": 3, "_gh_run_lookup": 1, "_load_check_runs": 1}  # name -> positional args used
+# What the bundled wrapper and security lane (check-security-scan.py: job_run_id) call on the detector. Checked by
+# parsing, never by running: the installer runs on a developer machine and must not execute repo code (#105 Codex P1).
+WRAPPER_FUNCS = {"forged": 3, "_gh_run_lookup": 1, "_load_check_runs": 1, "job_run_id": 1}  # name -> positional args used
 
 
 def _detector_compatible(path: Path) -> bool:

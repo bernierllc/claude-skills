@@ -34,6 +34,8 @@ assert SIGNATURE in DETECTOR
 COMPATIBLE = b"# newer aec copy\n" + DETECTOR
 # #105 Codex P2: these define every name the wrapper uses, yet the wrapper cannot run against them
 INCOMPATIBLE = DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup):")  # old 2-arg forged
+NO_JOB_RUN_ID = DETECTOR.replace(b"def job_run_id(check_run):", b"def run_id_of(check_run):")  # the lane calls job_run_id
+assert NO_JOB_RUN_ID != DETECTOR
 INCOMPATIBLE_VARIANTS = (
     INCOMPATIBLE,
     b"# custom\nPROTECTED = {}\ndef forged(c, l, protected=None): return []\n"
@@ -41,6 +43,7 @@ INCOMPATIBLE_VARIANTS = (
     b"# old custom detector\nPROTECTED = {}\ndef forged(c, l): return []\n",
     b"def broken(:\n",
     DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup, protected=None, *, audit):"),  # required kw-only
+    NO_JOB_RUN_ID,
 )
 
 
@@ -78,12 +81,16 @@ class VendoredDetector(unittest.TestCase):
         with tempfile.TemporaryDirectory() as repo:
             dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
             dest.parent.mkdir()
-            dest.write_bytes(INCOMPATIBLE)
-            proc = install(repo, "--force")
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / dest.name).read_bytes())
-            self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), INCOMPATIBLE)
-            self.assertIn("REPLACED", proc.stderr)
+            for variant in (INCOMPATIBLE, NO_JOB_RUN_ID):  # #145 Codex P1: a kept detector without job_run_id breaks the lane
+                with self.subTest(variant=variant[:40]):
+                    for bak in dest.parent.glob("*.bak"):
+                        bak.unlink()
+                    dest.write_bytes(variant)
+                    proc = install(repo, "--force")
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / dest.name).read_bytes())
+                    self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), variant)
+                    self.assertIn("REPLACED", proc.stderr)
 
     def test_a_second_forced_replacement_keeps_the_first_backup(self):
         # #105 Codex P2: the first custom copy must survive a later forced upgrade of a second one

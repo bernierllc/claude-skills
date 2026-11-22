@@ -57,6 +57,8 @@ if path.endswith("/contents/.github/workflows/review-gate.yml"):  # merge-guard'
     if wf is True:
         sys.exit(0)
     print("gh: Not Found (HTTP 404)" if wf is False else "gh: Bad Gateway (HTTP 502)", file=sys.stderr); sys.exit(1)
+if path.split("?")[0].endswith("/contents/scripts"):  # the gate's listing of the trusted scripts
+    print(json.dumps([{"name": n, "type": "file"} for n in fixture["scripts"]])); sys.exit(0)
 if "/contents/scripts/" in path:
     name = path.split("/contents/scripts/")[1].split("?")[0]
     src = fixture["scripts"].get(name)

@@ -325,9 +325,25 @@ class GateWiring(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("security lane ok", out)
 
-    def test_missing_lane_script_fails_closed(self):
+    def test_missing_lane_script_with_the_lane_off_leaves_the_result_unchanged(self):
+        # #145 Codex P1: a manual install that predates check-security-scan.py must not turn every gate red
+        rc_present, _ = self.gate([])
         rc, out = self.gate([], missing=("check-security-scan.py",))
+        self.assertEqual((rc_present, rc), (0, 0), out)
+        self.assertIn("security lane not enabled", out)
+        self.assertFalse(any("contents/scripts/check-security-scan.py" in c for c in self.calls), self.calls)
+
+    def test_missing_lane_script_with_the_lane_on_fails_closed(self):
+        rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {".github/workflows?ref=main": ENABLED}})
         self.assertEqual(rc, 1, out)
+        self.assertIn("Could not load trusted scripts/check-security-scan.py", out)
+
+    def test_a_failed_listing_fails_closed(self):
+        for pattern in (r"contents/\.github/workflows\?", r"contents/scripts\?"):
+            with self.subTest(pattern=pattern):
+                rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"fail": {"pattern": pattern}})
+                self.assertEqual(rc, 1, out)
+                self.assertIn("to decide the security lane", out)
 
 
 if __name__ == "__main__":
