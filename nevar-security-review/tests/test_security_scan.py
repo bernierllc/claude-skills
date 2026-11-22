@@ -246,6 +246,22 @@ class Parsers(unittest.TestCase):
             scan.run = real
         self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
 
+    # Cop P1 on 12dc7a7: OSV exits 0 when one input yields nothing (here a missing -r include)
+    # and another has packages, so every input is accounted for on its own
+    def test_osv_each_input_must_yield_packages(self):
+        st = str(self.st)
+        rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
+        real = scan.run
+        scan.run = lambda argv, cwd=None, ok=(0,): (0, json.dumps(rep))
+        try:
+            got = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
+            rep["results"].append({"source": {"path": f"{st}/app/requirements.txt"}, "packages": [{}]})
+            both = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
+        finally:
+            scan.run = real
+        self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
+        self.assertEqual(both, [])
+
     def test_gitleaks(self):
         got = scan.parse_gitleaks([{"RuleID": "r", "File": "/w/stage/c.py", "Secret": "REDACTED"}], self.st)
         self.assertEqual(got, [{"scanner": "gitleaks", "rule": "r", "path": "c.py"}])
@@ -323,6 +339,39 @@ class Outcome(unittest.TestCase):
             scan.run(["/nonexistent/scanner"])
         with mock.patch.object(scan, "TIMEOUT", 0.2), self.assertRaisesRegex(scan.ScanError, "timed out"):
             scan.run([sys.executable, "-c", "import time; time.sleep(5)"])
+
+    def test_multi_input_osv_with_an_unreadable_input_is_not_passed(self):
+        real = scan.scan_one
+        def osv_only(scanner, *a):  # the real OSV branch over a faked process; the other scanners find nothing
+            return real(scanner, *a) if scanner == "osv-scanner" else []
+        with tempfile.TemporaryDirectory() as t:
+            st, cfg = Path(t, "stage"), Path(t)
+            (st / "app").mkdir(parents=True)
+            (st / "app/requirements.txt").write_text("-r base-requirements.txt\n")
+            (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
+            rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
+            with mock.patch.object(scan, "run", lambda *a, **k: (0, json.dumps(rep))), \
+                    mock.patch.object(scan, "scan_one", osv_only):
+                res, found, _ = scan.scan(["app/requirements.txt", "svc/go.mod"], cfg, st, Path(t), dt.date(2026, 1, 1))
+        self.assertEqual(res["osv-scanner"], "findings")
+        self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
+
+    def test_unchanged_requirements_include_is_reported_not_covered(self):
+        with tempfile.TemporaryDirectory() as t:
+            st = Path(t)
+            (st / "app/req").mkdir(parents=True)
+            (st / "app/requirements.txt").write_text(
+                "-r base.txt\n--constraint=../c.txt\n-rreq/dev.txt\nrequests==2.31.0\n--require-hashes\n")
+            (st / "app/req/dev.txt").write_text("pytest==8.0.0\n")
+            staged = ["app/requirements.txt", "app/req/dev.txt"]
+            self.assertEqual(scan.unstaged_includes(["app/requirements.txt"], staged, st),
+                             [("app/requirements.txt", "base.txt"), ("app/requirements.txt", "../c.txt")])
+            with mock.patch.object(scan, "scan_one", lambda *a: []):
+                (st / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
+                res, _, lines = scan.scan(staged, st, st, st, dt.date(2026, 1, 1))
+        self.assertEqual(res["osv-scanner"], "passed")
+        self.assertIn("- note: osv-scanner did not scan 'base.txt', included by app/requirements.txt "
+                      "and not changed in this PR", lines)
 
     def test_scan_isolates_errors_and_reports_not_applicable(self):
         def fake(scanner, targets, *a):
@@ -447,6 +496,16 @@ class RealScanners(unittest.TestCase):
         dep = FIXTURES / "vulnerable-dependency"
         bad = self.scan_files("osv-scanner", {"package-lock.json": dep / "vulnerable/package-lock.fixture.json"})
         self.assertTrue(bad and all(f["path"] == "package-lock.json" for f in bad))
+
+    @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
+    def test_osv_missing_include_beside_a_good_input_is_a_finding(self):
+        with tempfile.TemporaryDirectory() as t:
+            req, mod = Path(t, "requirements.txt"), Path(t, "go.mod")
+            req.write_text("-r base-requirements.txt\n")
+            mod.write_text("module example.com/fixture\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.7\n")
+            got = self.scan_files("osv-scanner", {"app/requirements.txt": req, "svc/go.mod": mod})
+        empty = [f["path"] for f in got if f["rule"] == "no-packages"]
+        self.assertEqual(empty, ["app/requirements.txt"])  # go.mod was read; its own advisories may follow
 
 
 if __name__ == "__main__":

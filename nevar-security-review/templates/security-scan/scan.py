@@ -23,6 +23,8 @@ import datetime as dt
 import fnmatch
 import json
 import os
+import posixpath
+import re
 import secrets
 import shutil
 import stat
@@ -50,6 +52,8 @@ LOCKFILES = {
 }
 # Only the languages semgrep.yml has rules for: semgrep skips any other target, which reads as target-skipped.
 CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+# A pip include line in requirements.txt; osv-scanner reads the included file from the scanned tree.
+INCLUDE = re.compile(r"^\s*(?:--requirement|--constraint|-r|-c)[=\s]*(\S+)")
 OUTCOMES = ("passed", "not-applicable", "findings", "scanner-error")
 
 
@@ -232,9 +236,13 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
         for t in targets:
             argv += ["-L", str(Path(stage_dir) / t)]
         code, out = run(argv, ok=(0, 1, 128))
-        if code == 128:  # "no packages found": nothing was checked, so it is never a pass
-            return [{"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets]
-        return parse_osv(json.loads(out), stage_dir)
+        report = json.loads(out) if code != 128 else {}  # 128: no input yielded a package
+        read = {real_path(r.get("source", {}).get("path", ""), stage_dir)
+                for r in report.get("results", []) if r.get("packages")}
+        # Each input must yield packages: one OSV could not read (a missing include, a broken file)
+        # exits 0 when another input in the same run had packages, so per-input is the only check.
+        return parse_osv(report, stage_dir) + [
+            {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read]
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",
@@ -254,6 +262,19 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
             _, out = run([os.environ["SEMGREP_BIN"], *flags, *targets], cwd=stage_dir)
         return parse_semgrep(json.loads(out), stage_dir, targets)
     raise ValueError(scanner)
+
+
+def unstaged_includes(targets, staged, stage_dir):
+    """(requirements.txt, include) pairs OSV cannot see: only changed files are staged."""
+    out = []
+    for t in targets:
+        if PurePosixPath(t).name != "requirements.txt":
+            continue
+        for line in (Path(stage_dir) / t).read_text(errors="replace").splitlines():
+            m = INCLUDE.match(line)
+            if m and posixpath.normpath(posixpath.join(posixpath.dirname(t), m.group(1))) not in staged:
+                out.append((t, m.group(1)))
+    return out
 
 
 # ---------------------------------------------------------------- exceptions and outcome
@@ -346,6 +367,9 @@ def scan(staged, cfg, stage_dir, work, today):
         lines.append(f"- {scanner}: {results[scanner]} on {len(targets)} file(s), "
                      f"{len(kept)} finding(s), {len(excepted)} excepted")
         findings += kept
+        if scanner == "osv-scanner":  # an unchanged include is not scanned: say so, it is not covered
+            lines += [f"- note: osv-scanner did not scan {inc!r}, included by {t} and not changed in this PR"
+                      for t, inc in unstaged_includes(targets, staged, stage_dir)]
     for e in expired:
         lines.append(f"- expired exception (no longer applied): {e['scanner']} {e['rule']} "
                      f"{e['path']}, owner {e['owner']}, expired {e['expires']}")

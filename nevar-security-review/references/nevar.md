@@ -219,8 +219,10 @@ What the workflow does:
   so a rename never overwrites another file and no file can borrow another path's exception.
 - Each scanner runs only on the files it applies to:
   - gitleaks on every changed file;
-  - osv-scanner on lockfiles; a lockfile it finds no packages in (exit 128) is a `no-packages`
-    finding, never a pass, and takes a dated exception when the file is legitimately empty;
+  - osv-scanner on lockfiles; each lockfile must yield packages on its own, so one it finds
+    none in (a broken file, a `-r` include that is missing) is a `no-packages` finding even
+    when another lockfile in the same run was read. It is never a pass, and takes a dated
+    exception when the file is legitimately empty;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
     for, inside a pinned container with no network and a read-only mount. A repo that adds
@@ -300,4 +302,6 @@ above, merged first.
 - Fork PRs are unverified: the template checks out the head sha from the base repository,
   and GitHub serves fork heads there. The canary covers same-repo PRs only.
 - Files over the scanners' size limits and binary files are scanned as gitleaks sees them.
+- Only changed files are staged, so a `requirements.txt` include (`-r`, `-c`) that the PR
+  does not change is not scanned. The job summary names each one as a note.
   semgrep reports any target it skipped, as a finding.
