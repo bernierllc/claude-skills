@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.6.1
+version: 1.6.2
 author: Bernier LLC
 ---
 
@@ -128,7 +128,14 @@ bodies are dropped, and input `shlex` can't parse is split on every operator cha
 (every later word is tried as the command, in an unknown directory). Any shell form that rewrites the command after
 the hook sees it is out of scope: `bash -c`, `eval`, variables and command substitution. A parity test
 (`tests/test_pr_guard_parity.py`, in CI) replays every test and fixture input against the previous release and
-fails when a block is lost, unless the input is listed in its `ALLOWED_FLIPS` with a reason.
+fails when a block is lost, unless the input is listed in its `ALLOWED_FLIPS` with a reason. It reads the
+claude-skills repo's `origin/main` history, so a vendored copy (any checkout where this skill's parent dir is not
+the claude-skills repo root) skips it instead of failing (1.6.2). The guard checks the directory the command runs
+in: `tool_input.dir_path` (Gemini `run_shell_command`) first, then the session `cwd` (1.6.2). It checks every
+routed tool that carries a command (`tool_input` or `input`, `command` or `cmd`), whatever the harness names it
+(`Bash`, `mcp__…__Bash`, `run_shell_command`), reading the payload the way review-gate's merge guard does; a command
+that is present but not a string, or a string `tool_input` on a shell tool, blocks, and a string `tool_input` on any
+other tool (`apply_patch`) is not a shell call (1.6.2). 1.6.1 and earlier checked only `tool_name == "Bash"`.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.
