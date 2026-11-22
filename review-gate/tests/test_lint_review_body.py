@@ -63,7 +63,7 @@ r = subprocess.run([sys.executable, str(LINTER), "--help"], capture_output=True,
 assert r.returncode == 0 and r.stdout.startswith("usage:"), r
 r = subprocess.run([sys.executable, "-O", str(LINTER), "a", "b"], capture_output=True, text=True)
 assert r.returncode == 2 and r.stderr.startswith("usage:"), r
-# a symlinked linter finds the checker beside the real file; a missing or pre-review_region checker is exit 2
+# a symlinked linter finds the checker beside the real file; a missing or pre-3.5.0 checker is exit 2
 with __import__("tempfile").TemporaryDirectory() as d:
     d = Path(d)
     (d / "link.py").symlink_to(LINTER)
@@ -77,6 +77,10 @@ with __import__("tempfile").TemporaryDirectory() as d:
     (d / "check-review-gate.py").write_text("def evaluate(pr):\n    return []\n")  # a pre-3.2.8 checker
     r = subprocess.run([sys.executable, str(d / "lint-review-body.py")], input=OK, capture_output=True, text=True)
     assert r.returncode == 2 and "too old" in r.stderr and "Traceback" not in r.stderr, r.stderr
+    # a 3.2.8-3.4.x checker has review_region but no REVIEWER_CHOICES: also too old, never a Traceback
+    (d / "check-review-gate.py").write_text("def review_region(body):\n    return [], []\n")
+    r = subprocess.run([sys.executable, str(d / "lint-review-body.py")], input=OK, capture_output=True, text=True)
+    assert r.returncode == 2 and "no REVIEWER_CHOICES" in r.stderr and "Traceback" not in r.stderr, r.stderr
 
 # every banned construct in ## Review fails on its own line (line 5 + 1 = 6 here), naming it
 REVIEW_BAD = {

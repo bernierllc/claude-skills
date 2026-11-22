@@ -1,7 +1,7 @@
 ---
 name: adversarial-review
 description: Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.
-version: 2.2.0
+version: 2.3.0
 author: Bernier LLC
 ---
 
@@ -16,7 +16,7 @@ Durable form of `~/.claude/references/pr-review-loop.md`. Agents forget prose; i
 | Coding | Claude Opus → Cursor Auto | Not this skill |
 | Traffic cops | Codex mid (`gpt-6-astra`) | See `traffic-cop.md` |
 | **Adversarial review (this skill)** | **Codex high first** | Burn OpenAI review budget here |
-| Fallthrough | Antigravity (`agy`) → Claude Sonnet last | Record which ran |
+| Fallthrough | Antigravity (`agy`) → Cursor → Claude Sonnet last | Record which ran |
 
 ## When to run
 
@@ -24,13 +24,14 @@ After opening a PR or pushing commits to one. Never declare "ready" in the same 
 
 ## Reviewer order (fall through only when unavailable)
 
-1. **Codex first**
+1. **Codex first** (attest as `codex` when the GitHub Codex bot did not review this head)
    - **GitHub:** Codex reviews the PR's first head on open. **Never post a comment that mentions the Codex bot** (the at-sign followed by `codex`, e.g. asking it to review): each one starts a review on Matt's Codex quota (Program Cop, 2026-11-19). Every later head gets a fallback review (below) and the `Fallback review:` attestation line in `## Review` (see PR body). Only Matt's explicit ask overrides; then the command carries a `# codex-review-ok: <reason>` shell comment (colon optional), which `pr-merge-flow`'s guard requires.
    - **T3 parallel local:** `delegate_task` with `modelSelection` `{ "instanceId": "codex", "model": "gpt-6.1-sol" }` against the PR diff.
    - Unavailable: quota exhausted, not started within ~15 min of first request, or absent from the repo.
    - **After Codex completes:** if required check `Review Gate` is still red (parallel open/synchronize often failed before the review landed), re-fire the trusted `pull_request_target` workflow with a no-op label toggle (e.g. add then remove `review:refresh`) or a trivial PR body edit — do not wait on review-event Actions (those are intentionally disabled for security).
-2. **Antigravity (`agy`) headless** — outside Claude tokens. Inline the diff in the prompt; `--sandbox --dangerously-skip-permissions --model gemini-3.8-flash-high`. See `pr-review-loop.md` for the verified command shape.
-3. **Claude Sonnet / `superpowers:requesting-code-review`** — last resort only.
+2. **Antigravity (`agy`) headless** (attest as `agy`) — outside Claude tokens. Inline the diff in the prompt; `--sandbox --dangerously-skip-permissions --model gemini-3.8-flash-high`. See `pr-review-loop.md` for the verified command shape.
+3. **Cursor** (attest as `cursor`) — outside Claude tokens: in T3, `delegate_task` on a Cursor provider against the PR diff.
+4. **Claude Sonnet / `superpowers:requesting-code-review`** (attest as `claude-sonnet`) — last resort only.
 
 Standing consent: switch providers on unavailability without asking Matt again. No new subscriptions or weaker merge gates.
 
@@ -62,7 +63,7 @@ Maintain a `## Review` section naming which reviewer ran and the round count. Wh
 Fallback review: claude-sonnet on 89cda0610123456789abcdef0123456789abcdef — verdict: clean
 ```
 
-The exact format is `Fallback review: <reviewer> on <sha> — verdict: <verdict>` on one plain-text line. Allowed reviewers: `codex` (local Codex, e.g. T3 Codex high), `agy`, `antigravity`, `superpowers`, `claude-sonnet`. Allowed verdicts: `clean`, `findings fixed`. The SHA must be the full 40-hex current head OID (`gh pr view <n> --json headRefOid`); a prefix does not count. Lines containing `pending`, `running` or `TODO` are rejected, as are keyword-only prose, URLs and generated footers. After every push, rerun review before updating the attestation; never just copy the new SHA. See [review-gate](../review-gate/SKILL.md) for enforcement.
+The exact format is `Fallback review: <reviewer> on <sha> — verdict: <verdict>` on one plain-text line. Allowed reviewers: `codex` (local Codex, e.g. T3 Codex high), `agy`, `antigravity`, `cursor`, `superpowers`, `claude-sonnet`. Allowed verdicts: `clean`, `findings fixed`. The SHA must be the full 40-hex current head OID (`gh pr view <n> --json headRefOid`); a prefix does not count. Lines containing `pending`, `running` or `TODO` are rejected, as are keyword-only prose, URLs and generated footers. After every push, rerun review before updating the attestation; never just copy the new SHA. See [review-gate](../review-gate/SKILL.md) for enforcement.
 
 ## Plan / spec PRs
 

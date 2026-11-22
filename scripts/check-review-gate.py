@@ -58,8 +58,11 @@ def _is_blank(line: str) -> bool:
     return not line.strip(" \t")
 
 
+# The one list of fallback reviewers: the regex, the failure messages and the linter are built from it.
+FALLBACK_REVIEWERS = ("codex", "agy", "antigravity", "cursor", "superpowers", "claude-sonnet")
+REVIEWER_CHOICES = "<" + "|".join(FALLBACK_REVIEWERS) + ">"
 FALLBACK_ATTESTATION = re.compile(
-    r"Fallback review: (codex|agy|antigravity|superpowers|claude-sonnet) on "
+    rf"Fallback review: ({'|'.join(FALLBACK_REVIEWERS)}) on "
     r"([0-9a-f]{40}) — verdict: (clean|findings fixed)",
     re.I | re.A,
 )
@@ -567,7 +570,7 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
     ):
         reason = (
             "No completed Codex review on current head, and ## Review lacks a completed "
-            "fallback attestation: Fallback review: <codex|agy|antigravity|superpowers|claude-sonnet> "
+            f"fallback attestation: Fallback review: {REVIEWER_CHOICES} "
             "on <head SHA> — verdict: <clean|findings fixed>"
         )
         stale = codex_stale_state_shas(pr)
