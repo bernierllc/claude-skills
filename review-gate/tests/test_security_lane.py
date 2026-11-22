@@ -570,10 +570,20 @@ class GateWorkflowFile(unittest.TestCase):
         self.assertIn("toggle a label", out)
 
     def test_a_gate_run_without_a_workflow_sha_fails_closed(self):
-        for bad in ("", "not-a-sha"):
+        for bad in ("", "not-a-sha", "A" * 40, "9" * 39):
             with self.subTest(bad=bad):
                 rc, out = lane(fixture(), GITHUB_WORKFLOW_SHA=bad)
                 self.assertEqual(rc, 2, out)
+
+    def test_an_unreadable_blob_at_the_workflow_sha_fails_closed(self):
+        rc, out = lane(fixture(contents={f".github/workflows/review-gate.yml?ref={GATE_RUN_SHA}": None}))
+        self.assertEqual(rc, 2, out)
+
+    def test_the_gate_step_leaves_the_runner_variables_alone(self):
+        """(h) reads the runner's own GITHUB_ACTIONS and GITHUB_WORKFLOW_SHA; a YAML env override would forge them."""
+        gate = Path(__file__).resolve().parents[1] / "templates" / "review-gate.yml"
+        for step in yaml.safe_load(gate.read_text())["jobs"]["gate"]["steps"]:
+            self.assertFalse({"GITHUB_ACTIONS", "GITHUB_WORKFLOW_SHA"} & set(step.get("env", {})), step["name"])
 
     def test_outside_actions_it_is_skipped(self):
         rc, out = lane(fixture(contents=self.STALE), GITHUB_ACTIONS="")
@@ -587,10 +597,23 @@ class GateWorkflowFile(unittest.TestCase):
 class Timestamps(unittest.TestCase):
     """GitHub writes a trailing Z, which datetime.fromisoformat rejects before Python 3.11."""
 
+    class Py310(lane_module.datetime):
+        """fromisoformat as Python 3.10 has it: a trailing Z is an error. CI runs 3.12, which accepts it."""
+
+        @classmethod
+        def fromisoformat(cls, text):
+            if text.endswith("Z"):
+                raise ValueError(f"Invalid isoformat string: {text!r}")
+            return super().fromisoformat(text)
+
     def test_z_parses_as_utc(self):
-        self.assertEqual(lane_module._time("2099-01-01T12:00:00Z").utcoffset().total_seconds(), 0)
+        with mock.patch.object(lane_module, "datetime", self.Py310):
+            self.assertEqual(lane_module._time("2099-01-01T12:00:00Z").utcoffset().total_seconds(), 0)
 
     def test_a_z_clock_override_works(self):
+        with mock.patch.object(lane_module, "datetime", self.Py310), \
+                mock.patch.dict(os.environ, {"SECURITY_LANE_NOW": "2099-01-01T12:00:00Z"}):
+            self.assertEqual(lane_module.now_utc().year, 2099)
         rc, out = lane(fixture(), SECURITY_LANE_NOW="2099-01-01T12:00:00Z")
         self.assertEqual(rc, 0, out)
 
