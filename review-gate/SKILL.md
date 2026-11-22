@@ -163,7 +163,8 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
    Actions job's check run named `Security Scan` is forged. An unreadable listing, an annotation count that disagrees with `annotations_count`, or a head that moved
    exits 2 and fails closed. A line in `## Review`, or any `Security review:` / `Security scan:` line, that names a scanner
    (gitleaks, osv-scanner, zizmor, semgrep) with a pass word fails the gate unless the verified scan passed; with the lane
-   off such a claim always fails. `Security review:` lines are printed as ADVISORY/UNVERIFIED and never count.
+   off such a claim always fails, provided `scripts/check-security-scan.py` is on the default branch (without it the
+   lane is skipped and the claim is not checked; tracked as SKILLS-SEC-CLAIM-1). `Security review:` lines are printed as ADVISORY/UNVERIFIED and never count.
    Enforceable now: a-f and the claim rule, in this gate. Waits on trust: the scanner workflow (nevar-security-review
    template) and its canary proving the annotation and the re-fire; until then no repo enables the lane.
    Residuals: the scan usually finishes after the gate's own run, so the gate reads it incomplete until it is re-fired
