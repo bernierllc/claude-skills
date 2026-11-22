@@ -28,6 +28,7 @@ text is what the agent sees.
 
 Every tool call passes through here, so non-Bash input exits at once.
 """
+import base64
 import json
 import os
 import re
@@ -36,6 +37,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 SYNC_SUBCOMMANDS = {"merge", "pull", "rebase"}
 # Anything else, including UNKNOWN, fails open.
@@ -674,20 +676,40 @@ PR_URL = re.compile(r"https?://([^/]+)/([^/]+/[^/]+)/pull/\d+")
 GATE_TITLE = re.compile(r"Review Gate - PR #(\d+)")  # review-gate 3.2.6+ run-name
 
 
-def _api_lines(pr, path, jq, cwd, deadline):
+def _api(pr, path, jq, cwd, deadline):
     """`gh api --paginate` against the selected PR's own host and repo, parsed from its URL, so a URL
     selector or an Enterprise -R never falls back to the cwd's repo (#90 Codex P2). One JSON value per
-    line, never @tsv, whose escapes would not match the rollup's names (#90 Codex P2). None = unknown."""
+    line, never @tsv, whose escapes would not match the rollup's names (#90 Codex P2).
+
+    Returns (rows, None), or (None, why): why is "<status> <message>" from GitHub's error body (gh prints
+    it on stdout, e.g. "404 Branch not protected"), else gh's stderr, so callers can tell a documented
+    404 from a failure."""
     m = PR_URL.fullmatch(pr.get("url") or "")
     timeout = _left(deadline, 15)
-    if not m or timeout is None:
-        return None
+    if not m:
+        return None, "no PR URL"
+    if timeout is None:
+        return None, "gh time budget spent"
     try:
         out = subprocess.run(["gh", "api", "--hostname", m.group(1), "--paginate", f"repos/{m.group(2)}/{path}",
                               "--jq", f"{jq} | tojson"], cwd=cwd, capture_output=True, text=True, timeout=timeout)
-        return [json.loads(line) for line in out.stdout.splitlines()] if out.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"gh failed: {e}"
+    if out.returncode != 0:
+        try:
+            body = json.loads(out.stdout)
+            return None, f"{body['status']} {body['message']}"
+        except (ValueError, TypeError, KeyError):
+            return None, (out.stderr or "").strip() or f"gh exited {out.returncode}"
+    try:
+        return [json.loads(line) for line in out.stdout.splitlines()], None
+    except ValueError:
+        return None, "malformed JSON"
+
+
+def _api_lines(pr, path, jq, cwd, deadline):
+    """_api's rows; None = unknown."""
+    return _api(pr, path, jq, cwd, deadline)[0]
 
 
 def run_workflows(pr, cwd, deadline):
@@ -725,11 +747,198 @@ def run_jobs(run_id, pr, cwd, deadline):
     return {str(r[0]): (r[1], (r[2] or "").upper()) for r in rows or [] if len(r) == 3}
 
 
-def not_green(ref, repo="", cwd=None):
-    """Return '' when every check on the PR is green, else a description of why not.
+GH_ACTIONS_APP = 15368  # the GitHub Actions app: every Actions job's check run is published by it
+# Drift and consistency reports that may be red without blocking a merge: (job name, workflow path, event),
+# matched through provenance and check-run identity, never by name. Adding one is a claude-skills PR
+# labelled review:high (SKILL.md "What blocks a merge"); a deny-list test keeps tests, builds, security
+# scans and Review Gate off it. Values from review-gate/templates/review-gate-doctor.yml.
+ADVISORY_CHECKS = (("doctor", ".github/workflows/review-gate-doctor.yml", "pull_request"),)
+POLICY_FILE = ".github/required-checks.json"
 
-    cwd is the merge's effective dir: without -R, gh resolves the PR number in that dir's repo.
-    With -R the dir doesn't matter, so an unresolved one is ignored.
+
+def check_label(e):
+    return e.get("name") or e.get("context")
+
+
+def check_state(e):
+    return (e.get("conclusion") or e.get("state") or "PENDING").upper()
+
+
+def required_ok(e):
+    """A required check must have run and passed: unlike green(), SKIPPED and NEUTRAL do not count."""
+    return (e.get("conclusion") or e.get("state") or "").upper() == "SUCCESS"
+
+
+class Head:
+    """Lookups about one PR head, sharing the merge check's gh budget. `failed` collects (source, why)
+    for every lookup that did not resolve, which turns the advisory exemption off."""
+
+    def __init__(self, view, cwd, deadline):
+        self.view, self.cwd, self.deadline = view, cwd, deadline
+        self.sha = view.get("headRefOid") or ""
+        self.failed, self.jobs, self._runs = [], {}, None
+        self.workflows = run_workflows(view, cwd, deadline)
+
+    def lookup(self, source, path, jq, ok_404=None):
+        """_api rows, or None after recording the failure. A 404 whose message is ok_404 is an empty answer."""
+        rows, why = _api(self.view, path, jq, self.cwd, self.deadline)
+        if why == f"404 {ok_404}":
+            return []
+        if why:
+            self.failed.append((source, why))
+        return rows
+
+    def check_runs(self):
+        """[id, app id, name, details_url] of every check run on the head. filter=all: the default
+        (latest) drops superseded runs, whose job URLs a forged check run could then claim unopposed."""
+        if self._runs is None:
+            if re.fullmatch(r"[0-9a-f]{40}", self.sha):
+                rows = self.lookup("check-runs", f"commits/{self.sha}/check-runs?filter=all&per_page=100",
+                                   '.check_runs[] | [.id, .app.id, .name, (.details_url // "")]')
+            else:
+                rows = self.failed.append(("check-runs", "no head sha"))
+            self._runs = [r for r in rows or [] if len(r) == 4]
+        return self._runs
+
+    def ident(self, e):
+        """True when e is the Actions job its detailsUrl names: exactly one check run on the head claims
+        that job id, its own id is that job id, and GitHub Actions published it. detailsUrl, name and
+        conclusion are writable by anyone with Checks write, a check run's id and app are not, so a check
+        run copying a real job's URL makes the job claimed twice and authenticates neither."""
+        m = RUN_ID.search(e.get("detailsUrl") or "")
+        if not m:
+            return False
+        claims = [r for r in self.check_runs() if (c := RUN_ID.search(r[3] or "")) and c.group(2) == m.group(2)]
+        return len(claims) == 1 and str(claims[0][0]) == m.group(2) and claims[0][1] == GH_ACTIONS_APP
+
+    def prov(self, e):
+        """(workflow path, event) of THIS PR's Actions run when e is an authenticated job of it, else None:
+        the run is this PR's (run_workflows), the jobs API lists the job id with e's name and conclusion
+        (run_jobs), and the check run is that job's own (ident)."""
+        m = RUN_ID.search(e.get("detailsUrl") or "")
+        if not m or m.group(1) not in self.workflows:
+            return None
+        if m.group(1) not in self.jobs:
+            self.jobs[m.group(1)] = run_jobs(m.group(1), self.view, self.cwd, self.deadline)
+        if self.jobs[m.group(1)].get(m.group(2)) != (e.get("name"), (e.get("conclusion") or "").upper()):
+            return None
+        return self.workflows[m.group(1)] if self.ident(e) else None
+
+    def app_of(self, e):
+        """App id of check run e, or None when unknown. An Actions job's comes from ident() alone; any other
+        check run's when every REST check run with its name and details URL has the same app. Status
+        contexts have no app (schema 1 cannot pin them)."""
+        if not e.get("name"):
+            return None
+        if RUN_ID.search(e.get("detailsUrl") or ""):
+            return GH_ACTIONS_APP if self.ident(e) else None
+        apps = {r[1] for r in self.check_runs() if r[2] == e["name"] and (r[3] or "") == (e.get("detailsUrl") or "")}
+        return apps.pop() if len(apps) == 1 else None
+
+    def satisfies(self, e, pin):
+        if pin is None:
+            return True
+        if pin[0] == "app":
+            return self.app_of(e) == pin[1]
+        return self.prov(e) == pin[1:]
+
+
+def parse_policy(doc):
+    """Schema 1 of .github/required-checks.json -> {(name, pin)}, pin ("workflow", path, event) or ("app", id).
+    The file can only add requirements: it has no way to exempt a check. ValueError names the problem."""
+    if not isinstance(doc, dict):
+        raise ValueError("not a JSON object")
+    if set(doc) - {"schema", "required"}:
+        raise ValueError(f"unknown key {sorted(set(doc) - {'schema', 'required'})[0]!r}")
+    if type(doc.get("schema")) is not int or doc["schema"] != 1:
+        raise ValueError(f"unknown schema {doc.get('schema')!r}")
+    if not isinstance(doc.get("required"), list):
+        raise ValueError("required is not a list")
+    pins = {}
+    for e in doc["required"]:
+        name = e.get("name") if isinstance(e, dict) else None
+        if not isinstance(name, str) or not name:
+            raise ValueError("an entry has no name")
+        keys = set(e) - {"name"}
+        if keys - {"workflow", "event", "app_id"}:
+            raise ValueError(f"entry {name!r} has unknown key {sorted(keys - {'workflow', 'event', 'app_id'})[0]!r}")
+        if keys == {"workflow", "event"} and all(isinstance(e[k], str) and e[k] for k in keys):
+            pin = ("workflow", e["workflow"], e["event"])
+        elif keys == {"app_id"} and type(e["app_id"]) is int and e["app_id"] > 0:
+            pin = ("app", e["app_id"])
+        else:
+            raise ValueError(f"entry {name!r} needs exactly one pin: workflow + event, or app_id")
+        if pins.setdefault(name, pin) != pin:
+            raise ValueError(f"entry {name!r} is listed with conflicting pins")
+    return set(pins.items())
+
+
+def read_policy(h):
+    """(required, None) from the policy file on the repo's DEFAULT branch: the contents call carries no ref,
+    so neither a PR's head nor a base branch its author created can choose the policy. (None, None) when
+    the repo has not opted in (404), (None, why) when the file is unreadable or malformed."""
+    rows, why = _api(h.view, f"contents/{POLICY_FILE}", "[.type, .encoding, .content]", h.cwd, h.deadline)
+    if why == "404 Not Found":
+        return None, None
+    if why:
+        return None, why
+    try:
+        (kind, encoding, content), = rows
+        if (kind, encoding) != ("file", "base64"):
+            raise ValueError(f"not a base64 file ({kind}, {encoding})")
+        return parse_policy(json.loads(base64.b64decode(content))), None
+    except (ValueError, TypeError, RecursionError) as e:  # deep nesting overflows json before 3.14: a crash exits 1, an allow
+        return None, f"malformed: {e}"
+
+
+def branch_required(h, base):
+    """Required (context, pin) from the base branch's rulesets and classic protection; failures go to h.failed."""
+    path, req = quote(base, safe=""), set()
+    rules = h.lookup("rules", f"rules/branches/{path}?per_page=100",
+                     ".[] | [.type, (.parameters.required_status_checks // null)]")
+    for kind, checks in (r for r in rules or [] if len(r) == 2):
+        if kind != "required_status_checks":
+            continue
+        if not isinstance(checks, list) or not checks:
+            h.failed.append(("rules", "a required_status_checks rule lists no checks"))
+            continue
+        for c in checks:
+            if not isinstance(c, dict) or not isinstance(c.get("context"), str) or not c["context"]:
+                h.failed.append(("rules", "a required status check has no context"))
+                continue
+            iid = c.get("integration_id")
+            req.add((c["context"], ("app", iid) if type(iid) is int else None))
+    classic = h.lookup("classic protection", f"branches/{path}/protection/required_status_checks",
+                       "[.checks, .contexts]", ok_404="Branch not protected")
+    try:
+        for checks, contexts in classic or []:
+            if not isinstance(checks, list) or not isinstance(contexts, list):
+                raise ValueError("missing checks or contexts")
+            pinned = {(c["context"], ("app", c["app_id"]) if type(c.get("app_id")) is int and c["app_id"] > 0 else None)
+                      for c in checks}
+            # GitHub also lists every checks[] context in legacy contexts[]; re-adding it unpinned would
+            # let a same-named check from another app block a merge the pin allows.
+            req |= pinned | {(c, None) for c in contexts if c not in {n for n, _ in pinned}}
+    except (TypeError, KeyError, ValueError):
+        h.failed.append(("classic protection", "malformed response"))
+    return req
+
+
+def advisory_path(h, e, required_names):
+    """The pinned workflow path when red entry e is on ADVISORY_CHECKS, authenticated, and required by no source."""
+    if e.get("name") in required_names:
+        return None
+    return next((p for n, p, ev in ADVISORY_CHECKS if e.get("name") == n and h.prov(e) == (p, ev)), None)
+
+
+def not_green(ref, repo="", cwd=None, notes=None):
+    """Return '' when the PR's checks allow a merge, else a description of why not.
+
+    Without .github/required-checks.json on the default branch, every check must be green. With it,
+    required checks (policy file, rulesets, classic protection) must be present, pinned and SUCCESS, and
+    only ADVISORY_CHECKS entries may be red; their lines go to notes. A failed lookup turns that
+    exemption off. cwd is the merge's effective dir: without -R, gh resolves the PR number in that
+    dir's repo. With -R the dir doesn't matter, so an unresolved one is ignored.
     """
     if repo:
         cwd = None
@@ -738,7 +947,7 @@ def not_green(ref, repo="", cwd=None):
     deadline = time.monotonic() + GH_BUDGET_S
     try:
         out = subprocess.run(["gh", "pr", "view", *([ref] if ref else []), *(["-R", repo] if repo else []), "--json",
-                              "statusCheckRollup,mergeStateStatus,headRefOid,number,url,headRefName,headRepository"],
+                              "statusCheckRollup,mergeStateStatus,headRefOid,number,url,headRefName,headRepository,baseRefName"],
                              cwd=cwd, capture_output=True, text=True, timeout=8)
         if out.returncode != 0:
             return f"gh failed: {out.stderr.strip()}"
@@ -748,7 +957,7 @@ def not_green(ref, repo="", cwd=None):
         return f"gh failed: {e}"
     if not rollup:
         return "no checks reported yet"
-    workflows = run_workflows(view, cwd, deadline)
+    h = Head(view, cwd, deadline)
     # The rollup lists every workflow run on the head: a PR whose first Review Gate run failed
     # (body lacked `## Review`) keeps that red run after a newer run goes green. GitHub already
     # collapses re-attempts *within* a run (only the latest attempt is listed), so identity is the
@@ -759,32 +968,55 @@ def not_green(ref, repo="", cwd=None):
     # cannot be ordered, so all of them count (fail closed). The workflow is identified by the run's
     # file path and event from the Actions API, never by the editable `name:` (a PR can add a workflow
     # named `CI` whose green job would otherwise supersede the real CI failure), and an entry counts as
-    # that run's job only when the Actions jobs API lists its job id in that run with the same name
-    # and conclusion (detailsUrl is writable, so a custom check could claim any run). Status contexts,
-    # third-party check runs, another PR's runs on a shared head sha, and any entry without startedAt
-    # or a run id resolved to a workflow path of THIS PR are never collapsed and must be green on their own.
-    groups, latest, run_start, jobs = {}, [], {}, {}
+    # that run's job only when h.prov() authenticates it: the jobs API lists its job id in that run with
+    # the same name and conclusion, and the check run is that job's own (h.ident: a forged check run
+    # copying an old green job's URL with a later startedAt must not supersede a newer failed run).
+    # Status contexts, third-party check runs, another PR's runs on a shared head sha, and any entry
+    # without startedAt or an authenticated run of THIS PR are never collapsed and must be green on their own.
+    groups, latest, run_start = {}, [], {}
     for e in rollup:
         # gh serializes a missing startedAt as the zero time "0001-01-01T00:00:00Z", not null
-        m = RUN_ID.search(e.get("detailsUrl") or "")
-        # No parsable run id: run identity is unknown, so the entry supersedes nothing (fail closed).
-        if m and m.group(1) in workflows and m.group(1) not in jobs:
-            jobs[m.group(1)] = run_jobs(m.group(1), view, cwd, deadline)
-        if (m and m.group(1) in workflows and (e.get("startedAt") or "") > "0002"
-                and jobs[m.group(1)].get(m.group(2)) == (e.get("name"), (e.get("conclusion") or "").upper())):
-            run_key = m.group(1)
+        if (e.get("startedAt") or "") > "0002" and (wf := h.prov(e)):
+            run_key = RUN_ID.search(e["detailsUrl"]).group(1)
             # A run starts when its first job does, across ALL its jobs: a dependency-delayed job
             # in an older run must not make that run outrank a newer one.
             run_start[run_key] = min(run_start.get(run_key, e["startedAt"]), e["startedAt"])
-            groups.setdefault((workflows[run_key], e.get("name")), {}).setdefault(run_key, []).append(e)
+            groups.setdefault((wf, e.get("name")), {}).setdefault(run_key, []).append(e)
         else:
             latest.append(e)
     for runs in groups.values():
         newest = max(run_start[k] for k in runs)
         latest += [e for k, es in runs.items() if run_start[k] == newest for e in es]
-    bad = [f"{e.get('name') or e.get('context')}: {(e.get('conclusion') or e.get('state') or 'PENDING').upper()}"
-           for e in latest if not green(e)]
-    return ", ".join(bad)
+    bad = [e for e in latest if not green(e)]
+    required, why = read_policy(h)
+    req_lines, advisory = [], []
+    if required is not None or why:  # opted in (or the file is unreadable): requirements and advisory list
+        if why:
+            h.failed.append((POLICY_FILE, why))
+        req = set(required or ())
+        if view.get("baseRefName"):
+            req |= branch_required(h, view["baseRefName"])
+        else:
+            h.failed.append(("rules", "no base branch"))
+        for name, pin in sorted(req, key=repr):
+            matches = [e for e in latest if check_label(e) == name and h.satisfies(e, pin)]
+            if not matches:
+                req_lines.append(f"required check {name} is MISSING on {h.sha}")
+            req_lines += [f"required check {name} is {check_state(e)} on {h.sha}" for e in matches if not required_ok(e)]
+        names = {n for n, _ in req}
+        advisory = [(e, p) for e in bad if (p := advisory_path(h, e, names))]
+        if h.failed:  # any lookup that did not resolve turns the exemption off (never "none required")
+            advisory = []
+        bad = [e for e in bad if not any(e is a for a, _ in advisory)]
+    adv_lines = [f"advisory check {check_label(e)} is {check_state(e)} (pinned advisory: {p}); not blocking"
+                 for e, p in advisory]
+    if not bad and not req_lines:
+        if notes is not None:
+            notes += adv_lines
+        return ""
+    return "; ".join(filter(None, [", ".join(f"{check_label(e)}: {check_state(e)}" for e in bad), *req_lines,
+                                   *adv_lines, *(f"required-check lookup unavailable: {s} {w}; using the all-green rule"
+                                                 for s, w in h.failed)]))
 
 
 def polls(cmd):
@@ -815,8 +1047,8 @@ def join_continuations(cmd):
     return "".join(out)
 
 
-def check(cmd, cwd):
-    """Return a block message, or None to allow."""
+def check(cmd, cwd, notes=None):
+    """Return a block message, or None to allow. Lines the model should see on an allowed merge go to notes."""
     # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
     # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
     raw, cmd = cmd, join_continuations(cmd)
@@ -851,7 +1083,7 @@ def check(cmd, cwd):
         if not heads or not re.fullmatch(r"[0-9a-f]{40}", heads[-1]):
             return (f"Blocked: pin the reviewed head with its full 40-hex SHA: `gh pr merge {ref or '<n>'} --squash --match-head-commit <sha>` "
                     "(`--merge` for promotions into main), so a push after review cannot be merged unreviewed.")
-        why = not_green(ref, repo, d)
+        why = not_green(ref, repo, d, notes)
         if why:
             return (f"Blocked: checks are not all green for {ref or 'this branch'} ({why}): "
                     "wait for them (`gh pr checks <n> --watch --fail-fast` in the background) or fix the red "
@@ -900,10 +1132,13 @@ def main():
         return 0
     if data.get("tool_name") != "Bash":
         return 0
-    msg = check(data.get("tool_input", {}).get("command", ""), data.get("cwd") or os.getcwd())
+    notes = []
+    msg = check(data.get("tool_input", {}).get("command", ""), data.get("cwd") or os.getcwd(), notes)
     if msg:
         print(msg, file=sys.stderr)
         return 2
+    if notes:  # exit-0 stdout reaches the model only as hookSpecificOutput.additionalContext JSON
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n".join(notes)}}))
     return 0
 
 def fb_log(subject: str, severity: str, summary: str) -> None:

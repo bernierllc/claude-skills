@@ -1,6 +1,8 @@
 """Run: python3 pr-merge-flow/tests/test_pr_guard.py  (no framework; exits non-zero on failure)."""
+import base64
 import importlib.util
 from pathlib import Path
+from urllib.parse import quote
 
 spec = importlib.util.spec_from_file_location("g", Path(__file__).parent.parent / "scripts" / "pr-guard.py")
 g = importlib.util.module_from_spec(spec)
@@ -117,14 +119,31 @@ def _jq(args, body, api_rc):
     assert out.returncode == 0, out.stderr
     return _R(0, out.stdout)
 
+def _gh_error(status, message):
+    """What gh returns for an HTTP error: exit 1, GitHub's JSON error body on stdout, a summary on stderr."""
+    body = {"message": message, "documentation_url": "https://docs.github.com/rest", "status": str(status)}
+    return _R(1, json.dumps(body, separators=(",", ":")), f"gh: {message} (HTTP {status})")
+
+NOT_FOUND, NOT_PROTECTED = _gh_error(404, "Not Found"), _gh_error(404, "Branch not protected")
+ACTIONS_APP = 15368
+
 def _gh(rc=0, rollup=None, err="", paths=None, api_rc=0, events=None, forged=(), owners=None, titles=None,
-        branches=None, host="github.com", calls=None):
+        branches=None, host="github.com", calls=None, check_runs=None, cr=None, policy=NOT_FOUND, rules=(),
+        protection=NOT_PROTECTED, base="main"):
     """`gh pr view` returns the rollup for PR o/r#5 (head branch feat); `gh api .../actions/runs` resolves
     each run id to its workflow file. By default a run's path follows its workflowName; `paths` overrides
     it per run id (None = the API does not list that run), `events` the event, `owners` its pull_requests
     numbers (default [5]), `titles` its display_title, `branches` its head branch. `.../runs/<id>/jobs`
     lists every rollup entry's job as real, except entries in `forged` (custom checks with a borrowed
-    detailsUrl). Every gh api call must target the PR's own host and repo; `calls` collects them."""
+    detailsUrl). Every gh api call must target the PR's own host and repo; `calls` collects them.
+
+    `.../commits/<sha>/check-runs` lists one REST check run per named rollup entry, as GitHub does: an
+    Actions job's id is its job id, a forged entry (borrowed detailsUrl) gets an id of its own, a check run
+    without a job URL gets an id of its own; app is `_app` (default GitHub Actions for job URLs, 99 else).
+    `check_runs` replaces that list, `cr` (a _R) fails the call. `policy` is the default branch's
+    .github/required-checks.json: a dict (encoded as the contents API does), a str (raw file text), or a
+    _R error (default 404). `rules` lists the base branch's rules, `protection` the classic
+    required_status_checks body, each a _R to fail."""
     def run(args, *a, **k):
         if args[:2] == ["gh", "api"]:
             assert args[args.index("--hostname") + 1] == host, args
@@ -132,6 +151,36 @@ def _gh(rc=0, rollup=None, err="", paths=None, api_rc=0, events=None, forged=(),
             assert path.startswith("repos/o/r/"), args
             if calls is not None:
                 calls.append(args)
+        if args[:2] == ["gh", "api"] and api_rc:
+            return _R(api_rc, "", "boom")
+        if args[:2] == ["gh", "api"] and "/check-runs" in path:
+            assert path == f"repos/o/r/commits/{HEAD_SHA}/check-runs?filter=all&per_page=100", args
+            if cr is not None:
+                return cr
+            runs = check_runs
+            if runs is None:
+                runs = []
+                for k, e in enumerate(rollup or []):
+                    if not e.get("name"):
+                        continue  # a status context is not a check run
+                    m = g.RUN_ID.search(e.get("detailsUrl") or "")
+                    real = m and id(e) not in {id(f) for f in forged}
+                    runs.append({"id": int(m.group(2)) if real else 900000 + k,
+                                 "app": {"id": e.get("_app", ACTIONS_APP if m else 99)},
+                                 "name": e["name"], "details_url": e.get("detailsUrl")})
+            return _jq(args, {"check_runs": runs}, 0)
+        if args[:2] == ["gh", "api"] and "/contents/" in path:
+            assert path == "repos/o/r/contents/.github/required-checks.json", args  # no ref: the default branch
+            if isinstance(policy, _R):
+                return policy
+            text = policy if isinstance(policy, str) else json.dumps(policy)
+            return _jq(args, {"type": "file", "encoding": "base64", "content": base64.b64encode(text.encode()).decode()}, 0)
+        if args[:2] == ["gh", "api"] and "/rules/branches/" in path:
+            assert path == f"repos/o/r/rules/branches/{quote(base, safe='')}?per_page=100", args
+            return rules if isinstance(rules, _R) else _jq(args, list(rules), 0)
+        if args[:2] == ["gh", "api"] and "/protection/required_status_checks" in path:
+            assert path == f"repos/o/r/branches/{quote(base, safe='')}/protection/required_status_checks", args
+            return protection if isinstance(protection, _R) else _jq(args, protection, 0)
         if args[:2] == ["gh", "api"] and "/jobs?" in path:
             run_id = re.search(r"/runs/(\d+)/jobs", path).group(1)
             jobs = [{"id": int(m.group(2)), "name": e.get("name"), "conclusion": e.get("conclusion") or None}
@@ -153,7 +202,7 @@ def _gh(rc=0, rollup=None, err="", paths=None, api_rc=0, events=None, forged=(),
             return _jq(args, {"workflow_runs": out}, api_rc)
         return _R(rc, json.dumps({"statusCheckRollup": rollup, "headRefOid": HEAD_SHA, "number": 5,
                                   "url": f"https://{host}/o/r/pull/5", "headRefName": "feat",
-                                  "headRepository": {"nameWithOwner": "o/r"}}), err)
+                                  "headRepository": {"nameWithOwner": "o/r"}, "baseRefName": base}), err)
     return run
 
 _run = g.subprocess.run
@@ -291,7 +340,7 @@ for bad, name in [({"name": "pytest", "conclusion": "CANCELLED"}, "pytest: CANCE
 _run_ids = iter(range(1000, 10**6))
 def run(name, concl, at, wf="Review Gate"):  # each call is its own workflow run, as gh reports it
     return {"name": name, "workflowName": wf, "conclusion": concl, "startedAt": at,
-            "detailsUrl": f"https://github.com/o/r/actions/runs/{next(_run_ids)}/job/1"}
+            "detailsUrl": "https://github.com/o/r/actions/runs/{0}/job/{0}".format(next(_run_ids))}
 old_red = [run("Review Gate", "FAILURE", "2026-11-15T10:00:00Z"), run("Review Gate", "CANCELLED", "2026-11-15T10:05:00Z")]
 latest_ok = run("Review Gate", "SUCCESS", "2026-11-15T10:10:00Z")
 assert merge("gh pr merge 5 --squash --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", rollup=ok + old_red + [latest_ok]) is None
@@ -772,6 +821,284 @@ for pre in ("command ", "command -p ", "command -- ", "command -p -- "):
 # `command -v`/`-V` only look the name up; nothing runs.
 assert calls("command -v git merge origin/main") == []
 assert not g.draft_violation("command -V gh pr create --draft")
+
+
+# ---- 1.6.0: required checks must pass, only pinned advisory checks may be red ----
+# plans/2026-11-22-pr-guard-required-vs-advisory-checks.md (revision 2). Test numbers follow the plan.
+PIN = "gh pr merge 5 --squash --match-head-commit " + HEAD_SHA
+_nid = iter(range(3000, 10**6))
+def ck(name, concl="SUCCESS", wf="CI", at="2026-11-22T10:00:00Z", run_id=None, job_id=None):
+    """One Actions job in the rollup. Its workflow file follows wf (the stub's rule): CI -> ci.yml,
+    Review Gate Doctor -> review-gate-doctor.yml. Each call is its own run unless run_id is given."""
+    return {"name": name, "workflowName": wf, "conclusion": concl, "startedAt": at,
+            "detailsUrl": f"https://github.com/o/r/actions/runs/{run_id or next(_nid)}/job/{job_id or next(_nid)}"}
+def rid(e):
+    return g.RUN_ID.search(e["detailsUrl"]).group(1)
+def guard(rollup, notes=None, cmd=PIN, **kw):
+    g.subprocess.run = _gh(rollup=rollup, **kw)
+    try:
+        return g.check(cmd, "/r", notes)
+    finally:
+        g.subprocess.run = _run
+DOCTOR_PATH = ".github/workflows/review-gate-doctor.yml"
+ADVISORY_NOTE = f"advisory check doctor is FAILURE (pinned advisory: {DOCTOR_PATH}); not blocking"
+LOOKUP = "required-check lookup unavailable: "
+RULESET_GATE = [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "Review Gate"}]}},
+                {"type": "pull_request", "parameters": {}}]
+EMPTY = {"schema": 1, "required": []}
+TB_CI = {"schema": 1, "required": [{"name": "Test & Build", "workflow": ".github/workflows/ci.yml", "event": "pull_request"}]}
+gate = ck("Review Gate", wf="Review Gate")
+doctor_red = ck("doctor", "FAILURE", wf="Review Gate Doctor")
+doctor_ok = ck("doctor", wf="Review Gate Doctor")
+
+# Mock validation: the stub's GitHub shapes match responses recorded from the real API (fixtures/github-recorded.json).
+REC = json.loads((Path(__file__).parent / "fixtures" / "github-recorded.json").read_text())
+for key, (status, message) in {"contents_not_found": (404, "Not Found"), "branch_not_protected": (404, "Branch not protected")}.items():
+    real, stub = REC["errors"][key], _gh_error(status, message)
+    assert (real["rc"], real["stderr"]) == (stub.returncode, stub.stderr), (key, real, stub.stderr)
+    assert set(json.loads(real["stdout"])) == set(json.loads(stub.stdout)), key
+    assert {k: v for k, v in json.loads(real["stdout"]).items() if k != "documentation_url"} == \
+        {k: v for k, v in json.loads(stub.stdout).items() if k != "documentation_url"}, key
+def _replay(rows):
+    """gh replaying the recorded check-runs body for the recorded head, through the guard's own --jq."""
+    def run(args, *a, **k):
+        assert args[:2] == ["gh", "api"] and "/check-runs?filter=all" in next(x for x in args if x.startswith("repos/")), args
+        return _jq(args, rows, 0)
+    return run
+_view = {"headRefOid": REC["head_sha"], "url": "https://github.com/o/r/pull/5"}
+g.subprocess.run = _replay(REC["check_runs"])
+try:
+    _h = g.Head.__new__(g.Head)
+    _h.view, _h.cwd, _h.deadline, _h.sha = _view, None, g.time.monotonic() + 15, REC["head_sha"]
+    _h.failed, _h.jobs, _h._runs = [], {}, None
+    # Every real Actions job in the real rollup authenticates against the real check-runs list (re-attempts included).
+    assert all(_h.ident(e) for e in REC["rollup"]), REC["rollup"]
+    recorded = {tuple(r) for r in _h.check_runs()}
+finally:
+    g.subprocess.run = _run
+g.subprocess.run = _gh(rollup=[dict(e) for e in REC["rollup"]])
+try:
+    _s = g.Head({"headRefOid": HEAD_SHA, "url": "https://github.com/o/r/pull/5"}, None, g.time.monotonic() + 15)
+    synthesized = {tuple(r) for r in _s.check_runs()}
+finally:
+    g.subprocess.run = _run
+assert synthesized <= recorded, synthesized - recorded  # the stub's rule (id = job id, app 15368) is GitHub's
+g.subprocess.run = _gh(rollup=[gate], rules=REC["rules"], protection=REC["classic_protection"])
+try:
+    _s = g.Head({"headRefOid": HEAD_SHA, "url": "https://github.com/o/r/pull/5"}, None, g.time.monotonic() + 15)
+    assert g.branch_required(_s, "main") == {("Review Gate", None), ("continuous-integration/travis-ci", None)}
+    assert _s.failed == [], _s.failed
+finally:
+    g.subprocess.run = _run
+
+# 1. The incident (nevar-aec-catalog #14): ruleset requires Review Gate (green), empty policy file, pinned doctor red.
+notes = []
+assert guard([gate, doctor_red], notes, policy=EMPTY, rules=RULESET_GATE) is None
+assert notes == [ADVISORY_NOTE], notes
+
+# 2. No policy file (404): today's 1.5.x block, no lookup line, and no rules or protection calls (round-3 P2 #1).
+calls_seen = []
+m = guard([gate, doctor_red], rules=RULESET_GATE, calls=calls_seen)
+assert m == ("Blocked: checks are not all green for 5 (doctor: FAILURE): wait for them "
+             "(`gh pr checks <n> --watch --fail-fast` in the background) or fix the red check, then merge."), m
+assert "lookup" not in m and "advisory" not in m
+assert not [c for c in calls_seen if any("/rules/" in x or "/protection/" in x for x in c)], calls_seen
+notes = []
+assert guard([gate, doctor_ok], notes) is None and notes == []
+
+# 3. A non-required red that is not on the advisory list still blocks.
+for name in ("Test & Build", "Security Scan", "CodeQL"):
+    m = guard([gate, ck(name, "FAILURE")], policy=EMPTY, rules=RULESET_GATE)
+    assert m and f"{name}: FAILURE" in m and "advisory" not in m, (name, m)
+
+# 4. Forged advisory: the name alone earns nothing.
+m = guard([gate, ck("doctor", "FAILURE", wf="Evil")], policy=EMPTY, rules=RULESET_GATE)  # .github/workflows/evil.yml
+assert m and "doctor: FAILURE" in m and "advisory" not in m, m
+push_doc = ck("doctor", "FAILURE", wf="Review Gate Doctor")
+m = guard([gate, push_doc], policy=EMPTY, rules=RULESET_GATE, events={rid(push_doc): "push"})  # right path, wrong event
+assert m and "doctor: FAILURE" in m and "advisory" not in m, m
+copy = dict(doctor_red)  # its own check run copying the real doctor's job URL, name and conclusion
+m = guard([gate, doctor_red, copy], policy=EMPTY, rules=RULESET_GATE, forged=(copy,))
+assert m and m.count("doctor: FAILURE") == 2 and "advisory" not in m, m  # the real doctor loses its exemption too
+third_party = dict(doctor_red, _app=4242)  # right URL, published by another app: not the Actions job
+m = guard([gate, third_party], policy=EMPTY, rules=RULESET_GATE)
+assert m and "doctor: FAILURE" in m and "advisory" not in m, m
+
+# 4a. Forged supersede, the exact round-2 attack (round-3 P2 #2), in every mode: run A's build is green; the newer
+# run B's build failed and its lint passed. A separate green check run copies B's lint job URL, name and conclusion
+# with a writable started_at of 2000. On 1.5.4 that dragged run B's start before run A's, so B's failed build was
+# discarded and A's green build satisfied the check. The forged entry fails identity, so it moves no run start.
+build_a = ck("build", "SUCCESS", at="2026-11-22T10:00:00Z", run_id=4100, job_id=4101)
+build_b = ck("build", "FAILURE", at="2026-11-22T10:10:00Z", run_id=4200, job_id=4201)
+lint_b = ck("lint", "SUCCESS", at="2026-11-22T10:10:00Z", run_id=4200, job_id=4202)
+lint_forged = dict(lint_b, startedAt="2000-01-01T00:00:00Z")
+pinned_build = {"schema": 1, "required": [{"name": "build", "workflow": ".github/workflows/ci.yml", "event": "pull_request"}]}
+for mode in ({}, {"policy": EMPTY, "rules": RULESET_GATE}, {"policy": pinned_build, "rules": RULESET_GATE}):
+    m = guard([gate, build_a, build_b, lint_b, lint_forged], forged=(lint_forged,), **mode)
+    assert m and "build: FAILURE" in m, (mode, m)
+    # ...and with the check-runs call failing nothing authenticates, so nothing collapses: B's failed build blocks.
+    m = guard([gate, build_a, build_b, lint_b], cr=_gh_error(500, "Server Error"), **mode)
+    assert m and "build: FAILURE" in m, (mode, m)
+    # The outage is named in every mode, also without a policy file: it is why nothing collapsed.
+    assert LOOKUP + "check-runs 500 Server Error; using the all-green rule" in m, (mode, m)
+assert guard([gate, build_a, build_b, lint_b, lint_forged], forged=(lint_forged,), cmd=PIN + " # codex-review-ok: x")
+# The control: without the forgery, a newer green build in run B supersedes run A's failure.
+assert guard([gate, ck("build", "FAILURE", at="2026-11-22T10:00:00Z", run_id=4300), ck("build", at="2026-11-22T10:10:00Z", run_id=4400)],
+             policy=pinned_build, rules=RULESET_GATE) is None
+
+# 5. On the advisory list but required (ruleset or policy file): blocks.
+both = [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "Review Gate"}, {"context": "doctor"}]}}]
+m = guard([gate, doctor_red], policy=EMPTY, rules=both)
+assert m and "doctor: FAILURE" in m and "required check doctor is FAILURE" in m and "advisory" not in m, m
+m = guard([gate, doctor_red], rules=RULESET_GATE,
+          policy={"schema": 1, "required": [{"name": "doctor", "workflow": DOCTOR_PATH, "event": "pull_request"}]})
+assert m and "required check doctor is FAILURE" in m and "advisory" not in m, m
+
+# 6. A required check missing from the rollup blocks.
+m = guard([gate], policy=TB_CI, rules=RULESET_GATE)
+assert m and f"required check Test & Build is MISSING on {HEAD_SHA}" in m, m
+
+# 7. A required pin that is not satisfied counts as missing.
+m = guard([gate, ck("Test & Build", wf="Other")], policy=TB_CI, rules=RULESET_GATE)  # a PR-added other.yml
+assert m and "required check Test & Build is MISSING" in m, m
+APP = {"schema": 1, "required": [{"name": "Deploy preview", "app_id": 4242}]}
+preview = {"name": "Deploy preview", "conclusion": "SUCCESS", "detailsUrl": "https://deploy.example/p/5"}
+m = guard([gate, dict(preview, _app=99)], policy=APP, rules=RULESET_GATE)
+assert m and "required check Deploy preview is MISSING" in m, m
+m = guard([gate, {"context": "Deploy preview", "state": "SUCCESS"}], policy=APP, rules=RULESET_GATE)  # status contexts: no app
+assert m and "required check Deploy preview is MISSING" in m, m
+assert guard([gate, dict(preview, _app=4242)], policy=APP, rules=RULESET_GATE) is None
+m = guard([gate, ck("Review Gate", wf="Spoof")], policy=EMPTY, rules=[  # ruleset integration_id pins the app
+    {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "Review Gate", "integration_id": 4242}]}}])
+assert m and "required check Review Gate is MISSING" in m, m
+
+# 7a. Classic protection lists a checks[] pin in legacy contexts[] too (as the recorded body does): the pin alone
+# decides, so a same-named SKIPPED check from another app does not block (review thread r4658452439).
+CLASSIC_PINNED = dict(REC["classic_protection"], checks=[dict(REC["classic_protection"]["checks"][0], app_id=4242)])
+travis = {"name": "continuous-integration/travis-ci", "conclusion": "SUCCESS", "detailsUrl": "https://travis.example/b/5"}
+other_app = dict(travis, conclusion="SKIPPED", detailsUrl="https://other.example/c/5", _app=99)
+g.subprocess.run = _gh(rollup=[gate], protection=CLASSIC_PINNED)
+try:
+    _s = g.Head({"headRefOid": HEAD_SHA, "url": "https://github.com/o/r/pull/5"}, None, g.time.monotonic() + 15)
+    assert g.branch_required(_s, "main") == {("continuous-integration/travis-ci", ("app", 4242))}
+finally:
+    g.subprocess.run = _run
+assert guard([gate, dict(travis, _app=4242), other_app],
+             policy=EMPTY, rules=RULESET_GATE, protection=CLASSIC_PINNED) is None
+m = guard([gate, other_app], policy=EMPTY, rules=RULESET_GATE, protection=CLASSIC_PINNED)
+assert m and "required check continuous-integration/travis-ci is MISSING" in m, m  # the pin is still required
+
+# 8. A required check must be SUCCESS: pending, cancelled, skipped and neutral each block and name the state.
+for concl, state in (("", "PENDING"), ("CANCELLED", "CANCELLED"), ("SKIPPED", "SKIPPED"), ("NEUTRAL", "NEUTRAL")):
+    m = guard([gate, ck("Test & Build", concl)], policy=TB_CI, rules=RULESET_GATE)
+    assert m and f"required check Test & Build is {state} on {HEAD_SHA}" in m, (concl, m)
+m = guard([gate, ck("Test & Build", run_id=4500), ck("Test & Build", "SKIPPED", run_id=4500)], policy=TB_CI, rules=RULESET_GATE)
+assert m and "required check Test & Build is SKIPPED" in m and "is SUCCESS" not in m, m  # the matrix sibling
+
+# 9. A superseded run: the newest run of a required job decides; two failed doctor runs stay advisory.
+assert guard([gate, ck("Test & Build", "FAILURE", at="2026-11-22T10:00:00Z"), ck("Test & Build", at="2026-11-22T10:10:00Z")],
+             policy=TB_CI, rules=RULESET_GATE) is None
+m = guard([gate, ck("Test & Build", at="2026-11-22T10:00:00Z"), ck("Test & Build", "FAILURE", at="2026-11-22T10:10:00Z")],
+          policy=TB_CI, rules=RULESET_GATE)
+assert m and "required check Test & Build is FAILURE" in m, m
+notes = []
+assert guard([gate, ck("doctor", "FAILURE", wf="Review Gate Doctor", at="2026-11-22T10:00:00Z"),
+              ck("doctor", "FAILURE", wf="Review Gate Doctor", at="2026-11-22T10:10:00Z")], notes,
+             policy=EMPTY, rules=RULESET_GATE) is None
+assert notes == [ADVISORY_NOTE], notes  # one line: the older run is superseded
+
+# 10. Every lookup failure turns the advisory exemption off, names itself, and changes nothing when all is green.
+FAIL = {
+    "rules exit (network)": ({"rules": _R(1, "", "error connecting to api.github.com")}, "rules error connecting"),
+    "rules 403": ({"rules": _gh_error(403, "Resource not accessible by integration")}, "rules 403 Resource not accessible"),
+    "rules 404 other": ({"rules": _gh_error(404, "Not Found")}, "rules 404 Not Found"),
+    "protection 403": ({"protection": _gh_error(403, "Resource not accessible by integration")}, "classic protection 403"),
+    "protection 404 other": ({"protection": _gh_error(404, "Branch not found")}, "classic protection 404 Branch not found"),
+    "rules malformed JSON": ({"rules": _R(0, "not json\n")}, "rules malformed JSON"),
+    "protection missing fields": ({"protection": {"url": "x"}}, "classic protection malformed response"),
+    "rules truncated page": ({"rules": _R(1, '["pull_request",null]\n', "gh: Server Error (HTTP 502)")}, "rules gh: Server Error"),
+    "rule lists no checks": ({"rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": []}}]},
+                             "rules a required_status_checks rule lists no checks"),
+    "rule without parameters": ({"rules": [{"type": "required_status_checks"}]}, "rules a required_status_checks rule lists no checks"),
+    "policy 403": ({"policy": _gh_error(403, "Resource not accessible by integration")}, ".github/required-checks.json 403"),
+    "policy 500": ({"policy": _gh_error(500, "Server Error")}, ".github/required-checks.json 500 Server Error"),
+    "policy nested too deep": ({"policy": "[" * 1000000 + "]" * 1000000}, ".github/required-checks.json malformed: "),
+    "check-runs 500": ({"cr": _gh_error(500, "Server Error")}, "check-runs 500 Server Error"),
+}
+for case, (kw, line) in FAIL.items():
+    kw = {"policy": EMPTY, "rules": RULESET_GATE, **kw}
+    m = guard([gate, doctor_red], **kw)
+    assert m and "doctor: FAILURE" in m and LOOKUP + line in m and "using the all-green rule" in m and "advisory" not in m, (case, m)
+    notes = []
+    assert guard([gate, doctor_ok], notes, **kw) is None and notes == [], case
+# 4i (a rollup that cannot be confirmed complete) has no signal to test: a missing required check reports MISSING,
+# and the exemption only ever applies to an entry that is present, so a truncated rollup cannot exempt a hidden red.
+
+# 10a. A partial failure keeps what did resolve.
+m = guard([gate, doctor_ok], policy=TB_CI, rules=_gh_error(403, "Resource not accessible by integration"))
+assert m and "required check Test & Build is MISSING" in m and LOOKUP + "rules 403" in m, m
+m = guard([ck("Test & Build")], policy=_gh_error(403, "Resource not accessible by integration"), rules=RULESET_GATE)
+assert m and "required check Review Gate is MISSING" in m and LOOKUP + ".github/required-checks.json 403" in m, m
+
+# 11. A malformed policy file is a failed lookup that names the file and the problem.
+for doc, problem in (({"schema": 2, "required": []}, "unknown schema 2"), ({"schema": True, "required": []}, "unknown schema True"),
+                     ({"required": []}, "unknown schema None"),
+                     ({"schema": 1, "required": [{"name": "x"}]}, "entry 'x' needs exactly one pin"),
+                     ({"schema": 1, "required": [{"name": "x", "app_id": 1, "workflow": "w", "event": "e"}]}, "entry 'x' needs exactly one pin"),
+                     ({"schema": 1, "required": [{"name": "x", "workflow": "w"}]}, "entry 'x' needs exactly one pin"),
+                     ({"schema": 1, "required": [{"name": "x", "app_id": "1"}]}, "entry 'x' needs exactly one pin"),
+                     ({"schema": 1, "required": [], "advisory": ["build"]}, "unknown key 'advisory'"),
+                     ({"schema": 1, "required": [{"name": "x", "app_id": 1, "exempt": True}]}, "entry 'x' has unknown key 'exempt'"),
+                     ({"schema": 1, "required": [{"name": "x", "app_id": 1}, {"name": "x", "app_id": 2}]}, "conflicting pins"),
+                     ({"schema": 1, "required": {"x": 1}}, "required is not a list"),
+                     ({"schema": 1, "required": [{"app_id": 1}]}, "an entry has no name"),
+                     ([], "not a JSON object"), ("{not json", "malformed: ")):
+    m = guard([gate, doctor_red], policy=doc, rules=RULESET_GATE)
+    assert m and "doctor: FAILURE" in m and LOOKUP + ".github/required-checks.json malformed: " in m and problem in m, (doc, m)
+assert g.parse_policy({"schema": 1, "required": [{"name": "x", "app_id": 1}, {"name": "x", "app_id": 1}]}) == {("x", ("app", 1))}
+
+# 12. Output channel: on an allowed merge the advisory line reaches the model as PreToolUse additionalContext JSON
+# (plain exit-0 stdout does not: code.claude.com/docs/en/hooks), through the real main().
+import contextlib, io
+def hook(cmd, **kw):
+    g.subprocess.run = _gh(**kw)
+    out, err, stdin = io.StringIO(), io.StringIO(), g.sys.stdin
+    g.sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/r"}))
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = g.main()
+    finally:
+        g.subprocess.run, g.sys.stdin = _run, stdin
+    return rc, out.getvalue(), err.getvalue()
+rc, out, err = hook(PIN, rollup=[gate, doctor_red], policy=EMPTY, rules=RULESET_GATE)
+assert rc == 0 and err == "" and json.loads(out) == {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": ADVISORY_NOTE}}, (rc, out, err)
+assert hook(PIN, rollup=[gate, doctor_ok], policy=EMPTY, rules=RULESET_GATE) == (0, "", "")
+rc, out, err = hook(PIN, rollup=[gate, doctor_red], rules=RULESET_GATE)
+assert rc == 2 and out == "" and "doctor: FAILURE" in err, (rc, out, err)
+
+# 13. No bypass: override comments and environment variables leave tests 3-8 blocked.
+BLOCKED = [([gate, ck("Test & Build", "FAILURE")], {"policy": EMPTY}), ([gate, ck("doctor", "FAILURE", wf="Evil")], {"policy": EMPTY}),
+           ([gate, doctor_red], {"policy": EMPTY, "rules": both}), ([gate], {"policy": TB_CI}),
+           ([gate, ck("Test & Build", wf="Other")], {"policy": TB_CI}), ([gate, ck("Test & Build", "SKIPPED")], {"policy": TB_CI})]
+for suffix in (" # advisory-ok: doctor", " # codex-review-ok: x", " # sync-base: need abc"):
+    for rollup, kw in BLOCKED:
+        assert guard(rollup, cmd=PIN + suffix, **{"rules": RULESET_GATE, **kw}), (suffix, rollup)
+for prefix in ("ADVISORY_OK=1 ", "PR_GUARD_ALLOW_RED=1 ", "env SKIP_CHECKS=1 "):
+    for rollup, kw in BLOCKED:
+        assert guard(rollup, cmd=prefix + PIN, **{"rules": RULESET_GATE, **kw}), (prefix, rollup)
+
+# 14. Deny-list: tests, builds, security scans and Review Gate are never advisory.
+assert g.ADVISORY_CHECKS == (("doctor", DOCTOR_PATH, "pull_request"),)
+for name, path, event in g.ADVISORY_CHECKS:
+    assert name not in ("Review Gate", "Security Scan") and not re.search(r"test|build|codeql|security|review.gate", name, re.I), name
+    assert path.startswith(".github/workflows/") and event in ("pull_request", "pull_request_target", "push"), (path, event)
+
+# 16. The policy comes from the default branch: a PR into a contributor-made base cannot pick its own copy. The stub
+# asserts the contents call carries no ref, and the base's rules are read with the base's name encoded.
+calls_seen = []
+m = guard([gate, doctor_ok], policy=TB_CI, rules=RULESET_GATE, base="release/x y", calls=calls_seen)
+assert m and "required check Test & Build is MISSING" in m, m
+assert not [c for c in calls_seen if "/contents/" in " ".join(c) and "ref" in " ".join(c)], calls_seen
 
 
 def test_pr_guard():

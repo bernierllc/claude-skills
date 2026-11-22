@@ -1,0 +1,170 @@
+{
+ "_source": "Recorded 2026-11-22 with gh against a real repo (PR head of a merged plan PR), trimmed to the fields the guard reads; classic_protection is GitHub's documented example (no repo in the org uses classic protection): https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection",
+ "head_sha": "98b64b8bcd43abaac1571018b785c3a5653dd798",
+ "rollup": [
+  {
+   "__typename": "CheckRun",
+   "name": "Review Gate",
+   "workflowName": "Review Gate",
+   "conclusion": "FAILURE",
+   "startedAt": "2026-11-22T13:30:40Z",
+   "detailsUrl": "https://github.com/bernierllc/claude-skills/actions/runs/45027843615/job/137224675447"
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Skill script tests",
+   "workflowName": "CI",
+   "conclusion": "SUCCESS",
+   "startedAt": "2026-11-22T13:30:39Z",
+   "detailsUrl": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137225592966"
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Review Gate",
+   "workflowName": "Review Gate",
+   "conclusion": "SUCCESS",
+   "startedAt": "2026-11-22T13:33:34Z",
+   "detailsUrl": "https://github.com/bernierllc/claude-skills/actions/runs/45028111905/job/137225468466"
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Version + manifest consistency",
+   "workflowName": "CI",
+   "conclusion": "SUCCESS",
+   "startedAt": "2026-11-22T13:34:01Z",
+   "detailsUrl": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137225591850"
+  }
+ ],
+ "check_runs": {
+  "total_count": 6,
+  "check_runs": [
+   {
+    "id": 137225592966,
+    "name": "Skill script tests",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137225592966",
+    "conclusion": "success",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   },
+   {
+    "id": 137225591850,
+    "name": "Version + manifest consistency",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137225591850",
+    "conclusion": "success",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   },
+   {
+    "id": 137225468466,
+    "name": "Review Gate",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45028111905/job/137225468466",
+    "conclusion": "success",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   },
+   {
+    "id": 137224677523,
+    "name": "Version + manifest consistency",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137224677523",
+    "conclusion": "failure",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   },
+   {
+    "id": 137224677299,
+    "name": "Skill script tests",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45027845957/job/137224677299",
+    "conclusion": "success",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   },
+   {
+    "id": 137224675447,
+    "name": "Review Gate",
+    "details_url": "https://github.com/bernierllc/claude-skills/actions/runs/45027843615/job/137224675447",
+    "conclusion": "failure",
+    "app": {
+     "id": 15368,
+     "slug": "github-actions"
+    }
+   }
+  ]
+ },
+ "rules": [
+  {
+   "type": "deletion"
+  },
+  {
+   "type": "non_fast_forward"
+  },
+  {
+   "type": "pull_request",
+   "parameters": {
+    "required_approving_review_count": 0,
+    "dismiss_stale_reviews_on_push": false,
+    "required_reviewers": [],
+    "require_code_owner_review": false,
+    "dismissal_restriction": {
+     "enabled": false,
+     "allowed_actors": []
+    },
+    "require_last_push_approval": false,
+    "required_review_thread_resolution": true,
+    "require_extra_approval_for_unattributed_changes": true,
+    "allowed_merge_methods": [
+     "merge",
+     "squash",
+     "rebase"
+    ]
+   }
+  },
+  {
+   "type": "required_status_checks",
+   "parameters": {
+    "strict_required_status_checks_policy": false,
+    "do_not_enforce_on_create": false,
+    "required_status_checks": [
+     {
+      "context": "Review Gate"
+     }
+    ]
+   }
+  }
+ ],
+ "classic_protection": {
+  "url": "https://api.github.com/repos/octocat/hello-world/branches/master/protection/required_status_checks",
+  "strict": true,
+  "contexts": [
+   "continuous-integration/travis-ci"
+  ],
+  "contexts_url": "https://api.github.com/repos/octocat/hello-world/branches/master/protection/required_status_checks/contexts",
+  "checks": [
+   {
+    "context": "continuous-integration/travis-ci",
+    "app_id": null
+   }
+  ]
+ },
+ "errors": {
+  "contents_not_found": {
+   "rc": 1,
+   "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}",
+   "stderr": "gh: Not Found (HTTP 404)"
+  },
+  "branch_not_protected": {
+   "rc": 1,
+   "stdout": "{\"message\":\"Branch not protected\",\"documentation_url\":\"https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection\",\"status\":\"404\"}",
+   "stderr": "gh: Branch not protected (HTTP 404)"
+  }
+ }
+}
