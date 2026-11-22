@@ -148,16 +148,17 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
 
 6. **Security lane** (3.3.0, opt-in, PRs into every branch): active only when the DEFAULT branch has
    `.github/workflows/security-scan.yml`. Activation, the scanner config digest and `check-security-scan.py` are all read
-   from the default branch (f), so a PR cannot switch the lane off or change its own config. When active the gate passes
-   only on a `Security Scan` check run that is (a) the job of a `security-scan.yml` `pull_request_target` run triggered by
-   THIS PR (the forged wrapper's provenance) whose check-run id equals the job id in its `details_url`, and which the
-   Actions jobs API lists under that run with a `check_run_url` naming this check run, so a Checks API POST never counts,
-   even one PATCHed to point `details_url` at its own id; (b) published by `github-actions`; (c) on the current head; (d)
-   the newest such run by the job's `started_at`, completed per the job's status and conclusion (an older success never
-   masks a newer failure); (e) carrying exactly one `security-scan` annotation
-   `outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha>`, where the sha is the default branch's current
-   tree of `.github/security-scan/` and the outcome agrees with the conclusion. Any other Actions job named `Security Scan`
-   is forged. An unreadable listing, an annotation count that disagrees with `annotations_count`, or a head that moved
+   from the default branch (f), so a PR cannot switch the lane off or change its own config. The scanner jobs are found
+   through the Actions API (every job, all attempts, of every `security-scan.yml` `pull_request_target` run on the head),
+   never through check-run names, which anyone with `checks: write` can edit. When active the gate passes only when the
+   newest such job, by its `started_at` then id, and its own check run are (a) from a run triggered by THIS PR (the forged
+   wrapper's provenance), the job listed under that run with a `check_run_url` naming its own id, and the check run's id,
+   `details_url` job id and name `Security Scan` all matching it, so a Checks API POST never counts and a renamed check
+   fails instead of dropping out of freshness; (b) published by `github-actions`; (c) on the current head; (d) completed,
+   with status and conclusion read from the job (an older success never masks a newer failure); (e) carrying exactly one
+   `security-scan` annotation `outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha>`, where the sha is
+   the default branch's current tree of `.github/security-scan/` and the outcome agrees with the conclusion. Any other
+   Actions job's check run named `Security Scan` is forged. An unreadable listing, an annotation count that disagrees with `annotations_count`, or a head that moved
    exits 2 and fails closed. A line in `## Review`, or any `Security review:` / `Security scan:` line, that names a scanner
    (gitleaks, osv-scanner, zizmor, semgrep) with a pass word fails the gate unless the verified scan passed; with the lane
    off such a claim always fails. `Security review:` lines are printed as ADVISORY/UNVERIFIED and never count.
@@ -167,7 +168,9 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
    (label toggle) once the scan completes; the merge-guard hook does not re-run the lane (only the forged step), so
    re-fire before handing a PR to merge; a pass claim worded outside `## Review` and the labelled lines is not detected
    (and is still not evidence); a default branch that moves after the scan changes the digest, which fails with
-   "re-run Security Scan".
+   "re-run Security Scan"; every job of `security-scan.yml` counts as a scanner job, so the template keeps a single job;
+   finding runs by `head_sha` assumes the `pull_request_target` run records the PR head, as provenance already does, and
+   the scanner template's canary must prove it. Body lines split on CRLF, CR and LF alike, as the gate's other checks do.
 
 Fallback attestations use exactly this format (plain text on its own line inside `## Review`):
 

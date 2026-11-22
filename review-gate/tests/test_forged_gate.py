@@ -75,6 +75,17 @@ if "/check-runs" in path and "/commits/" in path:
         pages.append({"total_count": len(runs) + len(page2), "check_runs": page2})
     print(json.dumps(pages) if "--slurp" in args else "\n".join(json.dumps(p) for p in pages))
     sys.exit(0)
+if path.split("/check-runs/")[-1].isdigit():  # the security lane's read of the newest scanner job's check run
+    check_id = int(path.rsplit("/", 1)[1])
+    found = [c for c in fixture["check_runs"] + fixture.get("own_jobs", []) if c.get("id") == check_id]
+    if not found:
+        sys.exit(1)
+    print(json.dumps(found[0])); sys.exit(0)
+if "/actions/workflows/" in path and "/runs?" in path:  # the security lane's scanner-run discovery, slurped
+    wf = path.split("/actions/workflows/")[1].split("/")[0]
+    found = [{"id": int(i), "path": pair.split("\t")[0], "event": pair.split("\t")[1]}
+             for i, pair in fixture.get("runs", {}).items() if pair.split("\t")[0].endswith("/" + wf)]
+    print(json.dumps([{"total_count": len(found), "workflow_runs": found}])); sys.exit(0)
 if path.endswith("/annotations"):  # the security lane's read of one check run's annotations, slurped
     found = fixture.get("annotations", {}).get(path.split("/")[-2])
     if found is None:

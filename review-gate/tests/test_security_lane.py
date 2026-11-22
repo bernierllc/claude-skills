@@ -46,7 +46,7 @@ def job_of(check, **over):
 
 def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=None, jobs=None):
     checks = [scan()] if checks is None else checks
-    listed = {}
+    listed = {rid: [] for rid in {"700": 0, **(runs or {})}}
     for c in checks:
         if "/job/" in c["details_url"]:
             listed.setdefault(str(job_of(c)["run_id"]), []).append(job_of(c))
@@ -110,16 +110,25 @@ class TrustChecks(unittest.TestCase):
         other = job_of(scan(), id=9999, check_run_url="https://api.github.com/repos/o/r/check-runs/9999")
         rc, out = lane(fixture(jobs={"700": [other]}))
         self.assertEqual(rc, 1, out)
-        self.assertIn("no Actions job bound to it", out)
+        self.assertIn("forged", out)
 
     def test_a_job_must_name_this_check_run(self):
         rc, out = lane(fixture(jobs={"700": [job_of(scan(), check_run_url="https://api.github.com/repos/o/r/check-runs/1")]}))
         self.assertEqual(rc, 1, out)
-        self.assertIn("no Actions job bound to it", out)
+        self.assertIn("forged", out)
 
     def test_a_job_must_belong_to_the_run(self):
         rc, out = lane(fixture(jobs={"700": [job_of(scan(), run_id=701)]}))
         self.assertEqual(rc, 1, out)
+
+    # (a) SEC-02: renaming the newest (failed) check must not let an older success decide
+    def test_a_renamed_newest_check_fails(self):
+        old = scan(700)
+        new = {**scan(701, conclusion="failure", started="2026-11-20T11:00:00Z"), "name": "Renamed"}
+        rc, out = lane(fixture(checks=[old, new], runs={"701": SCAN_RUN}, heads={"701": run_heads()},
+                               notes={8701: [note("findings")]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("named 'Renamed'", out)
 
     def test_a_unreadable_job_listing_exits_2(self):
         fix = fixture(); del fix["jobs"]["700"]
@@ -181,6 +190,15 @@ class TrustChecks(unittest.TestCase):
                                notes={8701: [note("findings")]},
                                jobs={"700": [job_of(old, started_at="2026-11-20T09:00:00Z")],
                                      "701": [job_of(new, started_at="2026-11-20T10:00:00Z")]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("reported findings", out)
+
+    def test_d_a_higher_job_id_does_not_outrank_a_later_start(self):
+        late, early = scan(700, conclusion="failure"), scan(701)
+        rc, out = lane(fixture(checks=[late, early], runs={"701": SCAN_RUN}, heads={"701": run_heads()},
+                               notes={8700: [note("findings")]},
+                               jobs={"700": [job_of(late, started_at="2026-11-20T10:00:00Z")],
+                                     "701": [job_of(early, started_at="2026-11-20T09:00:00Z")]}))
         self.assertEqual(rc, 1, out)
         self.assertIn("reported findings", out)
 
@@ -262,6 +280,13 @@ class BodyClaims(unittest.TestCase):
         body = "Security scan: osv-scanner ok\n\n## Review\n\nFallback review: codex on x — verdict: clean\n"
         rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
         self.assertEqual(rc, 1, out)
+
+    # SEC-03: a CR-only body splits into lines as the incumbent gate splits it
+    def test_cr_only_newlines_still_find_the_claim(self):
+        body = "## Review\r\rSecurity scan: semgrep passed\r"
+        rc, out = lane(fixture(checks=[], body=body, contents={".github/workflows?ref=main": ENABLED[:1]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("claims a scanner pass", out)
 
     def test_fallback_attestation_is_not_a_claim(self):
         body = "## Review\n\nFallback review: codex on " + "a" * 40 + " — verdict: clean\n"
