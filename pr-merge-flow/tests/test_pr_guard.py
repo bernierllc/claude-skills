@@ -770,7 +770,7 @@ assert calls("(cd wt && env printf ' )'; git merge origin/main)") == [("/r/wt", 
 assert calls("(cd wt && env printf ' ) ('; git merge origin/main); git merge origin/main") == [
     ("/r/wt", "merge", ["origin/main"]), ("/r", "merge", ["origin/main"])]
 assert g.wrapped_words("-S'gh pr' x") == ["gh pr", "x"] and g.wrapped_words("plain") == ["plain"]
-# 1.5.5 (nevar-content #17, claude-skills #132): an env split-string option blocks on sight, any path or form.
+# 1.6.1 (nevar-content #17, claude-skills #132): an env split-string option blocks on sight, any path or form.
 SPLIT = "`env -S` / `--split-string`"
 for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --admin",
           "env --split-string='gh\\_pr\\_merge' 1 --admin", "env -S 'gh\\c' pr merge 1 --admin",
@@ -1119,10 +1119,10 @@ _log = _bin / "argv.log"
 (_bin / "gh").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{_log}"\n')
 (_bin / "gh").chmod(0o755)
 
-def bash_runs(c):
-    """The gh argv lines /bin/bash records running c with the recorder first on PATH."""
+def bash_runs(c, sh="/bin/bash"):
+    """The gh argv lines `sh` records running c with the recorder first on PATH."""
     _log.write_text("")
-    _run(["/bin/bash", "-c", c], env={"PATH": f"{_bin}:/usr/bin:/bin", "HOME": str(_bin)},
+    _run([sh, "-c", c], env={"PATH": f"{_bin}:/usr/bin:/bin", "HOME": str(_bin)},
          stdin=g.subprocess.DEVNULL, stdout=g.subprocess.DEVNULL, stderr=g.subprocess.DEVNULL, timeout=20)
     return _log.read_text().splitlines()
 
@@ -1161,6 +1161,49 @@ deep = "gh pr view 1"
 for _ in range(g.MAX_NESTING + 1):
     deep = "echo \"$(" + deep + ")\""
 assert "nested too deep" in (merge(deep, rollup=ok) or ""), deep
+
+# Round 3 on #132 (review 6013462767): each case runs under /bin/bash first, so the guard is shown to block code
+# the shell really runs. Private-use characters are the guard's internal stand-ins, so any of them blocks.
+PIN17 = f"--squash --match-head-commit {HEAD_SHA}"
+ROUND3 = [
+    ("bash -c 'true ; gh pr merge 17 --squash --auto; true '", "private-use"),
+    ("tcsh -c 'gh pr merge 17 --squash --auto'", "--auto"), ("csh -c 'gh pr merge 17 --squash --auto'", "--auto"),
+    ("ksh -c 'gh pr merge 17 --squash --auto'", "--auto"), ("dash -c 'gh pr merge 17 --squash --auto'", "--auto"),
+    ('echo "$(echo ${x%)}; gh pr merge 17 --squash --auto)"', "--auto"),
+    ("eval $'gh\\x20pr\\x20merge\\x2017\\x20--auto'", "--auto"), (f"gh pr merge 17 {PIN17} $'--au\\x74o'", "--auto"),
+    (f"gh pr merge 17 {PIN17} $'--au\\164o'", "--auto"), (f"gh pr merge 17 {PIN17} $'--au\\u0074o'", "--auto"),
+    ('eval $"gh pr merge 17 --squash --auto"', "--auto"),
+    ('echo "$(case x in x) gh pr merge 17 --auto;; esac)"', "where nested code ends"),
+]
+# bash 4.2+ parses ${...} and a case pattern's `)` inside $(...) and decodes $'\u...'; 3.2 (macOS /bin/bash) does none
+# of these, so those cases run under bash 4.2+.
+BASH4 = next((b for b in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash", "/usr/bin/bash") if Path(b).exists()
+              and _run([b, "-c", "((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 402))"]).returncode == 0), None)
+for c, want in ROUND3:
+    new_bash = any(k in c for k in ("${x%)}", "\\u", "case "))
+    if new_bash and not BASH4:
+        print(f"note: no bash 4.2+, recorder skipped for {c!r}")
+    else:
+        ran = bash_runs(c, BASH4 if new_bash else "/bin/bash")
+        assert any(r.startswith("pr merge 17 ") and "--auto" in r for r in ran), (c, ran)
+    assert want in (merge(c, rollup=ok) or ""), (c, merge(c, rollup=ok))
+# The four commands from the review, through the real main(): PreToolUse blocks only on exit 2.
+for c in ("bash -c 'true ; gh pr merge 1 --squash --auto; true '", "tcsh -c 'gh pr merge 1 --squash --auto'",
+          'git commit -m "$(echo ${x%)}; gh pr merge 1 --squash --auto)"', "eval $'gh\\x20pr\\x20merge\\x201\\x20--auto'"):
+    rc, out, err = hook(c, rollup=ok)
+    assert rc == 2 and out == "" and "Blocked" in err, (c, rc, out, err)
+# Unmatched nested code, oversized input and a guard crash all block (exit 2), never allow.
+for c in ('echo "$(gh pr view 1"', 'echo "$(echo ${x)"'):
+    assert "where nested code ends" in (merge(c, rollup=ok) or ""), c
+assert "128 KiB" in merge("echo " + "x" * g.MAX_LEN, rollup=ok)
+_env = {"PATH": "/usr/bin:/bin", "HOME": str(_bin), "CLAUDE_PROJECT_DIR": str(_bin), "AGENT_FEEDBACK_BIN": ""}
+_crash = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / "pr-guard.py")], input="[]",
+              capture_output=True, text=True, env=_env, timeout=20)
+assert _crash.returncode == 2 and "pr-guard crashed" in _crash.stderr, (_crash.returncode, _crash.stderr)
+# Still allowed: $'...' and ${...} as text, a script whose name ends in .sh, and the usual heredoc body.
+for c in ("git commit -m $'fix: x\\n\\nbody'", 'echo "${x%)}"', "echo \"$(echo ${x:-a})\"", "./deploy.sh 'gh pr merge 17 --auto'",
+          "git commit -m \"$(cat <<'EOF'\nfix: it's done (really)\nEOF\n)\""):
+    assert merge(c, rollup=ok) is None, (c, merge(c, rollup=ok))
 
 
 def test_pr_guard():

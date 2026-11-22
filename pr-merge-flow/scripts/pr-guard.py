@@ -52,10 +52,21 @@ OPERATORS = set(";&|\n()")
 ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # NAME=value prefix
 # Words that run a later word as a command. Their options aren't parsed (an env option parser regressed four
 # review rounds running): every later word is tried as the command, and it runs in an unknown directory and root.
-WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec", "builtin"}
+WRAPPERS = {"env", "sudo", "nice", "timeout", "xargs", "nohup", "time", "exec", "builtin", "busybox"}
 # Commands whose words are code the shell runs: every word given to a shell is parsed as a script (its -c string,
-# a here-string; a file name parses to a harmless one-word command), and eval's words joined by spaces.
-SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+# a here-string; a file name parses to a harmless one-word command), and eval's words joined by spaces. A shell is
+# any command name ending in `sh` (sh, bash, rbash, zsh, dash, ash, ksh, mksh, csh, tcsh, fish, bash5, ssh's remote
+# command): matched by name, not listed, so a shell nobody listed can't pass. Other `*sh` names only get checked more.
+SHELL = re.compile(r"[\w+-]*sh[\d.]*")
+# Over this length a command is blocked unchecked: the scan's worst case must stay inside the hook timeout.
+MAX_LEN = 128 * 1024
+# Private-use characters the parser uses as stand-ins (HIDE, SPAN, ANSI, SUB): a command holding one is blocked,
+# since it could pose as a quote or a marker.
+MARKERS = re.compile("[-]")
+
+
+class Unparseable(Exception):
+    """The scanner can't tell where nested code ends (an unmatched `$(`, a `case` inside `$(`): check() blocks."""
 WRAPPED = "$WRAPPER"  # the cd target segments() gives a command behind a wrapper: dir and root unknown
 # Scope markers segments() yields: compared by identity (`is`), never by value, so an argument that splits to
 # `)` or `cd $WRAPPER` (`env printf ' )'`) is an ordinary command and can't close or open a real scope.
@@ -95,7 +106,27 @@ def strip_comments_and_heredocs(cmd, comments=None, bodies=None):
     return text.translate(UNHIDE) if quote else text
 
 
-MAX_SCAN = 64  # `$(` nesting the scanner follows before taking the rest as one body (segments() caps it lower)
+MAX_SCAN = 64  # `$(` nesting the scanner follows; deeper is Unparseable (segments() caps nesting lower)
+# `case` as a command word: its patterns' `)` would end the `$(` early, so a `$(` holding one is Unparseable.
+CASE = re.compile(r"(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s)\s*case\s")
+ANSI_ESC = re.compile(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)", re.S)
+ANSI_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+               "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c(body):
+    """A `$'...'` body decoded as bash does: \\xHH, \\uHHHH, \\UHHHHHHHH, octal, \\cX, \\n and the rest; an unknown
+    escape keeps its backslash."""
+    def esc(m):
+        e = m.group(1)
+        if e[0] in "xuU" and len(e) > 1:
+            return chr(int(e[1:], 16))  # past U+10FFFF raises ValueError: check() blocks
+        if e[0] in "01234567":
+            return chr(int(e, 8) & 0xFF)
+        if e[0] == "c" and len(e) > 1:
+            return chr(ord(e[1]) & 0x1F)
+        return ANSI_SIMPLE.get(e, "\\" + e)
+    return ANSI_ESC.sub(esc, body)
 
 
 def _sub_at(cmd, i, lvl):
@@ -106,8 +137,12 @@ def _sub_at(cmd, i, lvl):
             j += 2 if cmd[j] == "\\" else 1
         return min(j + 1, len(cmd)), re.sub(r"\\([\\`$])", r"\1", cmd[i + 1:j])
     if cmd.startswith("$(", i):
-        end = _strip(cmd, i + 2, None, None, True, lvl + 1)[1] if lvl < MAX_SCAN else len(cmd)
-        return min(end + 1, len(cmd)), cmd[i + 2:end]
+        if lvl >= MAX_SCAN:
+            raise Unparseable("`$(` nested too deep")
+        text, end, _ = _strip(cmd, i + 2, None, None, True, lvl + 1)
+        if end == len(cmd) or CASE.search(text):
+            raise Unparseable("a `$(` without its `)`, or a `case` inside `$(`")
+        return end + 1, cmd[i + 2:end]
     return None
 
 
@@ -126,9 +161,8 @@ def _subs(text, lvl):
 
 def _strip(cmd, i, comments, bodies, close, lvl):
     """strip_comments_and_heredocs from cmd[i]: (text, end, open quote). With close, cmd[i:] is the inside of a
-    `$(`: the scan stops at the `)` that ends it, and end is that index (len(cmd) when none does).
-
-    shortcut: a `case` pattern's `)` inside `$(...)` ends the substitution early; parse case if it shows up.
+    `$(`: the scan stops at the `)` that ends it, and end is that index (len(cmd) when none does). A `${...}`
+    there is skipped whole, so `${x%)}` can't end it.
     """
     out, n, quote, pending, depth = [], len(cmd), None, [], 0
 
@@ -159,15 +193,28 @@ def _strip(cmd, i, comments, bodies, close, lvl):
             i = sub(i)
         elif cmd.startswith("$'", i):
             # ANSI-C quoting, where \' doesn't end the string; shlex has no such mode,
-            # so re-emit it double-quoted. ponytail: escapes like \n become the letter.
+            # so decode it as bash does and re-emit it double-quoted.
             m = re.match(r"\$'((?:\\.|[^'\\])*)'", cmd[i:], re.S)
             if not m:
                 out.append(c)
                 i += 1
                 continue
-            body = re.sub(r"\\(.)", r"\1", m.group(1), flags=re.S)
+            body = _ansi_c(m.group(1))
+            if MARKERS.search(body):
+                raise Unparseable("a `$'...'` escape decodes to a parser stand-in")
             out.append(ANSI + '"' + body.replace("\\", "\\\\").replace('"', '\\"').translate(HIDE) + '"')
             i += m.end()
+        elif cmd.startswith('$"', i):  # locale quoting: the same string as plain double quotes
+            i += 1
+        elif close and cmd.startswith("${", i):
+            j, d = i + 2, 1
+            while j < n and d:
+                d += {"{": 1, "}": -1}.get(cmd[j], 0)
+                j += 2 if cmd[j] == "\\" else 1
+            if d:
+                raise Unparseable("a `${` without its `}` inside `$(`")
+            out.append(cmd[i:j])
+            i = j
         elif c in "'\"":
             quote = c
             out.append(c)
@@ -193,17 +240,24 @@ def _strip(cmd, i, comments, bodies, close, lvl):
                 out.append(c)
                 i += 1
         elif c == "\n" and pending:
-            lines, j, found = cmd[i + 1:].split("\n"), i + 1, []
+            j, found = i + 1, []
             for delim, dash, quoted in pending:
-                for k, line in enumerate(lines):
+                k = j  # line by line from j: splitting the whole rest per heredoc was quadratic
+                while True:
+                    e = cmd.find("\n", k)
+                    e = n if e < 0 else e
+                    line = cmd[k:e]
                     if (line.lstrip("\t") if dash else line) == delim:
-                        if not quoted:
-                            found += _subs("\n".join(lines[:k]), lvl)
-                        j += sum(len(x) + 1 for x in lines[:k + 1])
-                        lines = lines[k + 1:]
                         break
-                else:  # no terminator: keep the rest, so nothing after it goes unchecked
+                    if e >= n:
+                        k = None
+                        break
+                    k = e + 1
+                if k is None:  # no terminator: keep the rest, so nothing after it goes unchecked
                     break
+                if not quoted:
+                    found += _subs(cmd[j:k], lvl)
+                j = e + 1
             if found:  # the bodies run with the heredoc's command: their markers go on its line
                 if bodies is not None:
                     bodies += found
@@ -291,7 +345,7 @@ def segments(cmd, raw=False, _depth=0, _budget=None):
     characters and markers (see literal).
 
     Code the shell runs from inside a word is split the same way, inside OPEN/CLOSE: a substitution body
-    (before the command it stands in, which runs after it), every word given to a shell (SHELLS) and eval's
+    (before the command it stands in, which runs after it), every word given to a shell (SHELL) and eval's
     words. Past MAX_NESTING levels or MAX_BODIES bodies in one call it yields TOO_DEEP instead.
     """
     budget = [MAX_BODIES] if _budget is None else _budget
@@ -315,7 +369,7 @@ def segments(cmd, raw=False, _depth=0, _budget=None):
 
     def run_bodies(a):
         words = [w.translate(UNHIDE) for w in a[1:]]
-        if a[0] in SHELLS:
+        if SHELL.fullmatch(a[0]):
             for w in words:
                 yield from nested(w)
         elif a[0] == "eval" and words:
@@ -1208,6 +1262,20 @@ def join_continuations(cmd):
 
 def check(cmd, cwd, notes=None):
     """Return a block message, or None to allow. Lines the model should see on an allowed merge go to notes."""
+    if len(cmd) > MAX_LEN:
+        return (f"Blocked: command over {MAX_LEN // 1024} KiB, too long to check in time. Write long text to a "
+                "file and pass it with --body-file / -F.")
+    if MARKERS.search(cmd):
+        return ("Blocked: the command holds a private-use character (U+E000-U+E0FF), which the guard uses "
+                "internally. Remove it.")
+    try:
+        return _check(cmd, cwd, notes)
+    except (Unparseable, ValueError) as e:  # ValueError: a `$'\\U...'` escape past U+10FFFF
+        return (f"Blocked: can't tell where nested code ends ({e}). Close every `$(` and `${{`, move a `case` "
+                "out of `$(...)`, or run the inner commands directly.")
+
+
+def _check(cmd, cwd, notes):
     # The shell deletes backslash-newline (outside single quotes) before running, so detectors see the joined
     # text; the mention scan also sees the raw text, where a quoted `\<newline>@codex` stays a mention.
     raw, cmd = cmd, join_continuations(cmd)
@@ -1329,6 +1397,10 @@ def fb_log(subject: str, severity: str, summary: str) -> None:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:
+    except Exception as exc:  # fail closed: PreToolUse blocks only on exit 2, and a crash must not allow
         fb_log("hook:pr-merge-flow/pmf-pr-guard", "high", f"pr-guard crashed: {type(exc).__name__}")
-        raise
+        import traceback
+        traceback.print_exc()
+        print(f"Blocked: pr-guard crashed ({type(exc).__name__}: {exc}), so the command was not checked.",
+              file=sys.stderr)
+        sys.exit(2)
