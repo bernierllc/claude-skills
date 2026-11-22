@@ -84,6 +84,8 @@ def _entries(w, repo, path, ref):
         raise w.Ambiguous(f"{path} on {ref} is not a directory listing")
     if not all(isinstance(e, dict) and isinstance(e.get("name"), str) for e in listing):
         raise w.Ambiguous(f"{path} on {ref} lists a malformed entry")  # never read as "lane not enabled"
+    if len(listing) >= 1000:  # the Contents API's cap: a file past it would read as absent
+        raise w.Ambiguous(f"{path} on {ref} lists {len(listing)} entries, the Contents API cap; cannot tell what is absent")
     return {e["name"]: e for e in listing}
 
 

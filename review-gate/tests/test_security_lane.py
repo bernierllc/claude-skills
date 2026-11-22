@@ -265,6 +265,8 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(lane(fixture(contents={".github/workflows?ref=main": {"message": "not a list"}}))[0], 2)
         for entry in (None, "garbage", {"type": "file"}):  # a malformed entry never reads as "lane not enabled"
             self.assertEqual(lane(fixture(checks=[], contents={".github/workflows?ref=main": [entry]}))[0], 2, entry)
+        capped = [{"name": f"w{i}.yml", "type": "file"} for i in range(1000)]  # security-scan.yml may lie past the cap
+        self.assertEqual(lane(fixture(checks=[], contents={".github/workflows?ref=main": capped}))[0], 2)
 
 
 class BodyClaims(unittest.TestCase):
@@ -342,6 +344,14 @@ class GateWiring(unittest.TestCase):
         for pattern in (r"contents/\.github/workflows\?", r"contents/scripts\?"):
             with self.subTest(pattern=pattern):
                 rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"fail": {"pattern": pattern}})
+                self.assertEqual(rc, 1, out)
+                self.assertIn("to decide the security lane", out)
+
+    def test_an_empty_or_capped_listing_fails_closed(self):
+        capped = [{"name": f"w{i}.yml", "type": "file"} for i in range(1000)]
+        for body in ({"raw": ""}, {"raw": " \n"}, {"raw": "[] []"}, capped):
+            with self.subTest(body=str(body)[:30]):
+                rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {".github/workflows?ref=main": body}})
                 self.assertEqual(rc, 1, out)
                 self.assertIn("to decide the security lane", out)
 

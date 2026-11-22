@@ -143,9 +143,12 @@ jobs:
           # and then its script must load (fail closed). With the lane off, a manual install that predates
           # check-security-scan.py skips it, and the script, when present, still runs to reject an unverified
           # scanner-pass claim. Only this step can decide that, because the script itself may be absent.
-          listed() {  # prints true or false: default-branch directory $1 lists file $2; a failed or non-list read fails
+          # prints true or false: default-branch directory $1 lists file $2. A failed read, an empty body, or anything
+          # but one listing under the Contents API's 1000-entry cap (a file past it would read as absent) fails.
+          listed() {
             api GET "repos/$REPO/contents/$1?ref=$ref" \
-              | jq -r --arg f "$2" 'if type == "array" then any(.[]; .name == $f) else error("not a directory listing") end'
+              | jq -rs --arg f "$2" 'if length == 1 and (.[0] | type) == "array" and (.[0] | length) < 1000
+                                     then any(.[0][]; .name == $f) else error("not one complete directory listing") end'
           }
           if lane_on=$(listed .github/workflows security-scan.yml) && lane_script=$(listed scripts check-security-scan.py); then
             :

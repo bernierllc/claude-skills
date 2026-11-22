@@ -99,6 +99,8 @@ if "/contents/.github" in path:  # the security lane's directory listings, keyed
     listing = fixture.get("contents", {}).get(key, default)
     if listing is None:
         sys.exit(1)
+    if isinstance(listing, dict) and "raw" in listing:  # a body that is not JSON, served verbatim
+        print(listing["raw"], end=""); sys.exit(0)
     print(json.dumps(listing)); sys.exit(0)
 if "/pulls?" in path:  # the wrapper's head-repo/branch PR listing (3.2.16), one page
     if "branch_pulls_raw" in fixture:
