@@ -779,12 +779,21 @@ for c in ("env -S 'gh\\_pr\\_merge' 1 --admin", "env '-Sgh\\_pr\\_merge' 1 --adm
           "env -S 'env -S \"gh pr merge 17 --admin\"'", "env -S \"`printf gh` pr merge 17 --auto\"",
           "env -iS x", "env -uXS x", "env -uC -S x", "env -iu X -S x", "env --unset X -S x", "env -u X -S x", "env --sp=x", "env --split-string x",
           "sudo env -S x", "sudo /usr/bin/env -S x", "nice -n 5 env -S x", "env -S 'gh\\_pr\\_view' 1",
-          "env \"$OPT\" gh pr view 1"):
+          "env \"$OPT\" gh pr view 1", "env {-S,x} payload", "env $'\\x2dS' payload", "env -u $X gh pr view 1",
+          "env --chdir `pwd` -S x"):
     assert g.env_split_string(c) and merge(c, rollup=ok), c
 assert SPLIT in merge("env -S 'gh pr view 1'", rollup=ok)
+# #157 review: a `# sync-base:` comment waives only the base-sync check, never env -S.
+assert SPLIT in merge("env -S '${GHCMD} pr merge 1 --admin' # sync-base: x", rollup=ok)
+# The review-round fixture rows that try a forbidden merge must block, not only stay unchanged under parity.
+for _cwd, c in (json.loads(l) for l in (Path(__file__).parent / "fixtures" / "pr_guard_inputs.txt").read_text()
+                .splitlines() if l.startswith("[")):
+    assert not re.search(r"--admin|--auto", c) or merge(c, rollup=ok), c
 for c in ("echo env -S '${GHCMD}'", "printf '%s' env -S 'a\\tb'", "env printf '%s' -S '${GHCMD}'",
           "env FOO=1 gh pr view 1", "env -u S gh pr view 1", "env -C /tmp gh pr view 1",
-          "env -- -S", "git commit -S -m 'a\\nb'", "echo env; printf '\\c'"):
+          "env -- -S", "git commit -S -m 'a\\nb'", "echo env; printf '\\c'",
+          "env GH_TOKEN=$TOKEN gh pr view 1", "env GH_TOKEN=\"$(cat t)\" A=`x` gh pr view 1",
+          "env -u HOME GH_TOKEN=$T gh pr view 1"):
     assert not g.env_split_string(c), c
     assert merge(c, rollup=ok) is None, c
 # claude-skills #132: a command word is matched by basename, so an absolute path is the same command.

@@ -70,3 +70,7 @@
 ["/r", "/usr/bin/sudo gh pr merge 1 --admin"]
 ["/r", "/opt/homebrew/bin/gh pr merge 1 --admin"]
 ["/r", "env -uC -S 'gh pr merge 1 --admin'"]
+["/r", "env GH_TOKEN=$TOKEN gh pr view 1"]
+["/r", "env -S '${GHCMD} pr merge 1 --admin' # sync-base: x"]
+["/r", "env {-S,x} 'gh pr merge 1 --admin'"]
+["/r", "env $'\\x2dS' 'gh pr merge 1 --admin'"]

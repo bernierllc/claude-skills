@@ -1029,17 +1029,23 @@ def not_green(ref, repo="", cwd=None, notes=None):
 def env_split_string(cmd):
     """True when an `env` command (any path, bare or behind a wrapper) takes a split-string option: any short
     option word holding an `S` (`-S`, `-Sgh`, `-vS`, `-uXS`), `--split-string[=]` or a prefix
-    of it. The string is never parsed: re-implementing env's splitting lost a block in 1.5.2-1.5.4. An option
-    word holding `$` or a backtick may expand to -S, so it counts too."""
-    for argv in segments(cmd):
+    of it. The string is never parsed: re-implementing env's splitting lost a block in 1.5.2-1.5.4. A NAME=value
+    word ends env's options. Any other option word or option value that is not a plain word (`$`, a backtick,
+    a brace, `$'…'`, a glob) may become -S once the shell expands it, so it counts too."""
+    for argv in segments(cmd, raw=True):
         if argv[:1] != ["env"]:
             continue
-        k = 1
+        k, value = 1, False
         while k < len(argv):
             w = argv[k]
             k += 1
-            if "$" in w or "`" in w:
+            if not value and ASSIGN.match(w):
+                break
+            if not literal(w):
                 return True
+            if value:
+                value = False
+                continue
             if w == "-":  # same as -i
                 continue
             if w == "--" or not w.startswith("-"):
@@ -1048,14 +1054,12 @@ def env_split_string(cmd):
                 name = w[2:].split("=", 1)[0]
                 if len(name) and "split-string".startswith(name):
                     return True
-                if "=" not in w and any(o.startswith(name) for o in ("unset", "chdir", "argv0")):
-                    k += 1
+                value = "=" not in w and any(o.startswith(name) for o in ("unset", "chdir", "argv0"))
                 continue
             if "S" in w:  # anywhere in the cluster, even as -u's value (`-uXS`): fail closed
                 return True
             m = re.match(r"-[^uCPa]*[uCPa]", w)  # the first option taking a value; nothing glued = the next word
-            if m and m.end() == len(w):
-                k += 1
+            value = bool(m and m.end() == len(w))
     return False
 
 
@@ -1143,6 +1147,10 @@ def check(cmd, cwd, notes=None):
             return (f"Blocked: {fork} has no `gh repo set-default`, so `gh pr create` would open the "
                     "PR on the upstream repo. Pass `-R <owner>/<repo>` or run "
                     "`gh repo set-default <owner>/<repo>` first.")
+    # Before the sync-base early return: that comment waives only the base-sync check, never this one.
+    if env_split_string(cmd):
+        return ("Blocked: `env -S` / `--split-string` runs a string the guard can't read the way env does. "
+                "Run the command directly, or as `env NAME=value gh …`.")
     if any(re.match(r"#\s*sync-base:", c) for c in shell_comments(cmd)):  # a real shell comment, not quoted text
         return None
     for d, sub, refs in sync_calls(cmd, cwd):
@@ -1162,10 +1170,6 @@ def check(cmd, cwd, notes=None):
                     "`gh pr view --json mergeStateStatus` says DIRTY (a conflict). To land the PR: "
                     "hand it to the repo's traffic cop: `gh pr merge <n> --squash --match-head-commit <sha>` (or `--merge` for promotions). If you truly need "
                     f"a commit from `{base}` (a fix your tests depend on), add `# sync-base: <reason>`.")
-    # Last, so a more specific message (--admin, a Codex mention) wins when both apply.
-    if env_split_string(cmd):
-        return ("Blocked: `env -S` / `--split-string` runs a string the guard can't read the way env does. "
-                "Run the command directly, or as `env NAME=value gh …`.")
     return None
 
 
