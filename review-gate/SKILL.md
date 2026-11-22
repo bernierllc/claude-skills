@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 3.6.0
+version: 3.7.0
 author: Bernier LLC
 ---
 
@@ -11,9 +11,13 @@ Programmatic enforcement for the adversarial review loop. Ships:
 
 1. **Workflow template** — `.github/workflows/review-gate.yml` (`pull_request_target`)
 2. **Trusted checker** — `scripts/check-review-gate.py` (loaded only from the repo **default branch**)
-   plus the **forged-check detector** `scripts/check-forged-gate-names.py` (vendored byte-identical from
-   `bernierllc/agents-environment-config@41f629945c291c4e0a84f20f14a077852e7dd9dc`, never edited here; the
-   installer never overwrites a repo's differing copy) and
+   plus the **forged-check detector** `scripts/check-forged-gate-names.py` (vendored from
+   `bernierllc/agents-environment-config@41f629945c291c4e0a84f20f14a077852e7dd9dc`; 3.7.0 adds the `Notion Sync`
+   pin here first and aec re-syncs from this copy; a consuming repo never edits it, and the installer never
+   overwrites a differing copy it does not know as older). Its protected names, each pinned to one workflow
+   path and event: `Review Gate` (review-gate.yml), `PRs into main must come from staging` (main-via-staging.yml)
+   and `Notion Sync` (notion-sync.yml), all `pull_request_target`. Names match exactly: `Notion Sync (daily)` is
+   not protected. It also ships
    its wrapper `scripts/check-forged-review-gate.py`, also loaded from the default branch
 3. **Doctor** — warns when the workflow, checker, ruleset conversation-resolution flag, or required `Review Gate` status check is missing
 4. **PreToolUse merge guard** — blocks `gh pr merge` when the local gate check fails
@@ -62,6 +66,8 @@ aec run-script skill:review-gate reply-close.py -- -R my-org/my-app --pr 12 --th
 Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
 
 3.4.0 adds `scripts/reply-close.py` (above) and `tests/test_reply_close.py`. Authors run it through `aec run-script`; it is not vendored into repos, and the workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor.
+
+Upgrading to 3.7.0 (claude-skills #152): the vendored detector `scripts/check-forged-gate-names.py` also protects `Notion Sync`, pinned to (`.github/workflows/notion-sync.yml`, `pull_request_target`). An Actions job named exactly `Notion Sync` from any other workflow or event is forged (exit 1) when a repo runs the detector unscoped, as `main-via-staging.yml` does; names match exactly, so `Notion Sync (daily)` is not flagged. The Review Gate step's wrapper still checks only `Review Gate`. `install-workflow.py --force` replaces the 3.2.20-3.6.0 detector (aec 41f6299) instead of keeping it as a newer copy. Re-run `install-workflow.py --force` and commit `scripts/` and the whole `.claude/skills/review-gate` directory.
 
 Upgrading to 3.6.0 (security lane freshness, SKILLS-SEC-CLAIM-2): a passing scan no longer stands forever. The lane adds check (g): the scan's notice must name this PR, head and base ref, the default branch's current scan workflow and policy revision, no expired exception, and a completion within 36 h, or the gate fails with the reason and "re-run Security Scan". New `templates/review-gate-security-refresh.yml` (Security Refresh) re-dispatches the scan for every open PR when the default branch changes the scan workflow, `.github/security-scan/**` or the policy files, and daily, and re-runs a PR's gate when its scan completes; the lane accepts a `workflow_dispatch` scan only from the default branch and titled for the PR and head. `install-workflow.py` installs it when `.github/workflows/review-gate-security-scan.yml` exists, and the doctor warns when it is missing or differs. The merge-guard hook now also runs `check-security-scan.py` after the forged step, inside the same 20 s budget, so a slow GitHub blocks the merge with a retry message. The scanner side needs nevar-security-review 1.2.0 (the new notice fields and dispatch inputs): a 1.1.0 scan fails (g). Install both together: re-run `install-workflow.py --force`, copy the 1.2.0 scan workflow and `.github/security-scan/`, and commit the whole `.claude/skills/review-gate` directory. UNPROVEN until the canary runs: whether `workflow_run` fires for dispatched scans and whether the `GITHUB_TOKEN` re-run is allowed; both fail closed (the gate stays red, never green). Check (h): a gate run must execute the default branch's current `review-gate.yml`, since a re-run keeps the old file, so after a `review-gate.yml` change every open PR needs a push, a close and reopen, or a label toggle. A dispatched re-scan counts only when its `head_sha` is on the default branch. Security Refresh skips drafts. Timestamps ending in `Z` now parse on Python 3.10.
 
@@ -162,7 +168,8 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
    unreadable listing or lookup (exit 2, fails closed). The legitimate `Review Gate` is this workflow's
    own job, which sits on the PR head in its run's own suite (3.2.8). The wrapper checks only
    `Review Gate`: the vendored map also names `PRs into main must come from staging`, which several
-   repos still publish from a plain `pull_request` job; that name stays with each repo's main-via-staging guard.
+   repos still publish from a plain `pull_request` job, and `Notion Sync` (3.7.0); those names stay with
+   each repo's main-via-staging guard or whatever else runs the detector unscoped.
    Residual: a PR job with `checks: write` POSTing `Review Gate` straight to the Checks API looks the same as
    a legacy (3.2.0-3.2.7) run and is not detected (plan options A/B in aec). A job publishing after the scan is
    caught only if whoever merges runs the detector by hand (pr-merge-flow rule 2); the merge-guard hook does not run it.
