@@ -28,6 +28,8 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 FULL_SHA = re.compile(r"[0-9a-f]{40}", re.A)
+# gate._graphql sends variables with -F, which reads @file and coerces true/numbers: only a plain id may pass.
+THREAD_ID = re.compile(r"PRRT_[A-Za-z0-9_-]+", re.A)
 
 _THREAD_Q = """
 query($id: ID!) {
@@ -35,7 +37,7 @@ query($id: ID!) {
     ... on PullRequestReviewThread {
       id
       isResolved
-      pullRequest { number headRefOid baseRefName repository { nameWithOwner } }
+      pullRequest { number headRefOid baseRefName repository { nameWithOwner viewerPermission } }
       comments(first: 1) { nodes { body } }
     }
   }
@@ -48,6 +50,9 @@ mutation($id: ID!, $body: String!) {
   }
 }
 """
+
+
+MAYBE_POSTED = "the reply may not have been posted, check the thread before retrying"
 
 
 class Refused(Exception):
@@ -87,6 +92,11 @@ def check_thread(thread: dict, repo: str, number: int, head: str) -> list[str]:
         print("warning: the thread's root comment is not a P2; the gate does not read this reply", file=sys.stderr)
     if thread.get("isResolved"):
         print("warning: the thread is already resolved", file=sys.stderr)
+    # The REST permission the gate reads maps MAINTAIN to write; GraphQL names it separately.
+    perm = ((pr.get("repository") or {}).get("viewerPermission") or "").lower().replace("maintain", "write")
+    if perm not in gate.CLOSER_PERMISSIONS:
+        print(f"warning: your permission here is {perm or 'unknown'}; the gate counts this reply only if GitHub "
+              "lists you as an owner, member or collaborator", file=sys.stderr)
     return []
 
 
@@ -105,6 +115,8 @@ def main(argv: list[str]) -> int:
 
     try:
         body = build_body(a.head, a.fixed, a.tracked, a.not_a_finding, a.note)
+        if not THREAD_ID.fullmatch(a.thread):
+            raise Refused(f"--thread must be a review thread node id (PRRT_...), got {a.thread!r}")
         host, owner, name = gate.parse_repo_with_host(a.repo)
         repo = f"{owner}/{name}"
         thread = gate._graphql(_THREAD_Q, hostname=host, id=a.thread).get("node") or {}
@@ -114,7 +126,7 @@ def main(argv: list[str]) -> int:
     except Refused as e:
         print(f"reply-close: {e}; nothing posted", file=sys.stderr)
         return 1
-    except (RuntimeError, OSError) as e:  # OSError: gh missing or not runnable
+    except (RuntimeError, OSError, ValueError) as e:  # OSError: gh missing; ValueError: gh printed non-JSON
         print(f"reply-close: {e}; nothing posted", file=sys.stderr)
         return 2
 
@@ -125,12 +137,12 @@ def main(argv: list[str]) -> int:
         # -f, never -F: -F reads a value starting with @ as a file and coerces true/false/numbers.
         data = gate.run_gh(["graphql", "-f", f"query={_REPLY_M}", "-f", f"id={a.thread}", "-f", f"body={body}"],
                            hostname=host)
-    except (RuntimeError, OSError) as e:
-        print(f"reply-close: {e}; the reply may not have been posted, check the thread before retrying", file=sys.stderr)
+    except (RuntimeError, OSError, ValueError) as e:
+        print(f"reply-close: {e}; {MAYBE_POSTED}", file=sys.stderr)
         return 2
     url = ((((data or {}).get("data") or {}).get("addPullRequestReviewThreadReply") or {}).get("comment") or {}).get("url")
     if not url:
-        print(f"reply-close: GitHub returned no comment for the reply: {data}", file=sys.stderr)
+        print(f"reply-close: GitHub returned no comment for the reply ({data}); {MAYBE_POSTED}", file=sys.stderr)
         return 2
     print(f"posted {url}")
     print(gate.rerun_hint(repo, a.pr, (thread.get("pullRequest") or {}).get("baseRefName") or ""))

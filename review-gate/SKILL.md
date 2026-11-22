@@ -55,11 +55,11 @@ Lint the body before you push, `gh pr create` or `gh pr edit`: `python3 scripts/
 To close a P2 thread, post the reply with `reply-close.py` instead of typing the closing line by hand. It builds the line rule 3 accepts, checks it with the checker's own `closes()`, and posts it as the gh user running it:
 
 ```bash
-aec run-script skill:review-gate reply-close.py -R my-org/my-app --pr 12 --thread PRRT_abc123 \
+aec run-script skill:review-gate reply-close.py -- -R my-org/my-app --pr 12 --thread PRRT_abc123 \
   --head <full 40-hex head OID you reviewed> --fixed --note "The parser now rejects empty input." --dry-run
 ```
 
-Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
+Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
 
 3.4.0 adds `scripts/reply-close.py` (above) and `tests/test_reply_close.py`. Authors run it through `aec run-script`; it is not vendored into repos, and the workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor.
 
