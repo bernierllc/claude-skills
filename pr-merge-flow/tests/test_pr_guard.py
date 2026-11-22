@@ -1126,5 +1126,34 @@ _crash = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / 
               env={"PATH": "/usr/bin:/bin", "HOME": str(_home), "CLAUDE_PROJECT_DIR": str(_home), "AGENT_FEEDBACK_BIN": ""})
 assert _crash.returncode == 2 and "pr-guard crashed" in _crash.stderr, (_crash.returncode, _crash.stderr)
 
+
+# 18. Every routed shell tool and payload shape reaches check() (before 1.6.2 only tool_name == "Bash" did), and
+# Gemini's tool_input.dir_path wins over the session cwd.
+assert g.payload_cwd({"cwd": "/tmp/session"}, {"dir_path": "/tmp/exec"}) == "/tmp/exec"
+assert g.payload_cwd({"cwd": "/tmp/session"}, {}) == "/tmp/session"
+
+
+def run_main(payload):
+    """main() on a hook payload with check() recorded: (exit code, [(cmd, cwd)] check() was handed)."""
+    import io, json, sys
+    seen, real, stdin, stderr = [], g.check, sys.stdin, sys.stderr
+    g.check = lambda cmd, cwd, notes=None: seen.append((cmd, cwd)) or "blocked"
+    sys.stdin, sys.stderr = io.StringIO(json.dumps(payload)), io.StringIO()
+    try:
+        return g.main(), seen
+    finally:
+        g.check, sys.stdin, sys.stderr = real, stdin, stderr
+
+
+_merge = "gh pr merge 5 --auto"
+for _payload, _cwd in (({"tool_name": "Bash", "tool_input": {"command": _merge}}, "/s"),
+                       ({"toolName": "Bash", "input": {"command": _merge}}, "/s"),
+                       ({"tool_name": "mcp__x__Bash", "tool_input": {"command": _merge}}, "/s"),
+                       ({"tool_name": "run_shell_command", "tool_input": {"command": _merge, "dir_path": "/w"}}, "/w"),
+                       ({"tool_name": "Bash", "tool_input": {"cmd": _merge}}, "/s")):
+    assert run_main({"cwd": "/s", **_payload}) == (2, [(_merge, _cwd)]), _payload
+# A tool with no command is not a shell call; text that is not JSON is passed unchecked as before.
+assert run_main({"tool_name": "Edit", "tool_input": {"file_path": "/s/x.py", "old_string": "a"}, "cwd": "/s"}) == (0, [])
+
 def test_pr_guard():
     """pytest entry point: the asserts above run at import, so a failure is a collection error."""
