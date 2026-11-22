@@ -35,6 +35,12 @@
 # here (needs a required workflow or a distinct publisher app). A job publishing
 # after this scan is caught at merge time: the merge-guard hook runs this same
 # step before `gh pr merge` (3.2.13), as does pr-merge-flow rule 2.
+#
+# Security lane (3.3.0, opt-in): when the default branch has .github/workflows/security-scan.yml,
+# scripts/check-security-scan.py fails the gate unless that workflow's own pull_request_target job
+# published a passing "Security Scan" on this head with the default branch's scanner config. A PR body
+# claiming a scanner pass without that check run fails too. Body "Security review:" lines are advisory.
+# The scan often finishes after this run: re-fire (label toggle) once it completes.
 name: Review Gate
 # Names the PR in the Actions run list. Quoted: unquoted, YAML reads " #" as a comment (3.2.7).
 run-name: "Review Gate - PR #${{ github.event.pull_request.number }}"
@@ -133,6 +139,30 @@ jobs:
           load_trusted check-review-gate.py
           load_trusted check-forged-gate-names.py
           load_trusted check-forged-review-gate.py
+          # The security lane is opt-in: on only when the default branch has .github/workflows/security-scan.yml,
+          # and then its script must load (fail closed). With the lane off, a manual install that predates
+          # check-security-scan.py skips it, and the script, when present, still runs to reject an unverified
+          # scanner-pass claim. Only this step can decide that, because the script itself may be absent.
+          # prints true or false: default-branch directory $1 lists file $2. A failed read, an empty body, or anything
+          # but one listing under the Contents API's 1000-entry cap (a file past it would read as absent) fails.
+          listed() {
+            api GET "repos/$REPO/contents/$1?ref=$ref" \
+              | jq -rs --arg f "$2" 'if length == 1 and (.[0] | type) == "array" and (.[0] | length) < 1000
+                                     then any(.[0][]; .name == $f) else error("not one complete directory listing") end'
+          }
+          if lane_on=$(listed .github/workflows security-scan.yml) && lane_script=$(listed scripts check-security-scan.py); then
+            :
+          else
+            msg="Could not list .github/workflows and scripts on default branch $DEFAULT_BRANCH to decide the security lane (see the API error above)."
+            printf '%s\n' "$msg"
+            complete_check failure "review-gate failed" "$msg" || true  # the job fails either way
+            exit 1
+          fi
+          lane_run=false
+          if [ "$lane_on" = true ] || [ "$lane_script" = true ]; then
+            load_trusted check-security-scan.py
+            lane_run=true
+          fi
           set +e
           out=$(python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO" 2>&1)
           rc=$?
@@ -141,10 +171,23 @@ jobs:
           forged=$(api GET "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate \
             | REPO="$REPO" python3 /tmp/check-forged-review-gate.py 2>&1)
           frc=$?
+          if [ "$lane_run" = true ]; then
+            lane=$(python3 /tmp/check-security-scan.py 2>&1)
+            lrc=$?
+          else
+            lane="security lane not enabled (no .github/workflows/security-scan.yml or scripts/check-security-scan.py on the default branch)"
+            lrc=0
+          fi
           set -e
           if [ "$frc" -ne 0 ]; then
             out=$(printf '%s\n%s\n%s' "$out" "forged-check step failed (exit $frc):" "$forged")
             [ "$rc" -ne 0 ] || rc=1
+          fi
+          if [ "$lrc" -ne 0 ]; then
+            out=$(printf '%s\n%s\n%s' "$out" "security lane failed (exit $lrc):" "$lane")
+            [ "$rc" -ne 0 ] || rc=1
+          else
+            out=$(printf '%s\n%s' "$out" "$lane")
           fi
           printf '%s\n' "$out"
           summary=${out:0:60000}  # no pipe: head closing early SIGPIPEs under pipefail

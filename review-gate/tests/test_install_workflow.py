@@ -34,6 +34,8 @@ assert SIGNATURE in DETECTOR
 COMPATIBLE = b"# newer aec copy\n" + DETECTOR
 # #105 Codex P2: these define every name the wrapper uses, yet the wrapper cannot run against them
 INCOMPATIBLE = DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup):")  # old 2-arg forged
+NO_JOB_RUN_ID = DETECTOR.replace(b"def job_run_id(check_run):", b"def run_id_of(check_run):")  # the lane calls job_run_id
+assert NO_JOB_RUN_ID != DETECTOR
 INCOMPATIBLE_VARIANTS = (
     INCOMPATIBLE,
     b"# custom\nPROTECTED = {}\ndef forged(c, l, protected=None): return []\n"
@@ -41,6 +43,7 @@ INCOMPATIBLE_VARIANTS = (
     b"# old custom detector\nPROTECTED = {}\ndef forged(c, l): return []\n",
     b"def broken(:\n",
     DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup, protected=None, *, audit):"),  # required kw-only
+    NO_JOB_RUN_ID,
 )
 
 
@@ -78,12 +81,16 @@ class VendoredDetector(unittest.TestCase):
         with tempfile.TemporaryDirectory() as repo:
             dest = Path(repo) / "scripts" / "check-forged-gate-names.py"
             dest.parent.mkdir()
-            dest.write_bytes(INCOMPATIBLE)
-            proc = install(repo, "--force")
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / dest.name).read_bytes())
-            self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), INCOMPATIBLE)
-            self.assertIn("REPLACED", proc.stderr)
+            for variant in (INCOMPATIBLE, NO_JOB_RUN_ID):  # #145 Codex P1: a kept detector without job_run_id breaks the lane
+                with self.subTest(variant=variant[:40]):
+                    for bak in dest.parent.glob("*.bak"):
+                        bak.unlink()
+                    dest.write_bytes(variant)
+                    proc = install(repo, "--force")
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(dest.read_bytes(), (SKILL / "scripts" / dest.name).read_bytes())
+                    self.assertEqual(dest.with_name(dest.name + ".custom.bak").read_bytes(), variant)
+                    self.assertIn("REPLACED", proc.stderr)
 
     def test_a_second_forced_replacement_keeps_the_first_backup(self):
         # #105 Codex P2: the first custom copy must survive a later forced upgrade of a second one
@@ -180,8 +187,7 @@ class VendoredDetector(unittest.TestCase):
     def test_this_repo_mirrors_are_byte_identical(self):
         # claude-skills runs its own gate from scripts/ and .github/workflows/; they must equal the skill's copies.
         root = SKILL.parent
-        for name in ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
-                     "lint-review-body.py"):
+        for name in installer().VENDORED_SCRIPTS:
             self.assertEqual((root / "scripts" / name).read_bytes(), (SKILL / "scripts" / name).read_bytes(), name)
         for linter in (root / "scripts" / "lint-review-body.py", SKILL / "scripts" / "lint-review-body.py"):
             self.assertTrue(os.access(linter, os.X_OK), linter)
@@ -368,7 +374,9 @@ def skill_version(skill_dir):
 
 def one_release_behind(version):
     major, minor, patch = (int(x) for x in version.split("."))
-    return f"{major}.{minor}.{patch - 1}"
+    if patch:
+        return f"{major}.{minor}.{patch - 1}"
+    return f"{major}.{minor - 1}.999" if minor else f"{major - 1}.999.999"  # x.y.0 has no patch below it
 
 
 def vendor(repo, version=None):
