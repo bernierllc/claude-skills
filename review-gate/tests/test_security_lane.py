@@ -208,6 +208,11 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("is queued", out)
 
+    def test_d_a_cancelled_unstarted_job_does_not_outrank_a_later_success(self):
+        cancelled, rerun = scan(700, conclusion="cancelled", started=None), scan(701)
+        rc, out = lane(fixture(checks=[cancelled, rerun], runs={"701": SCAN_RUN}, heads={"701": run_heads()}))
+        self.assertEqual(rc, 0, out)
+
     def test_d_no_scan_yet_is_incomplete(self):
         rc, out = lane(fixture(checks=[]))
         self.assertEqual(rc, 1, out)

@@ -121,8 +121,9 @@ def verdict(w, detector, repo, pr, head, ref):
             return f"forged '{NAME}' check {check.get('id')}: not a job of this PR's trusted scanner run"
     if not jobs:
         return f"no trusted '{NAME}' run on {head[:12]} yet; re-fire Review Gate once it completes"
-    # (d) the newest scanner job decides; one not started yet (started_at null) is newest, so it reads incomplete
-    job = max(jobs, key=lambda j: (j.get("started_at") is None, j.get("started_at") or "", j["id"]))
+    # (d) the newest scanner job decides; an unfinished one (queued, started_at null) outranks every finished one so
+    # the lane reads incomplete, while a finished job that never started (cancelled) sorts oldest, never blocking
+    job = max(jobs, key=lambda j: (j.get("status") != "completed", j.get("started_at") or "", j["id"]))
     latest = w._api_json(f"repos/{repo}/check-runs/{job['id']}")
     linked = re.search(r"/job/(\d+)", w._text(latest, "details_url"))
     if (latest.get("id") != job["id"] or not linked or int(linked.group(1)) != job["id"]
