@@ -231,8 +231,9 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
             ok=(0, 1))
         return parse_gitleaks(json.loads(report.read_text() or "[]"), stage_dir)
     if scanner == "osv-scanner":
+        # --all-packages: without it a lockfile with no vulnerabilities has no result entry at all
         argv = [str(bin_dir / "osv-scanner"), "scan", "source", "--config", str(cfg / "osv-scanner.toml"),
-                "--format", "json"]
+                "--all-packages", "--format", "json"]
         for t in targets:
             argv += ["-L", str(Path(stage_dir) / t)]
         code, out = run(argv, ok=(0, 1, 128))
@@ -264,17 +265,31 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
     raise ValueError(scanner)
 
 
-def unstaged_includes(targets, staged, stage_dir):
-    """(requirements.txt, include) pairs OSV cannot see: only changed files are staged."""
-    out = []
-    for t in targets:
-        if PurePosixPath(t).name != "requirements.txt":
-            continue
+def stage_includes(head_dir, staged, stage_dir):
+    """Stage every file a staged requirements.txt includes (-r, -c, nested), changed or not.
+
+    OSV reads includes from the scanned tree and keeps the rest of a file when one is missing,
+    so an include must be staged to be scanned. Returns the (including file, include) pairs that
+    cannot be: outside the repo, absent, a symlink, or an author-config name (renamed in staging).
+    """
+    have = set(staged)
+    todo = [p for p in staged if PurePosixPath(p).name == "requirements.txt"]
+    unresolved = []
+    while todo:
+        t = todo.pop()
         for line in (Path(stage_dir) / t).read_text(errors="replace").splitlines():
             m = INCLUDE.match(line)
-            if m and posixpath.normpath(posixpath.join(posixpath.dirname(t), m.group(1))) not in staged:
-                out.append((t, m.group(1)))
-    return out
+            if not m:
+                continue
+            rel = safe_rel(posixpath.normpath(posixpath.join(posixpath.dirname(t), m.group(1))))
+            if rel in have:
+                continue
+            if rel is None or PurePosixPath(rel).name in AUTHOR_CONFIGS or not stage(head_dir, [rel], stage_dir)[0]:
+                unresolved.append((t, m.group(1)))
+                continue
+            have.add(rel)
+            todo.append(rel)
+    return unresolved
 
 
 # ---------------------------------------------------------------- exceptions and outcome
@@ -346,8 +361,11 @@ def github_api(token):
     return api
 
 
-def scan(staged, cfg, stage_dir, work, today):
-    """Per-scanner results, findings and summary lines for the staged paths."""
+def scan(staged, cfg, stage_dir, work, today, unresolved=()):
+    """Per-scanner results, findings and summary lines for the staged paths.
+
+    unresolved: stage_includes' (file, include) pairs, each an osv-scanner finding.
+    """
     active, expired = load_exceptions(cfg / "exceptions.json", today)
     results, findings, lines = {}, [], []
     for scanner in SCANNERS:
@@ -358,6 +376,10 @@ def scan(staged, cfg, stage_dir, work, today):
             continue
         try:
             found = scan_one(scanner, targets, cfg, stage_dir, work)  # no target is an AUTHOR_CONFIGS name
+            if scanner == "osv-scanner":  # an include OSV could not read leaves the file partly scanned
+                found += [{"scanner": "osv-scanner", "rule": "unresolved-include", "path": t} for t, _ in unresolved]
+                lines += [f"- note: {t} includes {inc!r}, which could not be staged for osv-scanner"
+                          for t, inc in unresolved]
         except (ScanError, KeyError, ValueError, TypeError) as e:
             results[scanner] = "scanner-error"
             lines.append(f"- {scanner}: scanner-error: {e}")
@@ -367,9 +389,6 @@ def scan(staged, cfg, stage_dir, work, today):
         lines.append(f"- {scanner}: {results[scanner]} on {len(targets)} file(s), "
                      f"{len(kept)} finding(s), {len(excepted)} excepted")
         findings += kept
-        if scanner == "osv-scanner":  # an unchanged include is not scanned: say so, it is not covered
-            lines += [f"- note: osv-scanner did not scan {inc!r}, included by {t} and not changed in this PR"
-                      for t, inc in unstaged_includes(targets, staged, stage_dir)]
     for e in expired:
         lines.append(f"- expired exception (no longer applied): {e['scanner']} {e['rule']} "
                      f"{e['path']}, owner {e['owner']}, expired {e['expires']}")
@@ -388,7 +407,9 @@ def main():
         stage_dir.mkdir(parents=True, exist_ok=False)
         rels = list_changed(github_api(env["GITHUB_TOKEN"]), env["REPO"], env["PR_NUMBER"], env["HEAD_SHA"])
         staged, notes = stage(head, rels, stage_dir)
-        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date())
+        unresolved = stage_includes(head, staged, stage_dir)
+        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date(),
+                                        unresolved)
         lines += [f"- note: {n}" for n in notes]
         result = outcome(results)
     except (ScanError, OSError, ValueError, KeyError) as e:

@@ -222,7 +222,11 @@ What the workflow does:
   - osv-scanner on lockfiles; each lockfile must yield packages on its own, so one it finds
     none in (a broken file, a `-r` include that is missing) is a `no-packages` finding even
     when another lockfile in the same run was read. It is never a pass, and takes a dated
-    exception when the file is legitimately empty;
+    exception when the file is legitimately empty. Every file a changed `requirements.txt`
+    includes (`-r`, `-c`, nested) is staged from the head too, changed or not, because OSV
+    scans what an include pulls in. An include that cannot be staged (outside the repo,
+    absent, a symlink or an author-config name) is an `unresolved-include` finding on the
+    including file;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
     for, inside a pinned container with no network and a read-only mount. A repo that adds
@@ -302,6 +306,4 @@ above, merged first.
 - Fork PRs are unverified: the template checks out the head sha from the base repository,
   and GitHub serves fork heads there. The canary covers same-repo PRs only.
 - Files over the scanners' size limits and binary files are scanned as gitleaks sees them.
-- Only changed files are staged, so a `requirements.txt` include (`-r`, `-c`) that the PR
-  does not change is not scanned. The job summary names each one as a note.
   semgrep reports any target it skipped, as a finding.

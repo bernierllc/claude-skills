@@ -251,8 +251,8 @@ class Parsers(unittest.TestCase):
     def test_osv_each_input_must_yield_packages(self):
         st = str(self.st)
         rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
-        real = scan.run
-        scan.run = lambda argv, cwd=None, ok=(0,): (0, json.dumps(rep))
+        real, argvs = scan.run, []
+        scan.run = lambda argv, cwd=None, ok=(0,): (argvs.append(argv), (0, json.dumps(rep)))[1]
         try:
             got = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
             rep["results"].append({"source": {"path": f"{st}/app/requirements.txt"}, "packages": [{}]})
@@ -261,6 +261,8 @@ class Parsers(unittest.TestCase):
             scan.run = real
         self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
         self.assertEqual(both, [])
+        # Codex P1 on c849c19: without --all-packages a clean lockfile has no result entry at all
+        self.assertTrue(all("--all-packages" in a for a in argvs))
 
     def test_gitleaks(self):
         got = scan.parse_gitleaks([{"RuleID": "r", "File": "/w/stage/c.py", "Secret": "REDACTED"}], self.st)
@@ -356,22 +358,45 @@ class Outcome(unittest.TestCase):
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
-    def test_unchanged_requirements_include_is_reported_not_covered(self):
+    # Codex P1 on c849c19: a changed requirements.txt can newly include an unchanged file, so
+    # includes are staged (nested too) and one that cannot be staged is a finding, not a note
+    def test_includes_are_staged_or_unresolved(self):
         with tempfile.TemporaryDirectory() as t:
-            st = Path(t)
-            (st / "app/req").mkdir(parents=True)
-            (st / "app/requirements.txt").write_text(
-                "-r base.txt\n--constraint=../c.txt\n-rreq/dev.txt\nrequests==2.31.0\n--require-hashes\n")
-            (st / "app/req/dev.txt").write_text("pytest==8.0.0\n")
-            staged = ["app/requirements.txt", "app/req/dev.txt"]
-            self.assertEqual(scan.unstaged_includes(["app/requirements.txt"], staged, st),
-                             [("app/requirements.txt", "base.txt"), ("app/requirements.txt", "../c.txt")])
-            with mock.patch.object(scan, "scan_one", lambda *a: []):
-                (st / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
-                res, _, lines = scan.scan(staged, st, st, st, dt.date(2026, 1, 1))
-        self.assertEqual(res["osv-scanner"], "passed")
-        self.assertIn("- note: osv-scanner did not scan 'base.txt', included by app/requirements.txt "
-                      "and not changed in this PR", lines)
+            head, st = Path(t, "head"), Path(t, "stage")
+            for d in ("app/req", "shared"):
+                (head / d).mkdir(parents=True)
+            (head / "app/requirements.txt").write_text(
+                "-r base.txt\n--constraint=../c.txt\n-rreq/dev.txt\n-r ../../escape.txt\n-r link.txt\n"
+                "-r .gitignore\nrequests==2.31.0\n--require-hashes\n")
+            (head / "app/base.txt").write_text("--requirement ../shared/more.txt\nsix==1.16.0\n")
+            (head / "shared/more.txt").write_text("-r ../app/base.txt\nidna==3.7\n")  # a cycle ends
+            (head / "app/req/dev.txt").write_text("pytest==8.0.0\n")
+            (head / "app/.gitignore").write_text("x\n")
+            Path(t, "escape.txt").write_text("x\n")
+            os.symlink(head / "shared/more.txt", head / "app/link.txt")
+            staged, _ = scan.stage(head, ["app/requirements.txt", "app/req/dev.txt"], st)
+            unresolved = scan.stage_includes(head, staged, st)
+            self.assertEqual(sorted(unresolved), sorted(
+                ("app/requirements.txt", inc) for inc in ("../c.txt", "../../escape.txt", "link.txt", ".gitignore")))
+            self.assertTrue((st / "app/base.txt").is_file() and (st / "shared/more.txt").is_file())
+            self.assertFalse((st / "app/link.txt").exists())
+
+    def test_unresolved_include_is_an_exceptable_osv_finding(self):
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(scan, "scan_one", lambda *a: []):
+            cfg = Path(t)
+            (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
+            gone = [("app/requirements.txt", "base.txt")]
+            res, found, lines = scan.scan(["app/requirements.txt"], cfg, cfg, cfg, dt.date(2026, 1, 1), gone)
+            self.assertEqual(res["osv-scanner"], "findings")
+            self.assertEqual(found, [{"scanner": "osv-scanner", "rule": "unresolved-include",
+                                      "path": "app/requirements.txt"}])
+            self.assertIn("- note: app/requirements.txt includes 'base.txt', which could not be staged "
+                          "for osv-scanner", lines)
+            ok = dict(Exceptions.ok, scanner="osv-scanner", rule="unresolved-include",
+                      path="app/requirements.txt", expires="2026-01-01")
+            (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": [ok]}))
+            res, found, _ = scan.scan(["app/requirements.txt"], cfg, cfg, cfg, dt.date(2026, 1, 1), gone)
+            self.assertEqual((res["osv-scanner"], found), ("passed", []))
 
     def test_scan_isolates_errors_and_reports_not_applicable(self):
         def fake(scanner, targets, *a):
@@ -506,6 +531,26 @@ class RealScanners(unittest.TestCase):
             got = self.scan_files("osv-scanner", {"app/requirements.txt": req, "svc/go.mod": mod})
         empty = [f["path"] for f in got if f["rule"] == "no-packages"]
         self.assertEqual(empty, ["app/requirements.txt"])  # go.mod was read; its own advisories may follow
+
+    @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
+    def test_osv_clean_lockfile_passes(self):
+        with tempfile.TemporaryDirectory() as t:
+            req = Path(t, "requirements.txt")
+            req.write_text("six==1.16.0\n")
+            self.assertEqual(self.scan_files("osv-scanner", {"requirements.txt": req}), [])
+
+    @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
+    def test_osv_scans_an_unchanged_include(self):
+        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"BIN_DIR": BIN}):
+            head, st, work = Path(t, "head"), Path(t, "stage"), Path(t, "work")
+            (head / "app").mkdir(parents=True)
+            work.mkdir()
+            (head / "app/requirements.txt").write_text("-r base.txt\nsix==1.16.0\n")  # changed, clean
+            (head / "app/base.txt").write_text("requests==2.19.0\n")  # unchanged, has advisories
+            staged, _ = scan.stage(head, ["app/requirements.txt"], st)
+            self.assertEqual(scan.stage_includes(head, staged, st), [])
+            got = scan.scan_one("osv-scanner", staged, CONFIG, st, work)
+        self.assertTrue(got and all(f["rule"] != "no-packages" for f in got))
 
 
 if __name__ == "__main__":
