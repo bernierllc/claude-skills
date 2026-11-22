@@ -1005,6 +1005,32 @@ class DoctorVersionParity(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout)
             self.assertIn(f"OK vendored skill .claude/skills/review-gate {skill_version(SKILL)}", proc.stdout)
 
+    def run_vendored_doctor(self, repo, dest):
+        # the --doctor-job workflow runs the repo's committed copy, so this doctor IS the vendored skill
+        return subprocess.run([sys.executable, str(dest / "scripts" / "doctor-review-gate.py"), "--strict"],
+                              cwd=repo, capture_output=True, text=True, env=self.no_gh())
+
+    def test_vendored_doctor_fails_its_own_hooks_json_mismatch(self):
+        # SKILLS-DOCTOR-SELF-1: 3.2.19-3.3.0 returned True before any check when run from the vendored copy
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            install(repo)
+            hooks = dest / "hooks.json"
+            hooks.write_text(hooks.read_text().replace(skill_version(SKILL), "0.0.0", 1))
+            proc = self.run_vendored_doctor(repo, dest)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn(f"FAIL .claude/skills/review-gate/hooks.json is 0.0.0, its SKILL.md is {skill_version(SKILL)}; "
+                          "replace the whole copy and commit it: aec install skill review-gate, then commit "
+                          ".claude/skills/review-gate", proc.stdout)
+
+    def test_matching_vendored_doctor_passes_strict(self):
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            install(repo)
+            proc = self.run_vendored_doctor(repo, dest)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(f"OK vendored skill .claude/skills/review-gate {skill_version(SKILL)}", proc.stdout)
+
     def test_doctor_names_the_rerun_command(self):
         with tempfile.TemporaryDirectory() as repo:
             install(repo)

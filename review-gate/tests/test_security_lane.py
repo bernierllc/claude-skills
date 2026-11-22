@@ -1,4 +1,4 @@
-"""Behavior tests for Review Gate's security lane (check-security-scan.py, 3.3.0).
+"""Behavior tests for Review Gate's security lane (check-security-scan.py, 3.3.0; marker name 3.3.1).
 
 Each trust check a-f in the script's docstring has a test here that fails when that check is removed.
 The lane runs against a fake `gh` (test_forged_gate.FAKE_GH), so no network and no real repo.
@@ -17,11 +17,13 @@ import test_forged_gate  # noqa: E402  (its TestCases stay out of this module's 
 from test_forged_gate import FAKE_GH, HEAD_SHA, PROVENANCE, SCRIPTS, run_heads  # noqa: E402
 
 LANE = SCRIPTS / "check-security-scan.py"
-SCAN_RUN = ".github/workflows/security-scan.yml\tpull_request_target"
+SCAN_RUN = ".github/workflows/review-gate-security-scan.yml\tpull_request_target"
 TREE = "b" * 40  # the default branch's .github/security-scan tree
 PR_TREE = "d" * 40  # the same directory as the PR head has it
 ENABLED = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40},
-           {"name": "security-scan.yml", "type": "file", "sha": "1" * 40}]
+           {"name": "review-gate-security-scan.yml", "type": "file", "sha": "1" * 40}]
+# 3.3.1: a repo's OWN workflow that happens to be named security-scan.yml (mbernier.com has one) is not the marker
+OWN_SCAN = [ENABLED[0], {"name": "security-scan.yml", "type": "file", "sha": "2" * 40}]
 
 
 def scan(run_id=700, job_id=None, conclusion="success", status="completed", head=HEAD_SHA,
@@ -96,7 +98,7 @@ class TrustChecks(unittest.TestCase):
         self.assertIn("forged 'Security Scan'", out)
 
     def test_a_trusted_path_on_another_event_is_forged(self):
-        rc, out = lane(fixture(runs={"700": ".github/workflows/security-scan.yml\tpull_request"}))
+        rc, out = lane(fixture(runs={"700": ".github/workflows/review-gate-security-scan.yml\tpull_request"}))
         self.assertEqual(rc, 1, out)
 
     # (a) a Checks API POST that copies the real job's URL: its id is not that job's id
@@ -251,11 +253,26 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(rc, 1, out)
 
     def test_f_pr_deleting_the_workflow_does_not_disable_the_lane(self):
-        rc, out = lane(fixture(checks=[]))  # the head lists no security-scan.yml; main does
+        rc, out = lane(fixture(checks=[]))  # the head lists no review-gate-security-scan.yml; main does
         self.assertEqual(rc, 1, out)
 
     def test_f_lane_off_when_default_branch_lacks_the_workflow(self):
         rc, out = lane(fixture(checks=[], contents={".github/workflows?ref=main": ENABLED[:1]}))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("not enabled", out)
+
+    def test_f_own_unrelated_security_scan_yml_keeps_the_lane_off(self):
+        # its own failing "Security Scan" job is not ours to judge: no marker, no lane
+        own = scan(conclusion="failure")
+        rc, out = lane(fixture(checks=[own], runs={"700": ".github/workflows/security-scan.yml\tpull_request"},
+                               contents={".github/workflows?ref=main": OWN_SCAN}))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("not enabled", out)
+
+    def test_f_pr_adding_the_marker_does_not_enable_the_lane(self):
+        rc, out = lane(fixture(checks=[], contents={".github/workflows?ref=main": ENABLED[:1],
+                                                    f".github/workflows?ref={HEAD_SHA}": ENABLED,
+                                                    ".github/workflows?ref=chore/revendor-review-gate": ENABLED}))
         self.assertEqual(rc, 0, out)
         self.assertIn("not enabled", out)
 
@@ -265,7 +282,7 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(lane(fixture(contents={".github/workflows?ref=main": {"message": "not a list"}}))[0], 2)
         for entry in (None, "garbage", {"type": "file"}):  # a malformed entry never reads as "lane not enabled"
             self.assertEqual(lane(fixture(checks=[], contents={".github/workflows?ref=main": [entry]}))[0], 2, entry)
-        capped = [{"name": f"w{i}.yml", "type": "file"} for i in range(1000)]  # security-scan.yml may lie past the cap
+        capped = [{"name": f"w{i}.yml", "type": "file"} for i in range(1000)]  # review-gate-security-scan.yml may lie past the cap
         self.assertEqual(lane(fixture(checks=[], contents={".github/workflows?ref=main": capped}))[0], 2)
 
 
@@ -339,6 +356,18 @@ class GateWiring(unittest.TestCase):
         rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {".github/workflows?ref=main": ENABLED}})
         self.assertEqual(rc, 1, out)
         self.assertIn("Could not load trusted scripts/check-security-scan.py", out)
+
+    def test_own_security_scan_yml_without_the_marker_skips_a_missing_lane_script(self):
+        # 3.3.1: the mbernier.com shape, a re-vendor without the lane script must stay green
+        rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {".github/workflows?ref=main": OWN_SCAN}})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("security lane not enabled", out)
+
+    def test_a_pr_adding_the_marker_does_not_load_the_lane(self):
+        rc, out = self.gate([], missing=("check-security-scan.py",), fixture={"contents": {
+            ".github/workflows?ref=main": ENABLED[:1], f".github/workflows?ref={HEAD_SHA}": ENABLED}})
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(any("contents/scripts/check-security-scan.py" in c for c in self.calls), self.calls)
 
     def test_a_failed_listing_fails_closed(self):
         for pattern in (r"contents/\.github/workflows\?", r"contents/scripts\?"):
