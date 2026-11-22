@@ -228,6 +228,10 @@ class Inputs(unittest.TestCase):
             self.assertEqual(scan.applicable(s, docs), [])
         self.assertEqual(scan.applicable("osv-scanner", ["app/package-lock.json", "package.json"]),
                          ["app/package-lock.json"])
+        # the names osv-scanner 2.7.0 reads as requirements files, probed: case-sensitive, base name only
+        reqs = ["requirements.txt", "a/requirements-dev.txt", "dev-requirements.txt", "requirements_test.txt"]
+        not_reqs = ["reqs.txt", "requirements/dev.txt", "requirements.in", "requirements-dev.TXT", "foo.txt"]
+        self.assertEqual(scan.applicable("osv-scanner", reqs + not_reqs), reqs)
         self.assertEqual(scan.applicable("zizmor", [".github/workflows/ci.yml", "x/action.yml", "ci.yml"]),
                          [".github/workflows/ci.yml", "x/action.yml"])
         self.assertEqual(scan.applicable("semgrep", ["a.py", "b.ts", "c.md"]), ["a.py", "b.ts"])
@@ -236,12 +240,19 @@ class Inputs(unittest.TestCase):
 class Parsers(unittest.TestCase):
     st = Path("/w/stage")
 
+    def setUp(self):  # the OSV branch reads each staged requirements file for include lines
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.osv_st = Path(t.name, "stage")
+        (self.osv_st / "app").mkdir(parents=True)
+        (self.osv_st / "app/requirements.txt").write_text("six==1.16.0\n")
+
     # Codex bot P1: osv-scanner exit 128 is "no packages found", so nothing was checked
     def test_osv_no_packages_is_a_finding_not_a_pass(self):
         real = scan.run
         scan.run = lambda argv, cwd=None, ok=(0,): (128, "")
         try:
-            got = scan.scan_one("osv-scanner", ["app/requirements.txt"], Path("/cfg"), self.st, Path("/w"))
+            got = scan.scan_one("osv-scanner", ["app/requirements.txt"], Path("/cfg"), self.osv_st, Path("/w"))
         finally:
             scan.run = real
         self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
@@ -249,14 +260,14 @@ class Parsers(unittest.TestCase):
     # Cop P1 on 12dc7a7: OSV exits 0 when one input yields nothing (here a missing -r include)
     # and another has packages, so every input is accounted for on its own
     def test_osv_each_input_must_yield_packages(self):
-        st = str(self.st)
+        st = str(self.osv_st)
         rep = {"results": [{"source": {"path": f"{st}/svc/go.mod"}, "packages": [{"package": {"name": "m"}}]}]}
         real, argvs = scan.run, []
         scan.run = lambda argv, cwd=None, ok=(0,): (argvs.append(argv), (0, json.dumps(rep)))[1]
         try:
-            got = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
+            got = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.osv_st, Path("/w"))
             rep["results"].append({"source": {"path": f"{st}/app/requirements.txt"}, "packages": [{}]})
-            both = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.st, Path("/w"))
+            both = scan.scan_one("osv-scanner", ["app/requirements.txt", "svc/go.mod"], Path("/cfg"), self.osv_st, Path("/w"))
         finally:
             scan.run = real
         self.assertEqual(got, [{"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}])
@@ -358,44 +369,47 @@ class Outcome(unittest.TestCase):
         self.assertEqual(res["osv-scanner"], "findings")
         self.assertIn({"scanner": "osv-scanner", "rule": "no-packages", "path": "app/requirements.txt"}, found)
 
-    # Codex P1 on c849c19: a changed requirements.txt can newly include an unchanged file, so
-    # includes are staged (nested too) and one that cannot be staged is a finding, not a note
-    def test_includes_are_staged_or_unresolved(self):
-        with tempfile.TemporaryDirectory() as t:
-            head, st = Path(t, "head"), Path(t, "stage")
-            for d in ("app/req", "shared"):
-                (head / d).mkdir(parents=True)
-            (head / "app/requirements.txt").write_text(
-                "-r base.txt\n--constraint=../c.txt\n-rreq/dev.txt\n-r ../../escape.txt\n-r link.txt\n"
-                "-r .gitignore\nrequests==2.31.0\n--require-hashes\n")
-            (head / "app/base.txt").write_text("--requirement ../shared/more.txt\nsix==1.16.0\n")
-            (head / "shared/more.txt").write_text("-r ../app/base.txt\nidna==3.7\n")  # a cycle ends
-            (head / "app/req/dev.txt").write_text("pytest==8.0.0\n")
-            (head / "app/.gitignore").write_text("x\n")
-            Path(t, "escape.txt").write_text("x\n")
-            os.symlink(head / "shared/more.txt", head / "app/link.txt")
-            staged, _ = scan.stage(head, ["app/requirements.txt", "app/req/dev.txt"], st)
-            unresolved = scan.stage_includes(head, staged, st)
-            self.assertEqual(sorted(unresolved), sorted(
-                ("app/requirements.txt", inc) for inc in ("../c.txt", "../../escape.txt", "link.txt", ".gitignore")))
-            self.assertTrue((st / "app/base.txt").is_file() and (st / "shared/more.txt").is_file())
-            self.assertFalse((st / "app/link.txt").exists())
+    # Codex P1s on c849c19 and f277bbf: includes are not resolved (plans/2026-11-22-security-scan-
+    # osv-include-resolution.md), so any include line, in any form pip accepts, is not-covered
+    def test_has_include_matches_every_form_pip_accepts(self):
+        includes = ["-r base.txt", "-rbase.txt", "  -r\tbase.txt", "-c c.txt", "--requirement base.txt",
+                    "--requirement=base.txt", '-r "base.txt"', "--req base.txt", "--constr=c.txt",
+                    "-\\\nr base.txt", "six==1.16.0 \\\n\n-r base.txt", "\ufeff-r base.txt",
+                    "-r ${DIR}/base.txt"]
+        for text in includes:
+            with self.subTest(text=text):
+                self.assertTrue(scan.has_include(text))
+        plain = ["six==1.16.0", "# -r base.txt", "# note \\\n-x", "-e .", "--require-hashes",
+                 "--index-url https://example.invalid/simple", "requests[security]==2.31.0 --hash=sha256:00"]
+        for text in plain:
+            with self.subTest(text=text):
+                self.assertFalse(scan.has_include(text))
+        self.assertTrue(scan.has_include("# note \\\n-r base.txt"))  # pip never joins a comment line
 
-    def test_unresolved_include_is_an_exceptable_osv_finding(self):
-        with tempfile.TemporaryDirectory() as t, mock.patch.object(scan, "scan_one", lambda *a: []):
-            cfg = Path(t)
+    def test_include_is_an_exceptable_not_covered_finding(self):
+        real = scan.scan_one
+        def osv_only(scanner, *a):
+            return real(scanner, *a) if scanner == "osv-scanner" else []
+        with tempfile.TemporaryDirectory() as t:
+            st, cfg = Path(t, "stage"), Path(t)
+            (st / "app").mkdir(parents=True)
+            (st / "app/requirements-dev.txt").write_text("six==1.16.0\n-\\\nr base.txt\n")
+            (st / "app/requirements.txt").write_text("six==1.16.0\n")
+            staged = ["app/requirements-dev.txt", "app/requirements.txt"]
+            rep = {"results": [{"source": {"path": f"{st}/{p}"}, "packages": [{"package": {"name": "six"}}]}
+                               for p in staged]}
+            def run_scan():
+                with mock.patch.object(scan, "run", lambda *a, **k: (0, json.dumps(rep))), \
+                        mock.patch.object(scan, "scan_one", osv_only):
+                    return scan.scan(staged, cfg, st, Path(t), dt.date(2026, 1, 1))
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": []}))
-            gone = [("app/requirements.txt", "base.txt")]
-            res, found, lines = scan.scan(["app/requirements.txt"], cfg, cfg, cfg, dt.date(2026, 1, 1), gone)
-            self.assertEqual(res["osv-scanner"], "findings")
-            self.assertEqual(found, [{"scanner": "osv-scanner", "rule": "unresolved-include",
-                                      "path": "app/requirements.txt"}])
-            self.assertIn("- note: app/requirements.txt includes 'base.txt', which could not be staged "
-                          "for osv-scanner", lines)
-            ok = dict(Exceptions.ok, scanner="osv-scanner", rule="unresolved-include",
-                      path="app/requirements.txt", expires="2026-01-01")
+            res, found, _ = run_scan()
+            self.assertEqual((res["osv-scanner"], found), ("findings", [
+                {"scanner": "osv-scanner", "rule": "not-covered", "path": "app/requirements-dev.txt"}]))
+            ok = dict(Exceptions.ok, scanner="osv-scanner", rule="not-covered",
+                      path="app/requirements-dev.txt", expires="2026-01-01")
             (cfg / "exceptions.json").write_text(json.dumps({"version": 1, "exceptions": [ok]}))
-            res, found, _ = scan.scan(["app/requirements.txt"], cfg, cfg, cfg, dt.date(2026, 1, 1), gone)
+            res, found, _ = run_scan()
             self.assertEqual((res["osv-scanner"], found), ("passed", []))
 
     def test_scan_isolates_errors_and_reports_not_applicable(self):
@@ -540,18 +554,13 @@ class RealScanners(unittest.TestCase):
             self.assertEqual(self.scan_files("osv-scanner", {"requirements.txt": req}), [])
 
     @unittest.skipUnless(os.environ.get("SECURITY_SCAN_NETWORK") == "1", "osv-scanner queries osv.dev")
-    def test_osv_scans_an_unchanged_include(self):
-        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"BIN_DIR": BIN}):
-            head, st, work = Path(t, "head"), Path(t, "stage"), Path(t, "work")
-            (head / "app").mkdir(parents=True)
-            work.mkdir()
-            (head / "app/requirements.txt").write_text("-r base.txt\nsix==1.16.0\n")  # changed, clean
-            (head / "app/base.txt").write_text("requests==2.19.0\n")  # unchanged, has advisories
-            staged, _ = scan.stage(head, ["app/requirements.txt"], st)
-            self.assertEqual(scan.stage_includes(head, staged, st), [])
-            got = scan.scan_one("osv-scanner", staged, CONFIG, st, work)
-        self.assertTrue(got and all(f["rule"] != "no-packages" for f in got))
-
+    def test_osv_reads_an_alternate_requirements_name(self):
+        with tempfile.TemporaryDirectory() as t:
+            req = Path(t, "requirements-dev.txt")
+            req.write_text("requests==2.19.0\n")
+            got = self.scan_files("osv-scanner", {"app/requirements-dev.txt": req})
+        self.assertTrue(got and all(f["path"] == "app/requirements-dev.txt" and f["rule"] != "no-packages"
+                                    for f in got))
 
 if __name__ == "__main__":
     unittest.main()

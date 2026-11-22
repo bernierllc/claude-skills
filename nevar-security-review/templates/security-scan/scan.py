@@ -23,7 +23,6 @@ import datetime as dt
 import fnmatch
 import json
 import os
-import posixpath
 import re
 import secrets
 import shutil
@@ -46,14 +45,14 @@ AUTHOR_CONFIGS = {
 RENAMED = ".author-copy"
 LOCKFILES = {
     "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock",
-    "requirements.txt", "poetry.lock", "Pipfile.lock", "uv.lock", "pdm.lock", "Cargo.lock",
+    "poetry.lock", "Pipfile.lock", "uv.lock", "pdm.lock", "Cargo.lock",
     "go.mod", "Gemfile.lock", "composer.lock", "pubspec.lock", "mix.lock", "gradle.lockfile",
     "packages.lock.json", "renv.lock",
 }
 # Only the languages semgrep.yml has rules for: semgrep skips any other target, which reads as target-skipped.
 CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
-# A pip include line in requirements.txt; osv-scanner reads the included file from the scanned tree.
-INCLUDE = re.compile(r"^\s*(?:--requirement|--constraint|-r|-c)[=\s]*(\S+)")
+# pip's join_lines: a backslash-ended line continues on the next, unless the line is a comment.
+COMMENT_LINE = re.compile(r"\s*#")
 OUTCOMES = ("passed", "not-applicable", "findings", "scanner-error")
 
 
@@ -163,12 +162,40 @@ def run(argv, cwd=None, ok=(0,)):
     return p.returncode, p.stdout
 
 
+def is_requirements(p):
+    """A name osv-scanner 2.7.0 reads as a pip requirements file (case-sensitive), e.g. requirements-dev.txt."""
+    name = PurePosixPath(p).name
+    return name.endswith(".txt") and "requirements" in name
+
+
+def has_include(text):
+    """True when a requirements file includes another (-r, -c, a --requirement/--constraint prefix).
+
+    shortcut: includes are not resolved (plans/2026-11-22-security-scan-osv-include-resolution.md),
+    so the scan cannot prove an including file was read completely and reports it as not-covered.
+    """
+    logical, cur = [], ""
+    for line in text.lstrip("\ufeff").splitlines():
+        if line.endswith("\\") and not COMMENT_LINE.match(line):
+            cur += line[:-1]
+            continue
+        logical.append(cur + line)
+        cur = ""
+    for line in logical + [cur]:
+        tok = (line.split() or [""])[0].split("=", 1)[0]
+        # optparse takes a glued short value (-rbase.txt) and any unambiguous long-option prefix
+        if tok[:2] in ("-r", "-c") or (len(tok) > 2 and tok.startswith("--") and (
+                "--requirement".startswith(tok) or "--constraint".startswith(tok))):
+            return True
+    return False
+
+
 def applicable(scanner, staged):
     """The staged paths a scanner applies to; empty means not-applicable for that scanner."""
     if scanner == "gitleaks":
         return list(staged)  # secrets in docs are still secrets
     if scanner == "osv-scanner":
-        return [p for p in staged if PurePosixPath(p).name in LOCKFILES]
+        return [p for p in staged if PurePosixPath(p).name in LOCKFILES or is_requirements(p)]
     if scanner == "zizmor":
         return [p for p in staged
                 if fnmatch.fnmatch(p, ".github/workflows/*.y*ml")
@@ -243,7 +270,9 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
         # Each input must yield packages: one OSV could not read (a missing include, a broken file)
         # exits 0 when another input in the same run had packages, so per-input is the only check.
         return parse_osv(report, stage_dir) + [
-            {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read]
+            {"scanner": "osv-scanner", "rule": "no-packages", "path": t} for t in targets if t not in read] + [
+            {"scanner": "osv-scanner", "rule": "not-covered", "path": t} for t in targets
+            if is_requirements(t) and has_include((Path(stage_dir) / t).read_text(errors="replace"))]
     if scanner == "zizmor":
         _, out = run([str(bin_dir / "zizmor"), "--no-config", "--no-ignores", "--strict-collection",
                       "--no-exit-codes", "--offline", "--min-severity", "low", "--format", "json",
@@ -263,33 +292,6 @@ def scan_one(scanner, targets, cfg, stage_dir, work):
             _, out = run([os.environ["SEMGREP_BIN"], *flags, *targets], cwd=stage_dir)
         return parse_semgrep(json.loads(out), stage_dir, targets)
     raise ValueError(scanner)
-
-
-def stage_includes(head_dir, staged, stage_dir):
-    """Stage every file a staged requirements.txt includes (-r, -c, nested), changed or not.
-
-    OSV reads includes from the scanned tree and keeps the rest of a file when one is missing,
-    so an include must be staged to be scanned. Returns the (including file, include) pairs that
-    cannot be: outside the repo, absent, a symlink, or an author-config name (renamed in staging).
-    """
-    have = set(staged)
-    todo = [p for p in staged if PurePosixPath(p).name == "requirements.txt"]
-    unresolved = []
-    while todo:
-        t = todo.pop()
-        for line in (Path(stage_dir) / t).read_text(errors="replace").splitlines():
-            m = INCLUDE.match(line)
-            if not m:
-                continue
-            rel = safe_rel(posixpath.normpath(posixpath.join(posixpath.dirname(t), m.group(1))))
-            if rel in have:
-                continue
-            if rel is None or PurePosixPath(rel).name in AUTHOR_CONFIGS or not stage(head_dir, [rel], stage_dir)[0]:
-                unresolved.append((t, m.group(1)))
-                continue
-            have.add(rel)
-            todo.append(rel)
-    return unresolved
 
 
 # ---------------------------------------------------------------- exceptions and outcome
@@ -361,11 +363,8 @@ def github_api(token):
     return api
 
 
-def scan(staged, cfg, stage_dir, work, today, unresolved=()):
-    """Per-scanner results, findings and summary lines for the staged paths.
-
-    unresolved: stage_includes' (file, include) pairs, each an osv-scanner finding.
-    """
+def scan(staged, cfg, stage_dir, work, today):
+    """Per-scanner results, findings and summary lines for the staged paths."""
     active, expired = load_exceptions(cfg / "exceptions.json", today)
     results, findings, lines = {}, [], []
     for scanner in SCANNERS:
@@ -376,10 +375,6 @@ def scan(staged, cfg, stage_dir, work, today, unresolved=()):
             continue
         try:
             found = scan_one(scanner, targets, cfg, stage_dir, work)  # no target is an AUTHOR_CONFIGS name
-            if scanner == "osv-scanner":  # an include OSV could not read leaves the file partly scanned
-                found += [{"scanner": "osv-scanner", "rule": "unresolved-include", "path": t} for t, _ in unresolved]
-                lines += [f"- note: {t} includes {inc!r}, which could not be staged for osv-scanner"
-                          for t, inc in unresolved]
         except (ScanError, KeyError, ValueError, TypeError) as e:
             results[scanner] = "scanner-error"
             lines.append(f"- {scanner}: scanner-error: {e}")
@@ -407,9 +402,7 @@ def main():
         stage_dir.mkdir(parents=True, exist_ok=False)
         rels = list_changed(github_api(env["GITHUB_TOKEN"]), env["REPO"], env["PR_NUMBER"], env["HEAD_SHA"])
         staged, notes = stage(head, rels, stage_dir)
-        unresolved = stage_includes(head, staged, stage_dir)
-        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date(),
-                                        unresolved)
+        results, findings, lines = scan(staged, cfg, stage_dir, work, dt.datetime.now(dt.timezone.utc).date())
         lines += [f"- note: {n}" for n in notes]
         result = outcome(results)
     except (ScanError, OSError, ValueError, KeyError) as e:

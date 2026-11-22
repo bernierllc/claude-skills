@@ -219,14 +219,17 @@ What the workflow does:
   so a rename never overwrites another file and no file can borrow another path's exception.
 - Each scanner runs only on the files it applies to:
   - gitleaks on every changed file;
-  - osv-scanner on lockfiles; each lockfile must yield packages on its own, so one it finds
-    none in (a broken file, a `-r` include that is missing) is a `no-packages` finding even
-    when another lockfile in the same run was read. It is never a pass, and takes a dated
-    exception when the file is legitimately empty. Every file a changed `requirements.txt`
-    includes (`-r`, `-c`, nested) is staged from the head too, changed or not, because OSV
-    scans what an include pulls in. An include that cannot be staged (outside the repo,
-    absent, a symlink or an author-config name) is an `unresolved-include` finding on the
-    including file;
+  - osv-scanner on lockfiles and on the names it reads as pip requirements files (a base
+    name ending `.txt` that contains `requirements`, such as `requirements-dev.txt`). Each
+    input must yield packages on its own, so one it finds none in (a broken file, a `-r`
+    include that is missing) is a `no-packages` finding even when another input in the same
+    run was read. It is never a pass, and takes a dated exception when the file is
+    legitimately empty. Includes are not resolved, so a changed requirements file with any
+    include line (`-r`, `-c`, a `--requirement` or `--constraint` prefix, after pip joins
+    continuation lines) is a `not-covered` finding on that file: the scan cannot prove what
+    the include pulled in. It fails unless an owned, expiring exception names that file.
+    Resolving includes is
+    `plans/2026-11-22-security-scan-osv-include-resolution.md`;
   - zizmor on workflows, actions and Dependabot config;
   - semgrep on Python, JavaScript and TypeScript files, the languages `semgrep.yml` has rules
     for, inside a pinned container with no network and a read-only mount. A repo that adds
@@ -274,7 +277,8 @@ Rules:
 - Every entry needs exactly `scanner`, `rule`, `path`, `owner`, `expires` (`YYYY-MM-DD`) and
   `reason`, all non-empty. Anything else is `scanner-error`.
 - An entry matches scanner, rule and path exactly. For gitleaks, osv-scanner and zizmor the
-  rule is the scanner's rule id. For semgrep it is the rule id in `semgrep.yml`, or
+  rule is the scanner's rule id, or `no-packages` / `not-covered` for an osv-scanner input
+  it could not read or prove complete. For semgrep it is the rule id in `semgrep.yml`, or
   `target-error` / `target-skipped` for a file semgrep could not parse or skipped.
 - After its expiry date an exception stops suppressing, so the finding returns and is
   listed in the summary.
@@ -307,3 +311,6 @@ above, merged first.
   and GitHub serves fork heads there. The canary covers same-repo PRs only.
 - Files over the scanners' size limits and binary files are scanned as gitleaks sees them.
   semgrep reports any target it skipped, as a finding.
+- osv-scanner sees only changed files. A changed file that is a dependency list only because
+  an unchanged requirements file includes it (for example `base.txt`) is not scanned by
+  osv-scanner. The include-resolution plan above closes this.
