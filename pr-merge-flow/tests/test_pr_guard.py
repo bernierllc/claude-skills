@@ -939,6 +939,8 @@ for mode in ({}, {"policy": EMPTY, "rules": RULESET_GATE}, {"policy": pinned_bui
     # ...and with the check-runs call failing nothing authenticates, so nothing collapses: B's failed build blocks.
     m = guard([gate, build_a, build_b, lint_b], cr=_gh_error(500, "Server Error"), **mode)
     assert m and "build: FAILURE" in m, (mode, m)
+    # The outage is named in every mode, also without a policy file: it is why nothing collapsed.
+    assert LOOKUP + "check-runs 500 Server Error; using the all-green rule" in m, (mode, m)
 assert guard([gate, build_a, build_b, lint_b, lint_forged], forged=(lint_forged,), cmd=PIN + " # codex-review-ok: x")
 # The control: without the forgery, a newer green build in run B supersedes run A's failure.
 assert guard([gate, ck("build", "FAILURE", at="2026-11-22T10:00:00Z", run_id=4300), ck("build", at="2026-11-22T10:10:00Z", run_id=4400)],
@@ -1020,6 +1022,7 @@ FAIL = {
     "rule without parameters": ({"rules": [{"type": "required_status_checks"}]}, "rules a required_status_checks rule lists no checks"),
     "policy 403": ({"policy": _gh_error(403, "Resource not accessible by integration")}, ".github/required-checks.json 403"),
     "policy 500": ({"policy": _gh_error(500, "Server Error")}, ".github/required-checks.json 500 Server Error"),
+    "policy nested too deep": ({"policy": "[" * 100000 + "]" * 100000}, ".github/required-checks.json malformed: "),
     "check-runs 500": ({"cr": _gh_error(500, "Server Error")}, "check-runs 500 Server Error"),
 }
 for case, (kw, line) in FAIL.items():

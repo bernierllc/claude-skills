@@ -887,7 +887,7 @@ def read_policy(h):
         if (kind, encoding) != ("file", "base64"):
             raise ValueError(f"not a base64 file ({kind}, {encoding})")
         return parse_policy(json.loads(base64.b64decode(content))), None
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, RecursionError) as e:  # deep nesting overflows json before 3.14: a crash exits 1, an allow
         return None, f"malformed: {e}"
 
 
