@@ -81,15 +81,35 @@ assert g.evaluate(pr(body=pending_body, headRefOid=head, reviews={"nodes": []}))
     "pending review plus Claude Code footer must never satisfy the gate"
 )
 
-for reviewer in ("codex", "agy", "antigravity", "superpowers", "claude-sonnet"):
+def attested(reviewer, sha=head, verdict="clean"):
+    body = f"## Review\n\nFallback review: {reviewer} on {sha} — verdict: {verdict}\n"
+    return g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
+
+
+for reviewer in ("codex", "agy", "antigravity", "cursor", "superpowers", "claude-sonnet"):
     for sha in (head, head[:7], head[:8], head[:12]):
         for verdict in ("clean", "findings fixed"):
-            body = (
-                f"## Review\n\nFallback review: {reviewer} on {sha} "
-                f"— verdict: {verdict}\n"
-            )
-            result = g.evaluate(pr(body=body, headRefOid=head, reviews={"nodes": []}))
+            result = attested(reviewer, sha, verdict)
             assert (result == []) == (sha == head), (sha, result)
+# near-miss reviewer tokens fail, and the failure lists every allowed reviewer
+for reviewer in ("cursor-agent", "cursors", "cursor auto", "sonnet", ""):
+    result = attested(reviewer)
+    assert result and "<codex|agy|antigravity|cursor|superpowers|claude-sonnet>" in result[-1], (reviewer, result)
+
+# The documented fallback chain and the gate cannot drift: each step of adversarial-review's "Reviewer order"
+# names the token it attests as, and the gate accepts it; both skills' "allowed reviewers" lists equal the checker's.
+_repo_root = Path(__file__).resolve().parents[2]
+if (_repo_root / "skills-manifest.json").is_file():  # an installed skill has no adversarial-review beside it
+    _adv = (_repo_root / "adversarial-review" / "SKILL.md").read_text(encoding="utf-8")
+    _steps = re.findall(r"^\d+\. .*$", _adv.split("\n## Reviewer order", 1)[1].split("\n## ", 1)[0], re.M)
+    _chain = [re.search(r"attest as `([^`]+)`", s) for s in _steps]
+    assert len(_steps) >= 4 and all(_chain), _steps
+    for reviewer in (m.group(1) for m in _chain):
+        assert attested(reviewer) == [], reviewer
+    for _doc, _marker in ((_adv, "Allowed reviewers:"),
+                          ((_repo_root / "review-gate" / "SKILL.md").read_text(encoding="utf-8"), "- `reviewer`:")):
+        _line = next(x for x in _doc.splitlines() if _marker in x).split(_marker, 1)[1].split("Allowed verdicts", 1)[0]
+        assert tuple(re.findall(r"`([a-z-]+)`", _line)) == g.FALLBACK_REVIEWERS, (_marker, _line)
 
 # Clean Codex runs post no review, only a state marker in the summary PR comment.
 def codex_comment(sha, status="completed", unresolved=False, login="chatgpt-codex-connector"):
@@ -2308,9 +2328,6 @@ try:
     raise AssertionError("_all_nodes accepted a next page without a cursor")
 except RuntimeError as _e:
     assert "without a cursor" in str(_e), _e
-# the fallback reviewer allow-list is exactly the documented set
-assert re.search(r"\(([a-z|-]+)\) on", g.FALLBACK_ATTESTATION.pattern).group(1).split("|") == [
-    "codex", "agy", "antigravity", "superpowers", "claude-sonnet"]
 
 
 # An API failure names the method and endpoint (never field values such as the GraphQL query).

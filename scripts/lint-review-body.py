@@ -31,8 +31,8 @@ def _load_gate():
     except OSError as e:
         print(f"review-gate body: cannot load {path}: {e}; re-run install-workflow.py --force", file=sys.stderr)
         raise SystemExit(2)
-    if not hasattr(mod, "review_region"):  # a checker older than 3.2.8, vendored before this linter
-        print(f"review-gate body: {path} is too old for this linter (no review_region); "
+    if not hasattr(mod, "REVIEWER_CHOICES"):  # a checker older than 3.5.0, vendored before this linter
+        print(f"review-gate body: {path} is too old for this linter (no REVIEWER_CHOICES); "
               "re-run install-workflow.py --force", file=sys.stderr)
         raise SystemExit(2)
     return mod
@@ -44,7 +44,7 @@ def lint(body: str) -> list[str]:
     for line in region:
         if line.lower().startswith("fallback review:") and not gate.FALLBACK_ATTESTATION.fullmatch(line):
             problems.append(f"## Review line {line!r} is not an exact attestation: Fallback review: "
-                            "<codex|agy|antigravity|superpowers|claude-sonnet> on <full 40-hex head SHA> "
+                            f"{gate.REVIEWER_CHOICES} on <full 40-hex head SHA> "
                             "— verdict: <clean|findings fixed>")
     return problems
 
