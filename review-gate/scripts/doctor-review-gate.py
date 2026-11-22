@@ -230,13 +230,17 @@ def local_checks(root: Path) -> int:
 def vendored_skill_parity(root: Path) -> bool:
     """False (with a FAIL line and the one fix) when the repo-tracked copy of this skill is older than this
     release, or its hooks.json and SKILL.md versions disagree. `aec run-script skill:review-gate` runs the repo
-    copy first, so a stale one keeps an old merge guard running however new the installed skill is."""
+    copy first, so a stale one keeps an old merge guard running however new the installed skill is. Run from the
+    vendored copy itself (the --doctor-job workflow does), it skips only the newer-release comparison."""
     installer = _load_installer()
     dest = root / installer.VENDORED_SKILL
     skill_root = SKILL_SCRIPTS.parent
-    if not dest.is_dir() or dest.resolve() == skill_root:
-        return True  # nothing vendored, or this doctor IS the vendored copy (it cannot see a newer release)
-    fix = f"python3 {SKILL_SCRIPTS / 'install-workflow.py'} --force"
+    if not dest.is_dir():
+        return True  # nothing vendored
+    is_self = dest.resolve() == skill_root
+    # this copy's own installer cannot replace itself, so the self case names the re-vendor the doctor job names
+    fix = ("aec install skill review-gate, then commit .claude/skills/review-gate" if is_self
+           else f"python3 {SKILL_SCRIPTS / 'install-workflow.py'} --force")
     try:
         have, want = installer.skill_version(dest), installer.skill_version(skill_root)
     except ValueError as e:
@@ -245,7 +249,7 @@ def vendored_skill_parity(root: Path) -> bool:
     if have is None:
         print(f"FAIL {installer.VENDORED_SKILL}/SKILL.md has no readable version; replace the copy by hand")
         return False
-    if want is not None and have < want:
+    if not is_self and want is not None and have < want:  # the copy cannot see a release newer than itself
         print(f"FAIL {installer.VENDORED_SKILL} is {installer.dotted(have)}, this release is "
               f"{installer.dotted(want)}; replace the whole copy and commit it: {fix}")
         return False
