@@ -970,6 +970,22 @@ m = guard([gate, ck("Review Gate", wf="Spoof")], policy=EMPTY, rules=[  # rulese
     {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "Review Gate", "integration_id": 4242}]}}])
 assert m and "required check Review Gate is MISSING" in m, m
 
+# 7a. Classic protection lists a checks[] pin in legacy contexts[] too (as the recorded body does): the pin alone
+# decides, so a same-named SKIPPED check from another app does not block (review thread r4658452439).
+CLASSIC_PINNED = dict(REC["classic_protection"], checks=[dict(REC["classic_protection"]["checks"][0], app_id=4242)])
+travis = {"name": "continuous-integration/travis-ci", "conclusion": "SUCCESS", "detailsUrl": "https://travis.example/b/5"}
+other_app = dict(travis, conclusion="SKIPPED", detailsUrl="https://other.example/c/5", _app=99)
+g.subprocess.run = _gh(rollup=[gate], protection=CLASSIC_PINNED)
+try:
+    _s = g.Head({"headRefOid": HEAD_SHA, "url": "https://github.com/o/r/pull/5"}, None, g.time.monotonic() + 15)
+    assert g.branch_required(_s, "main") == {("continuous-integration/travis-ci", ("app", 4242))}
+finally:
+    g.subprocess.run = _run
+assert guard([gate, dict(travis, _app=4242), other_app],
+             policy=EMPTY, rules=RULESET_GATE, protection=CLASSIC_PINNED) is None
+m = guard([gate, other_app], policy=EMPTY, rules=RULESET_GATE, protection=CLASSIC_PINNED)
+assert m and "required check continuous-integration/travis-ci is MISSING" in m, m  # the pin is still required
+
 # 8. A required check must be SUCCESS: pending, cancelled, skipped and neutral each block and name the state.
 for concl, state in (("", "PENDING"), ("CANCELLED", "CANCELLED"), ("SKIPPED", "SKIPPED"), ("NEUTRAL", "NEUTRAL")):
     m = guard([gate, ck("Test & Build", concl)], policy=TB_CI, rules=RULESET_GATE)

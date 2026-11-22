@@ -914,9 +914,11 @@ def branch_required(h, base):
         for checks, contexts in classic or []:
             if not isinstance(checks, list) or not isinstance(contexts, list):
                 raise ValueError("missing checks or contexts")
-            req |= {(c["context"], ("app", c["app_id"]) if type(c.get("app_id")) is int and c["app_id"] > 0 else None)
-                    for c in checks}
-            req |= {(c, None) for c in contexts}
+            pinned = {(c["context"], ("app", c["app_id"]) if type(c.get("app_id")) is int and c["app_id"] > 0 else None)
+                      for c in checks}
+            # GitHub also lists every checks[] context in legacy contexts[]; re-adding it unpinned would
+            # let a same-named check from another app block a merge the pin allows.
+            req |= pinned | {(c, None) for c in contexts if c not in {n for n, _ in pinned}}
     except (TypeError, KeyError, ValueError):
         h.failed.append(("classic protection", "malformed response"))
     return req
