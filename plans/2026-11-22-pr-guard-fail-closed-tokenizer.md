@@ -18,7 +18,7 @@ Status: planned. Amends [the tokenizer-first merge guard plan](2026-11-21-tokeni
 
 Each row was run through the real hook: `pr-guard.py` under `python3 -I`, with a stdin JSON `PreToolUse` payload (`tool_name: Bash`) and a working directory with no GitHub remote. Exit 0 means the command runs. The 1.6.0 column is the parity baseline 75137f8. The 1.6.1 column is main 4974d55.
 
-The "Bash runs a merge" column comes from running each row with a `gh` recorder first on `PATH`, once under `/bin/bash` 3.2.57 and once under `/opt/homebrew/bin/bash` 5.3.20. `min_bash` is 3.2 when `/bin/bash` 3.2 runs the merge. Otherwise it is 4.2, #132's figure for the bash that parses these forms the new way.
+The "Bash runs a merge" column comes from running each row with a `gh` recorder first on `PATH`, once under `/bin/bash` 3.2.57 and once under `/opt/homebrew/bin/bash` 5.3.20. `min_bash` is 3.2 when `/bin/bash` 3.2 runs the merge. Otherwise it is 4.2, #132's figure for the bash that parses these forms the new way. **That 4.2 is unverified:** no bash 4.x was run, only 3.2.57 and 5.3.20. The corpus test (below) runs each row under every installed bash in its range, so a CI runner with a bash 4.x checks it, and a row that bash does not merge on fails and asks for the range to be corrected. `max_bash` is set only on row 18, which bash 4+ does not merge on.
 
 | # | Command | 1.6.0 | 1.6.1 | Bash runs a merge | Fixed by |
 |---|---|---|---|---|---|
@@ -30,17 +30,25 @@ The "Bash runs a merge" column comes from running each row with a `gh` recorder 
 | 6 | `echo "$(echo ${x:-$(echo })}; gh pr merge 1 --auto)"` | 0 | 0 | 5.3 only (min_bash 4.2) | A3 (non-trivial `${` is hard) |
 | 7 | `echo \ # ; gh pr merge 1 --auto` | 0 | 0 | 3.2 and 5.3 | A2 (`#` only at word start) |
 | 8 | `/usr/bin/env -vS'gh pr merge 1 --admin'` | 0 | 2 | 3.2 and 5.3 | 1.6.1 |
-| 9 | `env -S 'gh pr merge 1 --auto'` | 2 | 2 | 3.2 and 5.3 | already denied |
+| 9 | `env -S 'gh pr merge 1 --auto'` | 2 | 2 | 3.2 and 5.3 | denied today for `--auto`, not for `env -S`; the corpus row asserts the env rule (see below) |
 | 10 | `$(true` + 58K newlines + `)` then a merge | 2 (0.5 s) | 2 | 3.2 and 5.3 | already denied |
-| 11 | `echo $((gh pr merge 1 --auto); echo hi)` | 2 | 2 | 3.2 and 5.3 | denied by legacy; A3 pins it (`$((` is hard) |
+| 11 | `echo $((gh pr merge 1 --auto); echo hi)` | 2 | 2 | 3.2 and 5.3 | denied today for `--auto`, not for `$((`; the corpus row asserts A3's rule |
 | 12 | `echo "$(echo a # )` newline `gh pr merge 1 --auto` newline `)"` | 0 | 0 | 3.2 and 5.3 | A3 (comment in a substitution is hard) |
 | 13 | `x="$(cat <<EOF` newline `msg $(gh pr merge 1 --auto)` newline `EOF` newline `)"` | 0 | 0 | 3.2 and 5.3 | A3 (an unquoted heredoc is an expansion context) |
-| 14 | `a[$(gh pr merge 1 --auto)]=x` | 2 | 2 | 3.2 and 5.3 | denied by legacy; A2 pins it (subscripts are scanned) |
+| 14 | `a[$(gh pr merge 1 --auto)]=x` | 2 | 2 | 3.2 and 5.3 | denied today for `--auto`, not for the subscript; the corpus row asserts A2's rule |
 | 15 | `bash -c "env -S 'gh pr merge 1 --auto'"` | 0 | 0 | 3.2 and 5.3 | #139 `Nested` + 1.6.1's env rule in `token_checks` |
 | 16 | `` echo `env -S 'gh pr merge 1 --auto'` `` | 0 | 0 | 3.2 and 5.3 | #139 `Nested` + 1.6.1's env rule in `token_checks` |
 | 17 | `builtin exec env -S 'gh pr merge 1 --auto'` | 0 | 0 | 3.2 and 5.3 | #139 Rule A (`builtin`) + 1.6.1's env rule |
+| 18 | `x=$(cat <<'EOF2'` newline `)` newline `gh pr merge 1 --auto` newline `EOF2` newline `)` | 0 | 0 | 3.2 only (min_bash 3.2, max_bash 3.2; 5.3 runs nothing) | A3 (a heredoc body inside a substitution may not hold `(`, `)`, a backtick or a quote) |
+| 19 | `b='gh pr merge 1 --auto'; echo $((true)\|$b)` | 0 | 0 | 3.2 and 5.3 | A3 (arithmetic ends only at an adjacent `))`) and R9 (field splitting) |
+| 20 | `b='gh pr merge 1 --auto'; $b` | 0 | 0 | 3.2 and 5.3 | #139 R9, amended in A3: an unquoted hole's value is split on whitespace |
+| 21 | `echo "$\` newline `(gh pr merge 1 --auto)"` | 0 | 0 | 3.2 and 5.3 | A2 (line continuations are joined while reading) |
 
-Rows 1 to 7, 12, 13 and 15 to 17 run a merge on main today while the hook allows it. #132's round 3 found rows 1 to 7, but they predate #132. #132's round 2 fixed rows 15 to 17, and #132 did not land. 1.6.1 denies `env -S` only in a top-level segment, so these three stay live. The exposure lasts until #139 step 3 ships, and it is tracked under "Interim exposure" below.
+Rows 9, 11 and 14 cannot show that `token_checks` catches their construct, because `legacy_checks` denies every merge spelling from the probe directory for its flags or its checks. So their corpus rows carry a `rule` field, and the test asserts that the denial comes from `token_checks` and names that rule (Tests, below).
+
+Rows 18 to 21 came from the round-2 review of this plan (review 6013805698) and were re-run here.
+
+Rows 1 to 7, 12, 13 and 15 to 21 run a merge on main today while the hook allows it. #132's round 3 found rows 1 to 7, but they predate #132. #132's round 2 fixed rows 15 to 17, and #132 did not land. 1.6.1 denies `env -S` only in a top-level segment, so these three stay live. The exposure lasts until #139 step 3 ships, and it is tracked under "Interim exposure" below.
 
 ## Interim exposure
 
@@ -49,7 +57,7 @@ Until #139 step 3 ships, the forms above stay live. There is no interim mitigati
 - (a) a coarse backstop in `legacy_checks`, which would deny `gh` + `merge` anywhere inside a substitution or a shell string;
 - (b) accept the exposure for the interval and list the live forms in pr-merge-flow's `SKILL.md`.
 
-Both options are reversible, and neither changes this plan's design.
+Both options are reversible, and neither changes this plan's design. Option (a) would not cover rows 20 (`$b` bound to a whole merge command) or 21 (a line continuation inside `$(`), since neither puts `gh` and `merge` as words inside a substitution; the row's decision should weigh that.
 
 ## Amendments
 
@@ -73,6 +81,7 @@ Replace "Wait for #131 and #132" with:
 Add to "How it finds the ends of constructs":
 
 - **One linear character loop.** `shell_tokens.tokenize` and everything it calls index the string one character at a time with an explicit context stack.
+- **Line continuations are joined as the loop reads.** A backslash followed by a newline is dropped, with the newline, in every context except single quotes and a quoted heredoc body, where both stay as text. That includes double quotes, an unquoted heredoc body and the middle of an operator. The construct being read continues across the join. Bash's lexer does the same, so `"$\` newline `(gh pr merge 1 --auto)"` is `"$(gh pr merge 1 --auto)"` (probe row 21). This happens inside the loop, not as a pre-pass, because whether a backslash-newline is a continuation depends on the quoting context.
 - **No regex machinery in the shared module.** `shell_tokens.py` and `hook_runtime.py` import none of `re`, `shlex`, `fnmatch` or `glob`. `shlex` imports `re`, and `fnmatch` and `glob` compile regexes.
   - This amends #139 section 1, which kept `shlex` as the word splitter for the plain spans. The character loop splits words itself, and `shlex` stays only in `legacy_checks`.
   - The AST test is in A4.
@@ -129,25 +138,35 @@ At top level (outside every substitution), #139 section 1 stands, with these exc
 
 1. **A heredoc whose segment command is `cat` or `printf`.** The command word must be a `Literal` whose basename is `cat` or `printf`, and it must come before the heredoc operator. `<<'EOF' cat` is a failure, because the command word must not come after the construct.
    - **Quoted delimiter** (`<<'EOF'`, `<<"EOF"`, `<<\EOF`, and the `<<-` forms of each): the body is inert text. It ends at the first line equal to the delimiter (tabs stripped for `<<-`), and R10 still scans it.
-   - **Unquoted delimiter** (`<<EOF`): the body is an expansion context (above). Each construct in it is parsed under these rules, so row 13's `$(gh pr merge 1 --auto)` reaches R1 and is denied as a merge. `$VAR`, `\$`, `` \` `` and a harmless substitution such as `` `date` `` stay allowed.
+   - **Unquoted delimiter** (`<<EOF`): the body is an expansion context (above). Each construct in it is parsed under these rules, so row 13's `$(gh pr merge 1 --auto)` reaches R1 and is denied as a merge. At top level, `$VAR`, `\$`, `` \` `` and a harmless substitution such as `` `date` `` stay allowed.
+   - **Inside a substitution, the body may hold no `(`, `)`, backtick, `'` or `"`.** This applies to a heredoc whose operator sits inside any `$(…)`, backtick, `<(…)` or `>(…)` body, at any depth, with either kind of delimiter. Any of those five characters in the body is a failure at the heredoc operator.
+     - Why: bash 3.2 finds the end of `$(…)` by scanning the heredoc body as shell text, where quotes and parentheses count. Bash 4+ skips the body up to the delimiter line. So in probe row 18, 3.2 ends the substitution at the body's `)` and runs the next line as a command, and 5.3 runs nothing. An apostrophe in such a body is already a syntax error on 3.2 ("unexpected EOF while looking for matching `'`"), checked on 3.2.57.
+     - With none of the five in the body, 3.2's scan meets nothing that opens or closes, so both bashes end the body at the same place. That was checked on 3.2.57 and 5.3.20 with a body holding `$V`, `#`, `\`, `{ }`, `case`, `esac` and `<<X`: both printed the same text and ran nothing.
+     - The scanner checks the body's characters only. It does not model 3.2's scan (Not in scope).
+     - In an unquoted body this also rules out `$(…)` and backticks, so row 13 fails here before R1 is reached. `$VAR` and `${name}` stay allowed.
+     - A heredoc at top level, outside every substitution, is not affected: `gh pr create --body-file - <<'EOF'` and `git commit -F - <<'EOF'` may hold any text.
 2. **Trivial parameter expansion:** `${name}`, `${#name}`, and `${N}` or `${@}`/`${*}`/`${#}`/`${?}`, with nothing else between the braces. `name` is `[A-Za-z_][A-Za-z0-9_]*`, checked character by character. Each one becomes an `Unresolved` fragment, as `$name` does. `$(git log -1 --format=${FMT})` stays allowed.
 3. **Arithmetic of plain shape**, for `$((…))` and `((…))`:
    - the body consists only of operands and operators;
    - an operand is a number, a `name`, `$name` or a trivial `${name}`;
    - an operator is one of `+ - * / % < > = ! & | ^ ~ ? : ,`, or a parenthesis;
    - every two operands have an operator between them;
-   - the body contains no `;`, no newline, no quote, no backtick and no `$(`.
+   - the body contains no `;`, no newline, no quote, no backtick and no `$(`;
+   - **the body ends only at an adjacent `))`.** Depth is 2 after `$((` or `((`, each `(` adds one and each `)` subtracts one. A `)` that takes the depth from 2 to 1 must be followed at once by a `)` that takes it to 0. Anything else after it is a failure. Bash reads `$((true)|$b)` as a command substitution holding the subshell `(true)` piped into `$b` (probe row 19). In the scanner it would otherwise look like plain arithmetic.
 
-   `$((i+1))` and `((n > 2))` are allowed. `$((gh pr merge 1 --auto); echo hi)` fails, because `gh pr` is two operands with no operator.
+   `$((i+1))`, `$(((a+1)*2))` and `((n > 2))` are allowed. `$((gh pr merge 1 --auto); echo hi)` fails, because `gh pr` is two operands with no operator. `$((true)|$b)` fails at the single `)`.
+
+**R9 amended: an unquoted hole's value is split on whitespace.** #139 R9 replaces each parameter hole in a command-position word with its bound values, then matches `gh`, `pr` and `merge` across that word and the next two slots. When the hole is unquoted, Bash also splits the value into fields. So R9 splits each substituted value of an unquoted hole on space, tab and newline before matching. `b='gh pr merge 1 --auto'; $b` then gives the fields `gh`, `pr`, `merge`, `1` and `--auto`, and R9 denies it (probe row 20, which merges on 3.2 and 5.3 and passes 1.6.1). A quoted `"$b"` is one field, the command name `gh pr merge 1 --auto`, which does not exist, so it is not split. A value that would fill the later slots (`b='pr merge'; gh $b 1`) is already denied by #139 R5 (an `Unresolved` subcommand slot), so this amendment covers the command position.
 
 **Cost (R7, new denials).** These forms are denied, and Bash would run some of them harmlessly. The fix for the user, in each denial message, is to move the logic out of the substitution or to use a plain variable.
 
 - `$(case $x in a) echo a;; esac)`;
 - `echo "$(echo ${x:-default})"`;
 - `x=$(grep foo f # note)` spread over lines;
-- `$(git commit -F - <<'EOF' … EOF)`, whose heredoc command is not `cat` or `printf`.
+- `$(git commit -F - <<'EOF' … EOF)`, whose heredoc command is not `cat` or `printf`;
+- `--body "$(cat <<'EOF' … EOF)"` and `git commit -m "$(cat <<'EOF' … EOF)"` when the body holds `(`, `)`, a backtick, `'` or `"`. This is the largest cost: PR and commit bodies often hold an apostrophe or a `(#123)`. On bash 3.2 the apostrophe form is already a syntax error. The denial message gives the fix: move the heredoc to top level with `gh pr create --body-file - <<'EOF'`, `gh pr comment <n> --body-file - <<'EOF'` or `git commit -F - <<'EOF'`, or write the body with the Write tool and pass `--body-file`/`-F`. pr-merge-flow's `SKILL.md` documents those forms as the standard.
 
-`--body "$(cat <<'EOF' … EOF)"` and `git commit -m "$(cat <<'EOF' … EOF)"`, the common agent heredocs, are allowed by item 1.
+The same two heredocs stay allowed when their bodies hold none of the five characters, by item 1.
 
 **R6 restated for pr-guard.** Any word after `merge` that is not a `Literal` denies. `--match-head-commit` must be a `Literal` of exactly 40 hex characters. #139 R6 already says this; this plan adds the test rows.
 
@@ -164,6 +183,10 @@ Replace that sentence, and add:
   - A deny there exits 2 with no child process started.
 - **If `token_checks` allows, `legacy_checks` runs in a child process. This is the default, not a fallback.**
   - `run_hook` runs `subprocess.Popen([sys.executable, "-I", <the guard script>, "--legacy-only"], stdin=PIPE, stdout=PIPE, stderr=PIPE, start_new_session=True)`.
+  - **The guard script puts its own directory on `sys.path` before it imports `shell_tokens` or `hook_runtime`.** `-I` leaves the script's directory off `sys.path` (verified: `python3 -I main.py` with a sibling `import sib` raises `ModuleNotFoundError`). Without this, the child would exit 1 on import, and under the exit mapping below every command `token_checks` allowed would be denied.
+    - The first lines of `pr-guard.py`, before any import of a sibling module, are `sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))`. That runs in the parent and in the `--legacy-only` child alike, and it is the only place either one finds its siblings.
+    - It adds only that directory. `-I` still ignores `PYTHONPATH`, the user site directory and the working directory.
+    - The test is a plain `gh pr view 1` sent through `main()` with a stdin payload, in a fresh `python3 -I` process. It must exit 0, which shows that the child imported its modules and allowed the command.
   - It writes the payload, then calls `communicate(timeout=…)`. The timeout is the time left until `alarm_s`.
   - The child gets the remaining cooperative budget in seconds as an argument and builds its own `Deadline` from it.
   - On `TimeoutExpired`, the parent calls `os.killpg` on the child's process group and exits 2 with "check timed out".
@@ -202,12 +225,17 @@ Replace that sentence, and add:
 - **The bypass corpus** is one fixture file, `pr-merge-flow/tests/fixtures/pr_guard_bypass_corpus.jsonl`. It holds one JSON object per line:
 
   ```json
-  {"cwd": "…", "cmd": "…", "kind": "runs" | "policy", "min_bash": "3.2" | "4.2"}
+  {"cwd": "…", "cmd": "…", "kind": "runs" | "policy", "min_bash": "3.2" | "4.2", "max_bash": "3.2", "rule": "…"}
   ```
 
+  `max_bash` and `rule` are optional.
+
   - **`kind: "runs"`** rows really run a merge. Each is tested two ways:
-    1. **Bash really runs a merge.** Run the row with a harmless `gh` recorder first on `PATH`, under every installed bash at or above the row's `min_bash`. Check `/bin/bash` and every `bash` on `PATH`, and record each version. The recorder must see `pr merge`. A row whose recorder sees no merge fails the test and asks for the row to be reclassified. A row whose `min_bash` no installed bash meets is skipped, and the skip names the version needed.
+    1. **Bash really runs a merge.** Run the row with a harmless `gh` recorder first on `PATH`, under every installed bash from the row's `min_bash` up to its `max_bash` (no upper bound when `max_bash` is absent). Check `/bin/bash` and every `bash` on `PATH`, and record each version. The recorder must see `pr merge`. A row whose recorder sees no merge fails the test and asks for the row's range to be corrected. A row whose range no installed bash meets is skipped, and the skip names the versions needed.
     2. **The real hook denies it.** The row goes through `main()` with a stdin payload and must exit 2.
+  - **`rule`** names the `token_checks` rule or A2/A3 construct that must deny the row, such as `R7: case` or `env -S`. For a row with `rule`, the `main()` leg also checks two things. The stderr must name that rule. The legacy child must not have started, which the test checks with the marker file from the child-process tests below. So the row proves that `token_checks` denied it, not `legacy_checks`.
+    - `rule` is required on probe rows 9, 11 and 14, which `legacy_checks` denies today for `--auto`, and on every A2 and A3 row.
+    - It is not set on rows whose point is that some layer denies them, such as the wrapper rows.
   - **`kind: "policy"`** rows run no merge themselves, or need something the test cannot provide. pr-guard denies them by policy (#139 R2, or a wrapper it does not trust). They are tested through `main()` only, and they must exit 2. Examples:
     - `echo gh pr merge 1 --auto`;
     - `ssh host gh pr merge 1 --auto`;
@@ -215,8 +243,9 @@ Replace that sentence, and add:
     - `docker exec c gh pr merge 1 --auto`.
   - **The `runs` rows include:**
     - every input from #132 rounds 1 to 3 that bash really runs (its `NESTED` and `ROUND3` tables);
-    - probe rows 1 to 8 and 11 to 17;
-    - rows 5 and 6 with `min_bash: "4.2"`;
+    - probe rows 1 to 9 and 11 to 21;
+    - rows 5 and 6 with `min_bash: "4.2"`, which is unverified until a bash 4.x runs them;
+    - row 18 with `min_bash: "3.2"` and `max_bash: "3.2"`;
     - one wrapper row per Rule A wrapper #139 lists: `doas`, `ionice`, `stdbuf`, `setsid`, `chroot`, `nice`, `timeout`, `nohup`, `time`, `exec`, `builtin`, `command`, `xargs`, `env`;
     - the macOS wrappers `arch` and `caffeinate`;
     - the brace form `g{h,} pr merge 1 --auto`.
@@ -228,16 +257,25 @@ Replace that sentence, and add:
     - `;&` and `;;&` arms;
     - `!`, `time`, `coproc` and `[[ $(…) ]]` around a merge;
     - `a[$(…)]=x`;
-    - `$((…); …)`;
-    - quoted and unquoted heredocs that hold a merge in a substitution.
+    - `$((…); …)` and `$((true)|$b)`;
+    - quoted and unquoted heredocs that hold a merge in a substitution, and row 18's `)` in a quoted body;
+    - a heredoc inside a substitution whose body holds `(`, a backtick, `'` or `"`, one row each (each denied, `rule: "heredoc body in a substitution"`);
+    - `$b` bound to a whole merge command (row 20);
+    - a line continuation inside `$(`, inside `&&` and inside `merge`.
 - **Negatives that must stay allowed.** Each runs under the recorder (no merge seen) and through `main()` (exit 0):
   - `gh pr merge 1 --squash --match-head-commit <40 hex>` with green checks stubbed at the `gh` recorder. This is the one allowed merge, and it pins that A2 and A3 deny nothing on the happy path;
-  - `--body "$(cat <<'EOF' … EOF)"` with apostrophes;
-  - `gh pr create --body "$(cat <<EOF … EOF)"` (unquoted) whose body holds `$VAR`, `\$`, an escaped `` \` `` and a harmless `` `date` ``;
+  - `--body "$(cat <<'EOF' … EOF)"` whose body holds none of `(`, `)`, a backtick, `'` or `"`, but does hold `$V`, `#`, `\`, `{ }`, `case` and `<<X`;
+  - `gh pr create --body-file - <<'EOF'` at top level whose body holds apostrophes, `(#123)`, double quotes and backticks;
+  - `git commit -F - <<'EOF'` at top level with the same body;
+  - `gh pr create --body "$(cat <<EOF … EOF)"` (unquoted) whose body holds `$VAR` and `\$`;
+  - an unquoted heredoc at top level whose body holds an escaped `` \` `` and a harmless `` `date` ``;
   - a quoted heredoc body that contains `gh`, `git push` and a line holding only `.`;
   - `$(git log -1 --format=${FMT})`;
-  - a 60 KB quoted heredoc body (inside the 128 KiB cap, under the 4× read budget);
-  - `git commit -m "$(cat <<'EOF' … EOF)"`;
+  - a 60 KB quoted heredoc body of plain text (inside the 128 KiB cap, under the 4× read budget);
+  - `git commit -m "$(cat <<'EOF' … EOF)"` whose body holds none of the five characters;
+  - a plain `gh pr view 1` in a fresh `python3 -I` process (A4's import test);
+  - a line continuation in a plain command (`git status \` newline `--short`), and `'a\` newline `b'` in single quotes;
+  - `$(((a+1)*2))`;
   - `bash -c 'echo done'`;
   - `$'…'` and `${…}` used as plain text at top level;
   - a `deploy.sh` argument;
@@ -261,7 +299,8 @@ Replace that sentence, and add:
   - nothing in `legacy_checks` changes.
 - `pr-merge-flow/scripts/shell_tokens.py` and `review-gate/scripts/shell_tokens.py`, the byte-identical mirror from #139.
 - `pr-merge-flow/scripts/hook_runtime.py` and its review-gate mirror: `run_hook` gains the token-first order, the child process, the exit mapping and `killpg`.
-- `pr-merge-flow/SKILL.md`: the hard constructs, the allowlist, the 128 KiB cap with the Write-tool advice, and the new denials listed under A3's "Cost".
+- `pr-merge-flow/SKILL.md`: the hard constructs, the allowlist, the five-character rule for a heredoc inside a substitution, the top-level heredoc forms (`--body-file - <<'EOF'`, `git commit -F - <<'EOF'`) as the standard way to pass a body, the 128 KiB cap with the Write-tool advice, and the new denials listed under A3's "Cost".
+- `pr-merge-flow/scripts/pr-guard.py` also puts its own directory on `sys.path` before its sibling imports (A4).
 - `pr-merge-flow/tests/test_pr_guard.py`, the new corpus fixture, and `test_pr_guard_parity.py`.
 - review-gate's `merge-guard.py` takes the same tokenizer and the same `run_hook` at #139 step 4. Its `legacy_checks` also moves into the child process. That is a step-4 change, reviewed there.
 - Consumers: the vendored copies re-vendor per #139 step 5. Nothing in this plan touches a vendored copy directly.
@@ -286,4 +325,4 @@ Replace that sentence, and add:
    - every `policy` row exits 2 through `main()`;
    - the negatives exit 0;
    - parity is lost = 0.
-4. After the step-3 release is on main, the probe is re-run against that release with the probe script from this plan: every live row (1 to 7, 12, 13, 15 to 17) exits 2. The result is recorded on this plan's Tracker row, with the release commit SHA. It is not recorded in the release PR itself, which cannot cite its own merge.
+4. After the step-3 release is on main, the probe is re-run against that release with the probe script from this plan: every live row (1 to 7, 12, 13, 15 to 21) exits 2. The result is recorded on this plan's Tracker row, with the release commit SHA. It is not recorded in the release PR itself, which cannot cite its own merge.
