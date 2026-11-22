@@ -11,13 +11,15 @@ import posixpath
 import re
 import sys
 
-CATEGORY = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
+# The SKILL.md category table; a test keeps the two equal so a typo cannot mint a second id.
+CATEGORIES = frozenset({"AUTHN", "AUTHZ", "TENANT", "RLS", "KEY", "MCPAUTHZ", "FAILOPEN", "PROMPT",
+                        "OUTPUT", "CI", "SECRET", "DEP", "INJECTION", "OTHER"})
 
 
 def finding_id(category: str, path: str, symbol: str) -> str:
     category = category.strip().upper()
-    if not CATEGORY.match(category):
-        raise ValueError(f"category must be 2-16 letters/digits, got {category!r}")
+    if category not in CATEGORIES:
+        raise ValueError(f"category must be one of {', '.join(sorted(CATEGORIES))}, got {category!r}")
     raw = path.strip().replace("\\", "/")
     # Reject absolute paths (POSIX, UNC, Windows drive), then collapse ./, // and a/../b.
     if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
