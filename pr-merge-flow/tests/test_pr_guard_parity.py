@@ -77,6 +77,10 @@ def main():
     work = Path(tempfile.mkdtemp())
     (work / "old.py").write_text(git("show", f"{sha}:pr-merge-flow/scripts/pr-guard.py"))
     (work / "old_test.py").write_text(git("show", f"{sha}:pr-merge-flow/tests/test_pr_guard.py"))
+    # the baseline test reads its fixtures next to itself (1.6.0+), so they come from the baseline too
+    (work / "fixtures").mkdir()
+    for f in git("ls-tree", "-r", "--name-only", sha, "pr-merge-flow/tests/fixtures").split():
+        (work / "fixtures" / Path(f).name).write_text(git("show", f"{sha}:{f}"))
     pairs = [(stubbed(f"old{i}", work / "old.py", c), stubbed(f"new{i}", SKILL / "scripts" / "pr-guard.py", c))
              for i, c in enumerate(CONFIGS)]
     seen, lost, crashed, gained, flipped = set(), [], [], 0, set()

@@ -1,7 +1,7 @@
 ---
 name: pr-merge-flow
 description: Use after opening or pushing to a pull request, while waiting on CI, or before merging the base branch (staging/main) into a feature branch. Keeps parallel PRs from restarting each other's CI and review — hand the merge to the repo's traffic cop (`gh pr merge <n> --squash --match-head-commit <sha>`, never `--auto`), wait on checks in the background, and sync the base only on a real conflict. Ships a PreToolUse guard that enforces it.
-version: 1.6.0
+version: 1.6.1
 author: Bernier LLC
 ---
 
@@ -95,8 +95,9 @@ hooks dormant). It blocks:
   split still blocks. Wrappers (1.5.2): after `env`, `sudo`, `nice`, `timeout`, `xargs`, `nohup`, `time` and
   `exec` every later word is tried as the command, so no option argument hides `gh` or `git` (`env -S gh …`,
   `env -u gh gh …`, `sudo -u x gh …`, `timeout 60 git rebase …`); a quoted or attached split string
-  (`env -S 'gh pr merge' …`, `-Sgh`, `--split-string=gh pr merge`, env's `\_` separator, and its `\c`, which ends the string (1.5.3; both cuts checked, 1.5.4)) is split and each of its
-  words tried too; a word that splits to `(` or `)` is never read as a subshell bound. Their options are not parsed, so the command's
+  (`-Sgh`, `--split-string=gh pr merge`) is split and each of its words tried too; `env` given any split-string
+  option (`-S`, `-vS`, `-uXS`, `--split-string`, `--sp=…`) is blocked outright, since env expands and ends that string
+  its own way (1.6.1); command words match by basename (`/usr/bin/env`, `/opt/homebrew/bin/gh`); a word that splits to `(` or `)` is never read as a subshell bound. Their options are not parsed, so the command's
   directory and root are known only behind no prefix, a plain `command`, or `env NAME=value…`; `env -C DIR` /
   `--chdir[=]DIR` keeps the root, so only an absolute plain body path is read. Behind anything else (any wrapper,
   any option such as `env -i`/`-u`/`-S`, `command -p`, `sudo -D`/`-R`) no body file is read and the call blocks,
