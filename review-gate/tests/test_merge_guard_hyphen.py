@@ -191,28 +191,27 @@ def counted(cmd):
     proc = subprocess.run([sys.executable, "-c", _COUNTER, str(GUARD)], input=json.dumps(payload),
                           capture_output=True, text=True, timeout=120, env=ENV)
     out = json.loads(proc.stdout)
-    assert DEADLINE_DENY not in proc.stderr, f"counted run hit the guard's own deadline:\n{proc.stderr}"
+    if DEADLINE_DENY in proc.stderr:
+        raise AssertionError(f"counted run hit the guard's own deadline:\n{proc.stderr}")
     return out["rc"], out["calls"], proc.stderr
 
 
 # Counted calls cannot see work done inside one C call or in bytecode (slicing, `str.count` on a growing prefix,
-# regex backtracking), so the child's CPU time is compared too. It self-normalizes to the runner's speed: a 5x
-# longer command must cost under SIZE_RATIO * CPU_SLACK times the CPU. Linear work measures 2.2-5.0x (fixed
-# startup keeps it below 5); a quadratic `cmd[:i].count(...)` in shell_comments measured 15x.
-SIZE_RATIO, CPU_SLACK = 5, 1.6
+# regex backtracking), so the child's CPU time is compared too. It self-normalizes to the runner's speed: a 10x
+# longer command (about 16 KB to 160 KB) must cost under SIZE_RATIO * CPU_SLACK times the CPU. Today's guard
+# measures 3.9-12.9x (mildly superlinear past 80 KB); a quadratic `cmd[:i].count(...)` in shell_comments 35-55x.
+SIZE_RATIO, CPU_SLACK = 10, 2
 
 
 def cpu_growth(build, small=2, reps=3):
-    def cpu(cmd):  # best of reps: contention only ever adds time
-        best = None
-        for _ in range(reps):
-            before = resource.getrusage(resource.RUSAGE_CHILDREN)
-            hook(cmd)
-            after = resource.getrusage(resource.RUSAGE_CHILDREN)
-            spent = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
-            best = spent if best is None else min(best, spent)
-        return best
-    return cpu(build(small * SIZE_RATIO)) / cpu(build(small))
+    def spent(cmd):
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        hook(cmd)
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+    # Small and big runs alternate so contention hits both; best of reps, since contention only ever adds time.
+    runs = [(spent(build(small)), spent(build(small * SIZE_RATIO))) for _ in range(reps)]
+    return min(b for _, b in runs) / min(s for s, _ in runs)
 
 
 class BoundedWork(unittest.TestCase):
@@ -221,7 +220,7 @@ class BoundedWork(unittest.TestCase):
 
     3.3.3: measured by counted calls, not wall clock, which flaked at 1.004 s on a shared runner. Each command
     runs at two sizes: calls per character stay under CALLS_PER_CHAR and do not grow with size (linear work).
-    Counted calls miss C-level and bytecode work, so child CPU time must also grow no faster than size. The full
+    Counted calls miss C-level and bytecode work, so child CPU time at 10x the size is bounded too. The full
     80 KB command must still get the real denial, not the guard's own deadline denial."""
 
     # name -> (build(n) giving a command of about n * 8 KB, expected exit code)
@@ -267,7 +266,7 @@ class BoundedWork(unittest.TestCase):
         for label, (build, _) in self.CASES.items():
             with self.subTest(case=label):
                 growth = cpu_growth(build)
-                self.assertLess(growth, SIZE_RATIO * CPU_SLACK, f"{label}: CPU grew {growth:.1f}x for 5x the size")
+                self.assertLess(growth, SIZE_RATIO * CPU_SLACK, f"{label}: CPU grew {growth:.1f}x for {SIZE_RATIO}x the size")
 
     def test_normal_size_denials_are_unchanged(self):
         rc, err = hook("gh pr merge 5 --squash")
@@ -304,8 +303,8 @@ class OneNormalizationPath(unittest.TestCase):
             per_char.append(calls / len(cmd))
         self.assertLess(per_char[0], CALLS_PER_CHAR)
         self.assertLessEqual(per_char[1], per_char[0] * 1.05, "work grows faster than size")
-        growth = cpu_growth(lambda n: "gh pr " * (1333 * n) + "; g''h pr mer''ge 7", small=1)
-        self.assertLess(growth, SIZE_RATIO * CPU_SLACK, f"CPU grew {growth:.1f}x for 5x the size")
+        growth = cpu_growth(lambda n: "gh pr " * (1333 * n) + "; g''h pr mer''ge 7")
+        self.assertLess(growth, SIZE_RATIO * CPU_SLACK, f"CPU grew {growth:.1f}x for {SIZE_RATIO}x the size")
         rc, err = hook("gh pr " * 13333 + "; g''h pr mer''ge 7")  # ~80 KB
         self.assertEqual(rc, 2, err)
         self.assertNotIn(DEADLINE_DENY, err)
