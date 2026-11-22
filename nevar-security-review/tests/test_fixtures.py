@@ -43,8 +43,9 @@ class Served:
         if db_path is None:
             self.mod.init_db(self.db)
             if seed:
+                import contextlib
                 import sqlite3
-                with sqlite3.connect(self.db) as conn:
+                with contextlib.closing(sqlite3.connect(self.db)) as conn:  # `with conn` alone never closes
                     conn.executescript(seed)
         self.server = make_server("127.0.0.1", 0, self.mod.make_app(self.db), handler_class=Quiet)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

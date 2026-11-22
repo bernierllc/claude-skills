@@ -70,10 +70,23 @@ if "/check-runs" in path and "/commits/" in path:
         print(fixture["raw_listing"]); sys.exit(0)
     runs = fixture["check_runs"] + created + fixture.get("own_jobs", [])
     page2 = fixture.get("page2", [])  # served only to --paginate, as a second concatenated page
-    print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": runs}))
+    pages = [{"total_count": len(runs) + len(page2), "check_runs": runs}]
     if page2 and "--paginate" in args:
-        print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": page2}))
+        pages.append({"total_count": len(runs) + len(page2), "check_runs": page2})
+    print(json.dumps(pages) if "--slurp" in args else "\n".join(json.dumps(p) for p in pages))
     sys.exit(0)
+if path.endswith("/annotations"):  # the security lane's read of one check run's annotations, slurped
+    found = fixture.get("annotations", {}).get(path.split("/")[-2])
+    if found is None:
+        sys.exit(1)
+    print(json.dumps([found])); sys.exit(0)
+if "/contents/.github" in path:  # the security lane's directory listings, keyed by "<dir>?ref=<ref>"
+    key = path.split("/contents/", 1)[1]
+    default = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?") else None
+    listing = fixture.get("contents", {}).get(key, default)
+    if listing is None:
+        sys.exit(1)
+    print(json.dumps(listing)); sys.exit(0)
 if "/pulls?" in path:  # the wrapper's head-repo/branch PR listing (3.2.16), one page
     if "branch_pulls_raw" in fixture:
         print(fixture["branch_pulls_raw"]); sys.exit(0)
@@ -170,7 +183,8 @@ class ForgedGateWorkflow(unittest.TestCase):
             passing_checker.write_text("import os, sys\nprint('review-gate ok')\nsys.exit(int(os.environ['FAKE_CHECKER_RC']))\n")
             scripts = {"check-review-gate.py": str(passing_checker),
                        "check-forged-gate-names.py": str(SCRIPTS / "check-forged-gate-names.py"),
-                       "check-forged-review-gate.py": str(SCRIPTS / "check-forged-review-gate.py")}
+                       "check-forged-review-gate.py": str(SCRIPTS / "check-forged-review-gate.py"),
+                       "check-security-scan.py": str(SCRIPTS / "check-security-scan.py")}
             for name in missing:
                 scripts.pop(name)
             for name in empty:
@@ -817,7 +831,8 @@ class InstalledCopies(unittest.TestCase):
         root = next((d for d in SKILL.parents if (d / ".github/workflows/review-gate.yml").is_file()), None)
         if root is None:
             self.skipTest("review-gate is not installed into a repo above this skill")
-        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py", "check-review-gate.py"):
+        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py", "check-review-gate.py",
+                     "check-security-scan.py"):
             self.assertEqual((root / "scripts" / name).read_bytes(), (SCRIPTS / name).read_bytes(), name)
         self.assertEqual((root / ".github/workflows/review-gate.yml").read_bytes(), TEMPLATE.read_bytes())
 

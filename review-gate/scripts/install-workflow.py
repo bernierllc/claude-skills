@@ -35,10 +35,10 @@ KNOWN_OLD = frozenset({
 
 
 # Every script copied into a repo's scripts/. doctor-review-gate.py reads this tuple, so the two cannot drift.
-# The workflow loads the first three from the default branch. lint-review-body.py is for authors (it imports
+# The workflow loads the first four from the default branch. lint-review-body.py is for authors (it imports
 # the checker beside it); the workflow never runs it.
 VENDORED_SCRIPTS = ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
-                    "lint-review-body.py")
+                    "check-security-scan.py", "lint-review-body.py")
 
 
 WRAPPER = "check-forged-review-gate.py"

@@ -180,8 +180,7 @@ class VendoredDetector(unittest.TestCase):
     def test_this_repo_mirrors_are_byte_identical(self):
         # claude-skills runs its own gate from scripts/ and .github/workflows/; they must equal the skill's copies.
         root = SKILL.parent
-        for name in ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
-                     "lint-review-body.py"):
+        for name in installer().VENDORED_SCRIPTS:
             self.assertEqual((root / "scripts" / name).read_bytes(), (SKILL / "scripts" / name).read_bytes(), name)
         for linter in (root / "scripts" / "lint-review-body.py", SKILL / "scripts" / "lint-review-body.py"):
             self.assertTrue(os.access(linter, os.X_OK), linter)
@@ -368,7 +367,9 @@ def skill_version(skill_dir):
 
 def one_release_behind(version):
     major, minor, patch = (int(x) for x in version.split("."))
-    return f"{major}.{minor}.{patch - 1}"
+    if patch:
+        return f"{major}.{minor}.{patch - 1}"
+    return f"{major}.{minor - 1}.999" if minor else f"{major - 1}.999.999"  # x.y.0 has no patch below it
 
 
 def vendor(repo, version=None):

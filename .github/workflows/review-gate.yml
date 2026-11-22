@@ -35,6 +35,12 @@
 # here (needs a required workflow or a distinct publisher app). A job publishing
 # after this scan is caught at merge time: the merge-guard hook runs this same
 # step before `gh pr merge` (3.2.13), as does pr-merge-flow rule 2.
+#
+# Security lane (3.3.0, opt-in): when the default branch has .github/workflows/security-scan.yml,
+# scripts/check-security-scan.py fails the gate unless that workflow's own pull_request_target job
+# published a passing "Security Scan" on this head with the default branch's scanner config. A PR body
+# claiming a scanner pass without that check run fails too. Body "Security review:" lines are advisory.
+# The scan often finishes after this run: re-fire (label toggle) once it completes.
 name: Review Gate
 # Names the PR in the Actions run list. Quoted: unquoted, YAML reads " #" as a comment (3.2.7).
 run-name: "Review Gate - PR #${{ github.event.pull_request.number }}"
@@ -133,6 +139,7 @@ jobs:
           load_trusted check-review-gate.py
           load_trusted check-forged-gate-names.py
           load_trusted check-forged-review-gate.py
+          load_trusted check-security-scan.py
           set +e
           out=$(python3 /tmp/check-review-gate.py --pr "$PR_NUMBER" --repo "$REPO" 2>&1)
           rc=$?
@@ -141,10 +148,18 @@ jobs:
           forged=$(api GET "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate \
             | REPO="$REPO" python3 /tmp/check-forged-review-gate.py 2>&1)
           frc=$?
+          lane=$(python3 /tmp/check-security-scan.py 2>&1)
+          lrc=$?
           set -e
           if [ "$frc" -ne 0 ]; then
             out=$(printf '%s\n%s\n%s' "$out" "forged-check step failed (exit $frc):" "$forged")
             [ "$rc" -ne 0 ] || rc=1
+          fi
+          if [ "$lrc" -ne 0 ]; then
+            out=$(printf '%s\n%s\n%s' "$out" "security lane failed (exit $lrc):" "$lane")
+            [ "$rc" -ne 0 ] || rc=1
+          else
+            out=$(printf '%s\n%s' "$out" "$lane")
           fi
           printf '%s\n' "$out"
           summary=${out:0:60000}  # no pipe: head closing early SIGPIPEs under pipefail
