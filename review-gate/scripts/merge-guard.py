@@ -6,11 +6,13 @@ Override: include `# review-gate-ok: <reason>` in the Bash command.
 """
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -29,7 +31,27 @@ except BaseException as _exc:  # noqa: BLE001 - a missing/broken gate module mus
 OVERRIDE = re.compile(r"#\s*review-gate-ok:\s*\S")
 # Loose detector; `is_gh_pr_merge` confirms token order (allows `gh pr -R … merge`).
 # Hyphen-aware word edges: `pr-merge-flow` is a skill name, not `pr … merge`.
-MERGE_RE = re.compile(r"(?<![\w-])gh(?![\w-]).*(?<![\w-])pr(?![\w-]).*(?<![\w-])merge(?![\w-])", re.S)
+class _OrderedWords:
+    """``w1 … w2 … w3`` as hyphen-aware whole words, in order, in linear time (3.2.18).
+
+    The ``.*``-joined regex this replaces backtracked over every ``gh``/``pr`` pair: ``gh pr `` × 2,000 took
+    past the hook timeout. Taking the first match of each word after the previous one decides the same thing.
+    """
+
+    def __init__(self, *words: str, flags: int = 0) -> None:
+        self._res = [re.compile(rf"(?<![\w-]){w}(?![\w-])", flags) for w in words]
+
+    def search(self, text: str) -> re.Match[str] | None:
+        pos, m = 0, None
+        for word in self._res:
+            m = word.search(text, pos)
+            if not m:
+                return None
+            pos = m.end()
+        return m
+
+
+MERGE_RE = _OrderedWords("gh", "pr", "merge")
 # Quote-smashed executable: Bash concatenates `g''h` / `g"h"` into `gh`.
 QUOTE_SMASHED_GH_RE = re.compile(r"g['\"]+h", re.I)
 # ``NAME=value``, ``NAME+=value``, and indexed ``NAME[0]=value`` / ``PATH[0]=…``.
@@ -166,10 +188,17 @@ def _consume_merge_argv_flag(
 
 
 def _shell_tokens(cmd: str) -> list[str]:
+    return list(_shell_tokens_once(cmd))  # a fresh list: callers may mutate it
+
+
+@functools.lru_cache(maxsize=256)
+def _shell_tokens_once(cmd: str) -> tuple[str, ...]:
+    """One pure-Python shlex pass per distinct text (3.2.18): the checks re-split the same command dozens of times,
+    which took seconds on an 80 KB command and let the hook timeout drop its denial."""
     try:
-        return shlex.split(cmd, posix=True)
+        return tuple(shlex.split(cmd, posix=True))
     except ValueError:
-        return cmd.split()
+        return tuple(cmd.split())
 
 
 def shell_comments(cmd: str) -> list[str]:
@@ -1476,16 +1505,14 @@ def quote_smashed_merge(cmd: str) -> bool:
     collapsed = _collapse_empty_quotes(cmd)
     if collapsed != cmd and MERGE_RE.search(collapsed):
         return True
-    if QUOTE_SMASHED_GH_RE.search(cmd) and re.search(
-        r"(?<![\w-])pr(?![\w-]).*(?<![\w-])merge(?![\w-])", cmd, re.S | re.I
-    ):
+    if QUOTE_SMASHED_GH_RE.search(cmd) and _PR_MERGE_LOOSE_RE.search(cmd):
         return True
     return False
 
 
-_ARRAY_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")
+_ARRAY_ASSIGN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*\+?=\(")
 _ARRAY_EXPAND_TOKEN_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[(@|\*)\]\}$")
-_PR_MERGE_LOOSE_RE = re.compile(r"(?<![\w-])pr(?![\w-]).*(?<![\w-])merge(?![\w-])", re.S | re.I)
+_PR_MERGE_LOOSE_RE = _OrderedWords("pr", "merge", flags=re.I)
 
 
 def _part_array_assign_has_merge(part: str) -> bool:
@@ -3565,7 +3592,9 @@ def payload_cwd(payload: dict, inp: dict) -> str:
         inp.get("cwd"),
     ):
         if candidate:
-            return str(candidate)
+            # 3.2.18: resolve symlinks before `..`, as the shell does; a lexical collapse of `<link>/..` names
+            # the link's parent, a different checkout from the one the command runs in.
+            return os.path.realpath(str(candidate))
     return os.getcwd()
 
 
@@ -3803,10 +3832,90 @@ COMMIT_MESSAGE_HINT = (
     " A commit message that names `gh pr merge` is blocked because commit hooks can run it:"
     " write the message to a file and use `git commit -F <file>`."
 )
-_GIT_COMMIT = re.compile(r"\bgit\b[^;&|\n]*\bcommit\b")
+def names_git_commit(cmd: str) -> bool:
+    """`git … commit` within one shell segment, in linear time (3.2.18: the regex form backtracked
+    quadratically, and on a huge command it ran after the deny until the hook timeout dropped the denial)."""
+    for segment in re.split(r"[;&|\n]", cmd):
+        git = re.search(r"\bgit\b", segment)
+        if git and re.search(r"\bcommit\b", segment[git.end():]):
+            return True
+    return False
+
+
+_ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.S)
+_ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                  "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+_ANSI_C_NUMERIC = {"x": re.compile(r"[0-9a-fA-F]{1,2}"), "u": re.compile(r"[0-9a-fA-F]{1,4}"),
+                   "U": re.compile(r"[0-9a-fA-F]{1,8}")}
+_OCTAL_RE = re.compile(r"[0-7]{1,3}")
+
+
+def _decode_ansi_c(body: str) -> str:
+    """Bash's ``$'…'`` escapes (``\\x67`` → ``g``); an escape Bash does not know keeps its backslash."""
+    out: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        c = body[i + 1]
+        num = _ANSI_C_NUMERIC.get(c)
+        if c in _ANSI_C_SIMPLE:
+            out.append(_ANSI_C_SIMPLE[c])
+            i += 2
+        elif num and (m := num.match(body, i + 2)):
+            out.append(chr(min(int(m.group(), 16), 0x10FFFF)))
+            i = m.end()
+        elif (m := _OCTAL_RE.match(body, i + 1)):
+            out.append(chr(int(m.group(), 8) & 0xFF))
+            i = m.end()
+        elif c == "c" and i + 2 < n:
+            out.append(chr(ord(body[i + 2]) & 0x1F))
+            i += 3
+        else:
+            out.append(ch + c)
+            i += 2
+    return "".join(out)
+
+
+def normalize_command(cmd: str) -> str:
+    """The one normalization every check reads (3.2.18): what Bash does to the text before it splits words.
+
+    Joins backslash-newline continuations and rewrites each ``$'…'`` as the single-quoted literal it decodes
+    to, so ``g\\<newline>h`` and ``$'\\x67\\x68'`` reach the checks as ``gh``. Linear in the input.
+    shortcut: this ignores quoting context (``'a\\<newline>b'`` and ``"$'x'"`` are rewritten too), so
+    check_command also checks the raw text and denies when either does; move it into the tokenizer-first
+    redesign (plan owed) and drop the second pass then.
+    """
+    out: list[str] = []
+    i, n = 0, len(cmd)
+    while i < n:  # an escaped backslash (``\\\\``) is kept whole, so only a lone ``\\<newline>`` joins
+        if cmd[i] == "\\" and i + 1 < n:
+            if cmd[i + 1] != "\n":
+                out.append(cmd[i : i + 2])
+            i += 2
+            continue
+        out.append(cmd[i])
+        i += 1
+    return _ANSI_C_RE.sub(
+        lambda m: "'" + _decode_ansi_c(m.group(1)).replace("'", "'\\''") + "'", "".join(out)
+    )
 
 
 def check_command(cmd: str, cwd: str | None = None) -> str | None:
+    """Decide on the normalized text, and on the raw text too when normalizing changed it: deny if either
+    denies, so a rewrite that mis-tracks quoting can only add a denial, never drop one. Raw goes first because
+    its denial is the more specific one (``$'\\x67\\x68'`` is a dynamic name there, a plain ``'gh'`` after)."""
+    norm = normalize_command(cmd)
+    err = _check_text(cmd, cwd)
+    if err or norm == cmd:
+        return err
+    return _check_text(norm, cwd)
+
+
+def _check_text(cmd: str, cwd: str | None) -> str | None:
     # Inspect executable/expanding heredocs before stripping their bodies.
     if executable_heredoc_merge(cmd):
         return (
@@ -4041,6 +4150,19 @@ def check_command(cmd: str, cwd: str | None = None) -> str | None:
     return None
 
 
+# The checks must answer before hooks.json's 25 s timeout_ms: a hook killed at its timeout loses its denial.
+# Above HOOK_BUDGET_S, so the forged-check step's own budget message wins when that step is the slow one.
+CHECK_DEADLINE_S = 22.0
+
+
+class _CheckDeadline(Exception):
+    pass
+
+
+def _raise_deadline(signum: int, frame: object) -> None:
+    raise _CheckDeadline
+
+
 def main() -> int:
     global _HOOK_STARTED
     _HOOK_STARTED = time.monotonic()
@@ -4057,9 +4179,23 @@ def main() -> int:
     if not isinstance(cmd, str) or not cmd:
         return 0
     cwd = payload_cwd(payload, inp)
-    err = check_command(cmd, cwd)
-    if err and _GIT_COMMIT.search(cmd):
-        err += COMMIT_MESSAGE_HINT
+    # Deny rather than be killed: SIGALRM interrupts the checks between bytecodes (POSIX; Windows has no alarm).
+    armed = hasattr(signal, "setitimer")
+    if armed:
+        signal.signal(signal.SIGALRM, _raise_deadline)
+        signal.setitimer(signal.ITIMER_REAL, CHECK_DEADLINE_S)
+    try:
+        hint = COMMIT_MESSAGE_HINT if names_git_commit(cmd) else ""  # decided before the deny, in linear time
+        err = check_command(cmd, cwd)
+    except _CheckDeadline:
+        print(f"review-gate merge guard: the checks did not finish within {CHECK_DEADLINE_S:.0f} s; blocked. "
+              "Split the command, or run `gh -R owner/repo pr merge <n>` on its own", file=sys.stderr)
+        return 2
+    finally:
+        if armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    if err:
+        err += hint
     if err:
         print(err, file=sys.stderr)
         return 2

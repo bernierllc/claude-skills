@@ -1,0 +1,15 @@
+name: PR labeler
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize]
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: npm install && npm run label
+        env:
+          GH_TOKEN: ${{ secrets.LABEL_BOT_TOKEN }}
+      - run: echo "Labeling ${{ github.event.pull_request.title }}"

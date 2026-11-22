@@ -57,6 +57,8 @@ if path.endswith("/contents/.github/workflows/review-gate.yml"):  # merge-guard'
     if wf is True:
         sys.exit(0)
     print("gh: Not Found (HTTP 404)" if wf is False else "gh: Bad Gateway (HTTP 502)", file=sys.stderr); sys.exit(1)
+if path.split("?")[0].endswith("/contents/scripts"):  # the gate's listing of the trusted scripts
+    print(json.dumps([{"name": n, "type": "file"} for n in fixture["scripts"]])); sys.exit(0)
 if "/contents/scripts/" in path:
     name = path.split("/contents/scripts/")[1].split("?")[0]
     src = fixture["scripts"].get(name)
@@ -70,15 +72,60 @@ if "/check-runs" in path and "/commits/" in path:
         print(fixture["raw_listing"]); sys.exit(0)
     runs = fixture["check_runs"] + created + fixture.get("own_jobs", [])
     page2 = fixture.get("page2", [])  # served only to --paginate, as a second concatenated page
-    print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": runs}))
+    pages = [{"total_count": len(runs) + len(page2), "check_runs": runs}]
     if page2 and "--paginate" in args:
-        print(json.dumps({"total_count": len(runs) + len(page2), "check_runs": page2}))
+        pages.append({"total_count": len(runs) + len(page2), "check_runs": page2})
+    print(json.dumps(pages) if "--slurp" in args else "\n".join(json.dumps(p) for p in pages))
     sys.exit(0)
-if "/actions/runs/" in path and ".display_title" in args:  # the wrapper's run-title provenance lookup
-    run_id = path.rsplit("/", 1)[1]
-    if run_id not in fixture.get("titles", {}):
+if path.split("/check-runs/")[-1].isdigit():  # the security lane's read of the newest scanner job's check run
+    check_id = int(path.rsplit("/", 1)[1])
+    found = [c for c in fixture["check_runs"] + fixture.get("own_jobs", []) if c.get("id") == check_id]
+    if not found:
         sys.exit(1)
-    print(fixture["titles"][run_id]); sys.exit(0)
+    print(json.dumps(found[0])); sys.exit(0)
+if "/actions/workflows/" in path and "/runs?" in path:  # the security lane's scanner-run discovery, slurped
+    wf = path.split("/actions/workflows/")[1].split("/")[0]
+    found = [{"id": int(i), "path": pair.split("\t")[0], "event": pair.split("\t")[1]}
+             for i, pair in fixture.get("runs", {}).items() if pair.split("\t")[0].endswith("/" + wf)]
+    print(json.dumps([{"total_count": len(found), "workflow_runs": found}])); sys.exit(0)
+if path.endswith("/annotations"):  # the security lane's read of one check run's annotations, slurped
+    found = fixture.get("annotations", {}).get(path.split("/")[-2])
+    if found is None:
+        sys.exit(1)
+    print(json.dumps([found])); sys.exit(0)
+if "/contents/.github" in path:  # the security lane's directory listings, keyed by "<dir>?ref=<ref>"
+    key = path.split("/contents/", 1)[1]
+    default = [{"name": "review-gate.yml", "type": "file", "sha": "0" * 40}] if key.startswith(".github/workflows?") else None
+    listing = fixture.get("contents", {}).get(key, default)
+    if listing is None:
+        sys.exit(1)
+    if isinstance(listing, dict) and "raw" in listing:  # a body that is not JSON, served verbatim
+        print(listing["raw"], end=""); sys.exit(0)
+    print(json.dumps(listing)); sys.exit(0)
+if "/pulls?" in path:  # the wrapper's head-repo/branch PR listing (3.2.16), one page
+    if "branch_pulls_raw" in fixture:
+        print(fixture["branch_pulls_raw"]); sys.exit(0)
+    if fixture.get("branch_pulls") is None:  # null: that lookup fails
+        sys.exit(1)
+    print(json.dumps([fixture["branch_pulls"]])); sys.exit(0)
+if "/pulls/" in path:
+    if fixture.get("pull") is None:  # null: that lookup fails
+        sys.exit(1)
+    print(json.dumps(fixture["pull"])); sys.exit(0)
+if "/actions/runs/" in path and "/jobs?" in path:  # the security lane's job listing for one run, slurped
+    found = fixture.get("jobs", {}).get(path.split("/")[-2])
+    if found is None:
+        sys.exit(1)
+    print(json.dumps([{"total_count": len(found), "jobs": found}])); sys.exit(0)
+if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's one run read: head fields and title (3.2.17)
+    run_id = path.rsplit("/", 1)[1]
+    heads, title = fixture.get("run_heads", {}).get(run_id), fixture.get("titles", {}).get(run_id)
+    pair = fixture.get("runs", {}).get(run_id)
+    if heads is None and title is None and pair is None:
+        sys.exit(1)
+    # a missing piece is absent from the run JSON, which must fail closed where the wrapper reads it
+    print(json.dumps({**(dict(zip(("path", "event"), pair.split("\t"))) if pair else {}), **(heads or {}),
+                      **({"display_title": title} if title else {})})); sys.exit(0)
 if "/actions/runs/" in path:
     run_id = path.rsplit("/", 1)[1]
     if run_id not in fixture["runs"]:
@@ -118,6 +165,27 @@ def run_title(pr):
 
 
 RG_PATH = ".github/workflows/review-gate.yml"
+HEAD_SHA = "a" * 40
+
+
+def pull(head_ref="chore/revendor-review-gate", head_repo="o/r", head_sha=HEAD_SHA):
+    return {"number": 7, "created_at": "2026-11-20T10:00:00Z", "base": {"ref": "main", "repo": {"full_name": "o/r", "default_branch": "main"}},
+            "head": {"ref": head_ref, "sha": head_sha, "repo": {"full_name": head_repo}}}
+
+
+# The gate's own run, as the provenance check reads it: PR #7's head, and #7 alone on its head branch.
+PROVENANCE = {"pull": pull(), "branch_pulls": [{"number": 7, "head": {"sha": HEAD_SHA, "ref": "chore/revendor-review-gate"},
+                                                "created_at": "2026-11-20T10:00:00Z", "closed_at": None}]}
+
+
+def other_pr(number, sha="c" * 40, created_at="2026-11-18T10:00:00Z", closed_at="2026-11-19T10:00:00Z"):
+    return {"number": number, "head": {"sha": sha}, "created_at": created_at, "closed_at": closed_at}
+
+
+def run_heads(head_branch="chore/revendor-review-gate", head_repo="o/r", head_sha=HEAD_SHA,
+              created_at="2026-11-20T10:00:05Z"):
+    return {"head_sha": head_sha, "head_branch": head_branch, "head_repository": {"full_name": head_repo},
+            "created_at": created_at}
 
 
 class ForgedGateWorkflow(unittest.TestCase):
@@ -135,7 +203,8 @@ class ForgedGateWorkflow(unittest.TestCase):
             passing_checker.write_text("import os, sys\nprint('review-gate ok')\nsys.exit(int(os.environ['FAKE_CHECKER_RC']))\n")
             scripts = {"check-review-gate.py": str(passing_checker),
                        "check-forged-gate-names.py": str(SCRIPTS / "check-forged-gate-names.py"),
-                       "check-forged-review-gate.py": str(SCRIPTS / "check-forged-review-gate.py")}
+                       "check-forged-review-gate.py": str(SCRIPTS / "check-forged-review-gate.py"),
+                       "check-security-scan.py": str(SCRIPTS / "check-security-scan.py")}
             for name in missing:
                 scripts.pop(name)
             for name in empty:
@@ -146,6 +215,7 @@ class ForgedGateWorkflow(unittest.TestCase):
                 {"scripts": scripts, "check_runs": check_runs, "listing_fails": listing_fails,
                  "runs": {**{i: TRUSTED_RUN for i in own_ids}, **(runs or {})},
                  "titles": {i: run_title(n) for i, (n, _) in zip(own_ids, prs)},
+                 **PROVENANCE, "run_heads": {i: run_heads() for i in own_ids},
                  "own_jobs": [job("Review Gate", int(i)) for i in own_ids], **(fixture or {})}))
             workdir = tmp / "job"; workdir.mkdir()
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=str(tmp), GH_TOKEN="x",
@@ -234,7 +304,8 @@ class ForgedGateWorkflow(unittest.TestCase):
                             fixture={"titles": {"600": run_title(7), "517": run_title(8)}})
         self.assertEqual(rc, 1, out)
         self.assertIn("'Review Gate - PR #8', not 'Review Gate - PR #7'", out)
-        self.assertFalse([c for c in self.calls if "/pulls" in c], self.calls)  # no PR listing to fool
+        # 517 is rejected on its title alone, read with its head fields in the run's one fetch (3.2.17, #134)
+        self.assertEqual(self.calls.count("api repos/o/r/actions/runs/517"), 1, self.calls)
 
     def test_failed_listing_fails_closed(self):
         rc, out = self.gate([], listing_fails=True)
@@ -342,13 +413,15 @@ class ForgedGateWorkflow(unittest.TestCase):
 
 class WrapperReason(unittest.TestCase):
     def test_wrapper_reason_still_holds(self):
-        # The wrapper exists only because the vendored map protects the other name with no trusted pair.
-        # If a re-vendor changes that, revisit (or delete) the wrapper.
+        # The wrapper exists because downstream repos still publish the main-via-staging name from other
+        # Actions jobs, so it scopes the detector to `Review Gate`. 3.2.20 re-vendored aec's map, which now
+        # pins that name to the guard's own pull_request_target job (the guard sees its own in-progress run).
         import importlib.util
         spec = importlib.util.spec_from_file_location("cfgn", SCRIPTS / "check-forged-gate-names.py")
         detector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(detector)
-        self.assertEqual(detector.PROTECTED["PRs into main must come from staging"], set())
+        self.assertEqual(detector.PROTECTED["PRs into main must come from staging"],
+                         {(".github/workflows/main-via-staging.yml", "pull_request_target")})
         self.assertEqual(detector.PROTECTED["Review Gate"],
                          {(".github/workflows/review-gate.yml", "pull_request_target")})
         header = (SCRIPTS / "check-forged-review-gate.py").read_text()
@@ -363,7 +436,8 @@ class WrapperDetector(unittest.TestCase):
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
             (bindir / "fixture.json").write_text(json.dumps({
                 "scripts": {}, "check_runs": check_runs, "runs": runs,
-                "titles": {i: run_title(7) for i in runs}, **(fixture or {})}))
+                "titles": {i: run_title(7) for i in runs}, **PROVENANCE,
+                "run_heads": {i: run_heads() for i in runs}, **(fixture or {})}))
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp, REPO="o/r", PR_NUMBER="7")
             for key, value in env_over.items():
                 if value is None:
@@ -374,6 +448,7 @@ class WrapperDetector(unittest.TestCase):
                 stdin = json.dumps({"total_count": len(check_runs), "check_runs": check_runs})
             proc = subprocess.run([sys.executable, str(SCRIPTS / "check-forged-review-gate.py")], input=stdin,
                                   env=env, capture_output=True, text=True)
+            self.calls = (bindir / "calls.log").read_text().splitlines() if (bindir / "calls.log").exists() else []
             return proc.returncode, proc.stderr
 
     def test_gate_job_from_the_trusted_pair_exits_0(self):
@@ -387,22 +462,151 @@ class WrapperDetector(unittest.TestCase):
 
     def test_trusted_pair_job_of_another_pr_exits_1(self):
         # A closed-unmerged child's run on this head: no PR listing shows it, its run title does.
-        for title in ("Review Gate - PR #8", "Review Gate - PR #77", "Review Gate - PR", "Review Gate"):
+        for title in ("Review Gate - PR #8", "Review Gate - PR #77", " Review Gate - PR #8 "):  # stripped, as before
             with self.subTest(title=title):
                 rc, err = self.wrapper([job("Review Gate", 517)], {"517": TRUSTED_RUN},
                                        fixture={"titles": {"517": title}})
                 self.assertEqual(rc, 1, err)
                 self.assertIn("not 'Review Gate - PR #7'", err)
-                # 3.2.13: another PR's real run title names that PR and the fix; any other title does not
-                other = re.fullmatch(r"Review Gate - PR #(\d+)", title)
-                if other:
-                    self.assertIn("shared head sha, not this PR's run: ", err)
-                    self.assertIn(f"this head sha is also PR #{other.group(1)}'s head, and that PR's Review Gate "
-                                  "run is listed on it. Push a new commit to this PR (an empty commit works) so it "
-                                  "has a head of its own", err)
-                else:
-                    self.assertIn("from an untrusted Actions job", err)
-                    self.assertNotIn("is also PR #", err)
+                # 3.2.13: another PR's real run title names that PR and the fix
+                self.assertIn("shared head sha, not this PR's run: ", err)
+                self.assertIn(f"this head sha is also PR #{title.strip().rsplit('#', 1)[1]}'s head, and that PR's Review Gate "
+                              "run is listed on it. Push a new commit to this PR (an empty commit works) so it "
+                              "has a head of its own", err)
+
+    # 3.2.16: the run title is not trust. A default branch whose review-gate.yml predates run-name (defect 4)
+    # titles the gate's run with the PR title, which the PR author writes. Every run takes one provenance path.
+    def gate_run(self, title=None, pair=TRUSTED_RUN, **fixture):
+        return self.wrapper([job("Review Gate", 530)], {"530": pair},
+                            fixture={"titles": {"530": title or run_title(7)}, **fixture})
+
+    def test_own_run_passes_on_provenance_whatever_its_title(self):
+        for title in (run_title(7), "chore: re-vendor review-gate 3.2.16", "Review Gate - PR", "Review Gate"):
+            with self.subTest(title=title):
+                rc, err = self.gate_run(title)
+                self.assertEqual(rc, 0, err)
+
+    def test_fork_pr_run_from_its_fork_exits_0(self):
+        rc, err = self.gate_run(pull=pull(head_repo="fork/r"), run_heads={"530": run_heads(head_repo="fork/r")})
+        self.assertEqual(rc, 0, err)
+
+    def test_older_closed_pr_from_the_same_branch_is_ignored(self):
+        rc, err = self.gate_run(branch_pulls=[*PROVENANCE["branch_pulls"], other_pr(3)])
+        self.assertEqual(rc, 0, err)
+
+    def test_run_of_another_pr_exits_1_even_titled_as_this_prs(self):
+        # Codex P1 r4649920913: a PR sharing #7's sha, titled `Review Gate - PR #7`, was accepted on its title.
+        cases = {
+            "other path": dict(pair=".github/workflows/forge.yml\tpull_request_target"),
+            "other event": dict(pair=f"{RG_PATH}\tpull_request"),
+            "run from a fork, PR in this repo": dict(run_heads={"530": run_heads(head_repo="fork/r")}),
+            "run from this repo, PR from a fork": dict(pull=pull(head_repo="fork/r")),
+            "other head branch": dict(run_heads={"530": run_heads(head_branch="other")}),
+            "other head sha": dict(run_heads={"530": run_heads(head_sha="b" * 40)}),
+            "run older than the PR": dict(run_heads={"530": run_heads(created_at="2026-11-19T10:00:00Z")}),
+            "another open PR on this head sha": dict(branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                                   other_pr(9, HEAD_SHA, closed_at=None)]),
+            # commits/{sha}/pulls omits closed-unmerged PRs; a later one closed on this sha still counts.
+            "later PR closed unmerged on this sha": dict(branch_pulls=[
+                *PROVENANCE["branch_pulls"], other_pr(9, HEAD_SHA, "2026-11-20T10:00:01Z", "2026-11-20T10:00:03Z")]),
+            "PR on this branch open at the run, since moved on": dict(branch_pulls=[
+                *PROVENANCE["branch_pulls"], other_pr(9, "d" * 40, "2026-11-20T09:00:00Z", None)]),
+        }
+        for title in (run_title(7), "chore: re-vendor review-gate 3.2.16"):
+            for label, kwargs in cases.items():
+                with self.subTest(title=title, case=label):
+                    rc, err = self.gate_run(title, **kwargs)
+                    self.assertEqual(rc, 1, err)
+                    self.assertIn("forged check 'Review Gate'", err)
+                    if label.startswith("later"):  # closed: its head is frozen, so a new commit does help
+                        self.assertIn("this head sha is also PR #9's head. Push a new commit", err)
+                    if label.startswith(("another", "PR on")):  # open: a new commit is its head too
+                        self.assertIn("PR #9 is also open from head branch", err)
+
+    # 3.2.18 (Codex P1): an empty listing proved nothing, yet read as "no competing PR". The listing must
+    # positively contain this PR, on this head ref and sha, or the run cannot be attributed to it.
+    def test_listing_without_this_pr_exits_2(self):
+        me = PROVENANCE["branch_pulls"][0]
+        cases = {
+            "no pages": dict(branch_pulls_raw="[]"),
+            "one empty page": dict(branch_pulls=[]),
+            "only another PR": dict(branch_pulls=[other_pr(3)]),
+            "malformed JSON": dict(branch_pulls_raw="[[{"),
+            "this PR on another sha": dict(branch_pulls=[{**me, "head": {**me["head"], "sha": "e" * 40}}]),
+            "this PR on another ref": dict(branch_pulls=[{**me, "head": {**me["head"], "ref": "other"}}]),
+            "this PR without a ref": dict(branch_pulls=[{**me, "head": {"sha": HEAD_SHA}}]),
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(case=label):
+                rc, err = self.gate_run(**kwargs)
+                self.assertEqual(rc, 2, err)
+        rc, err = self.gate_run(branch_pulls=[me])  # a valid listing holding only this PR still passes
+        self.assertEqual(rc, 0, err)
+
+    # 3.2.18 (Codex P2): with two OPEN PRs on one head branch, a new commit becomes both PRs' head, so the
+    # push-a-commit advice never helps. It holds only when the other PR is closed (its head is frozen).
+    def test_open_pr_on_the_same_branch_names_close_or_split(self):
+        for sha in (HEAD_SHA, "d" * 40):
+            with self.subTest(sha=sha):
+                rc, err = self.gate_run(branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                      other_pr(9, sha, "2026-11-20T09:00:00Z", None)])
+                self.assertEqual(rc, 1, err)
+                self.assertIn("shared head sha, not this PR's run: ", err)
+                self.assertIn("PR #9 is also open from head branch 'chore/revendor-review-gate', so a new commit "
+                              "becomes its head too. Close PR #9 or open each PR from its own head branch", err)
+                self.assertNotIn("Push a new commit", err)
+
+    # Codex P2 on f9f4dce: a run titled for another PR took an early return with push-a-new-commit advice, even
+    # when that PR is open on this head branch, where a new commit becomes its head too.
+    def test_run_titled_for_another_open_pr_names_close_or_split(self):
+        rc, err = self.gate_run(run_title(9), branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                            other_pr(9, HEAD_SHA, "2026-11-20T09:00:00Z", None)])
+        self.assertEqual(rc, 1, err)
+        self.assertIn("not 'Review Gate - PR #7'", err)
+        self.assertIn("Close PR #9 or open each PR from its own head branch", err)
+        self.assertNotIn("Push a new commit", err)
+
+    def test_missing_or_mistyped_provenance_exits_2(self):
+        # Codex P2 r4649920164: null == null matched, and a null pull.head raised AttributeError (exit 1).
+        no_head = {**pull(), "head": None}
+        cases = {
+            "pull lookup fails": dict(pull=None),
+            "run lookup fails": dict(run_heads={}),
+            "listing fails": dict(branch_pulls=None),
+            "listing not pages": dict(branch_pulls_raw="{}"),
+            "listing entry not a PR": dict(branch_pulls_raw="[[{}]]"),
+            "null head sha on both": dict(pull=pull(head_sha=None), run_heads={"530": run_heads(head_sha=None)}),
+            "null head ref and branch": dict(pull=pull(head_ref=None), run_heads={"530": run_heads(head_branch=None)}),
+            "empty head ref and branch": dict(pull=pull(head_ref=""), run_heads={"530": run_heads(head_branch="")}),
+            "pull.head null": dict(pull=no_head),
+            "fork deleted (head.repo null)": dict(pull={**pull(), "head": {**pull()["head"], "repo": None}}),
+            "PR created_at missing": dict(pull={k: v for k, v in pull().items() if k != "created_at"}),
+            "listed PR head sha null": dict(branch_pulls=[*PROVENANCE["branch_pulls"],
+                                                          {**other_pr(9, closed_at=None), "head": {"sha": None}}]),
+            "listed PR number a string": dict(branch_pulls=[*PROVENANCE["branch_pulls"], {**other_pr(9), "number": "9"}]),
+            "listed PR closed_at a number": dict(branch_pulls=[*PROVENANCE["branch_pulls"], {**other_pr(9), "closed_at": 0}]),
+        }
+        for title in (run_title(7), "chore: re-vendor review-gate 3.2.16"):
+            for label, kwargs in cases.items():
+                with self.subTest(title=title, case=label):
+                    rc, err = self.gate_run(title, **kwargs)
+                    self.assertEqual(rc, 2, err)
+
+    # #134: every gate run on a head used to refetch the PR, the branch PR listing and its run (~4 calls each),
+    # inside merge-guard's 20 s budget. One PR read, one listing read, and each distinct run read once.
+    def test_many_gate_runs_fetch_the_pr_and_listing_once(self):
+        ids = [str(540 + n) for n in range(12)]
+        jobs = [job("Review Gate", int(i)) for i in ids] + [job("Review Gate", int(ids[0]))]  # a rerun's 2nd job
+        rc, err = self.wrapper(jobs, {i: TRUSTED_RUN for i in ids})
+        self.assertEqual(rc, 0, err)
+        count = lambda pattern: sum(1 for c in self.calls if re.search(pattern, c))
+        self.assertEqual(count(r"repos/o/r/pulls/7\b"), 1, self.calls)
+        self.assertEqual(count(r"repos/o/r/pulls\?"), 1, self.calls)
+        for i in ids:
+            with self.subTest(run=i):
+                # 3.2.18 (Codex P2): one read per run gives path, event, head fields and title together
+                self.assertEqual(count(rf"actions/runs/{i}\b"), 1, self.calls)
+        self.assertEqual(len(self.calls), len(ids) + 2, self.calls)
 
     def test_untrusted_jobs_exit_1(self):
         for pair in (".github/workflows/forge.yml\tpull_request",
@@ -445,7 +649,8 @@ class MergeGuardForgedStep(unittest.TestCase):
             mg.HOOK_BUDGET_S = budget
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp); (bindir / "gh").write_text(FAKE_GH); (bindir / "gh").chmod(0o755)
-            (bindir / "fixture.json").write_text(json.dumps({"scripts": {}, "runs": {}, "titles": {}, **fixture}))
+            (bindir / "fixture.json").write_text(json.dumps({"scripts": {}, "runs": {}, "titles": {}, **PROVENANCE,
+                                                             "run_heads": {"506": run_heads()}, **fixture}))
             env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_STATE=tmp)
             return mg.forged_gate_check("o", "r", 7, "a" * 40, None, env)
 
@@ -646,7 +851,8 @@ class InstalledCopies(unittest.TestCase):
         root = next((d for d in SKILL.parents if (d / ".github/workflows/review-gate.yml").is_file()), None)
         if root is None:
             self.skipTest("review-gate is not installed into a repo above this skill")
-        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py", "check-review-gate.py"):
+        for name in ("check-forged-gate-names.py", "check-forged-review-gate.py", "check-review-gate.py",
+                     "check-security-scan.py"):
             self.assertEqual((root / "scripts" / name).read_bytes(), (SCRIPTS / name).read_bytes(), name)
         self.assertEqual((root / ".github/workflows/review-gate.yml").read_bytes(), TEMPLATE.read_bytes())
 

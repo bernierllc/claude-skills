@@ -58,8 +58,11 @@ def _is_blank(line: str) -> bool:
     return not line.strip(" \t")
 
 
+# The one list of fallback reviewers: the regex, the failure messages and the linter are built from it.
+FALLBACK_REVIEWERS = ("codex", "agy", "antigravity", "cursor", "superpowers", "claude-sonnet")
+REVIEWER_CHOICES = "<" + "|".join(FALLBACK_REVIEWERS) + ">"
 FALLBACK_ATTESTATION = re.compile(
-    r"Fallback review: (codex|agy|antigravity|superpowers|claude-sonnet) on "
+    rf"Fallback review: ({'|'.join(FALLBACK_REVIEWERS)}) on "
     r"([0-9a-f]{40}) — verdict: (clean|findings fixed)",
     re.I | re.A,
 )
@@ -479,7 +482,8 @@ def review_region(body: str) -> tuple[list[str], list[str]]:
             continue
         problems.append(
             f"PR body line {n}: {_prose_offence(line)}; in ## Review every line must be plain prose (starting "
-            "with a letter or digit, no list marker, none of ` < > | [ ] ( ) * _ ~ $)"
+            "with a letter or digit, no list marker, none of ` < > | [ ] ( ) * _ ~ $); code spans, links, lists "
+            "and the generated footer go under a later ## Notes heading"
         )
     return region, problems
 
@@ -566,7 +570,7 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
     ):
         reason = (
             "No completed Codex review on current head, and ## Review lacks a completed "
-            "fallback attestation: Fallback review: <codex|agy|antigravity|superpowers|claude-sonnet> "
+            f"fallback attestation: Fallback review: {REVIEWER_CHOICES} "
             "on <head SHA> — verdict: <clean|findings fixed>"
         )
         stale = codex_stale_state_shas(pr)
@@ -583,6 +587,16 @@ def evaluate(pr: dict[str, Any]) -> list[str]:
         if not (labels & MAIN_REVIEW_LABELS):
             reasons.append("base is main but label review:high is missing")
     return reasons
+
+
+def rerun_hint(repo: str, number: int, base: str) -> str:
+    """The gate has no thread-resolved or review trigger (see the workflow), so say how to re-fire it.
+    Into main the label must end present, so remove then add; elsewhere add then remove."""
+    remove = f"gh pr edit {number} -R {repo} --remove-label review:high"
+    add = f"gh pr edit {number} -R {repo} --add-label review:high"
+    cmd = f"{remove} && {add}" if base == "main" else f"{add} && {remove}"
+    return ("Review Gate does not re-run when a thread is resolved or a review lands. "
+            f"After fixing the above, re-fire it: {cmd}")
 
 
 def main(argv: list[str]) -> int:
@@ -620,6 +634,7 @@ def main(argv: list[str]) -> int:
         print("review-gate failed:")
         for r in reasons:
             print(f"- {r}")
+        print(rerun_hint(f"{owner}/{name}", number, pr.get("baseRefName") or ""))
         return 1
     print("review-gate ok")
     return 0

@@ -2,13 +2,13 @@
 """Review Gate's forged-check step: the vendored aec detector, scoped to the `Review Gate` name.
 
 check-forged-gate-names.py is vendored byte-identical from
-bernierllc/agents-environment-config@dba592dbf5a95d89a19d7b4dfaf2ea11fdf44821 (aec #154: exits 2 on
-empty, malformed or runless input) (scripts/check-forged-gate-names.py; plan
+bernierllc/agents-environment-config@41f629945c291c4e0a84f20f14a077852e7dd9dc (exits 2 on empty, malformed,
+runless or truncated input; pins the main-via-staging guard job) (scripts/check-forged-gate-names.py; plan
 plans/2026-11-16-unforgeable-required-checks.md, step S5).
 Re-vendor it by copying that file unchanged; never edit it here.
 
 WHY THIS WRAPPER EXISTS: the vendored PROTECTED map also protects "PRs into main must come from
-staging" with no trusted pair (set()). Several downstream repos still publish that name from a plain
+staging" (pinned to main-via-staging.yml pull_request_target since 3.2.20). Several downstream repos still publish that name from a plain
 `pull_request` Actions job, so running the detector unscoped would fail every main promotion in those
 repos. The map stays unchanged; this wrapper checks only `Review Gate`. The other name stays the job
 of each repo's own main-via-staging guard.
@@ -19,11 +19,18 @@ the PR HEAD, in its own workflow run's suite (email_demo #1068: job 133165097976
 118647401541), not on the base as 3.2.0-3.2.7 assumed. A Checks API POST cannot pick a suite and lands in
 the head's oldest one, which the required-status rule does not read (BLOCKED "expected", #104), so the
 job is the only placement that holds. Another PR's gate job reaches this head when a PR shares the head
-sha (open, merged, or closed: `commits/{sha}/pulls` omits closed-unmerged PRs, so a PR listing cannot
-rule them out). So a trusted-pair job is accepted only when its workflow run is THIS PR's: the run's
-display_title is the workflow's run-name, `Review Gate - PR #<n>` (RUN_TITLE), fixed from the event when
-the run is created and set only by the trusted default-branch workflow (confirmed live, nevar-auth #23).
-Any other Actions job named `Review Gate` is forged.
+sha. So a trusted-pair job is accepted only when its workflow run is THIS PR's, by provenance (3.2.16):
+
+ONE PROVENANCE PATH, run-name or not. The run title is not trust: a default branch whose review-gate.yml
+predates run-name (a pre-3.2.0 workflow whose job is named `Review Gate`) titles the run with the PR title,
+which the PR author writes, so `Review Gate - PR #<n>` can be typed into any PR. A title naming another PR
+(RUN_TITLE) only picks the 3.2.13 shared-head message; it never accepts. Every other run is accepted only when
+the run's head sha, branch and repository equal this PR's head (forks included: GitHub sets both from the
+PR), the run is not older than the PR, and no other PR from that head repo and branch, in any state, has this
+head sha or was open when the run was created. That listing must contain this PR on this head ref and sha
+(3.2.18): an empty listing proves nothing. Each field must be a non-empty string; anything missing or
+mistyped exits 2. A PR author controls none of the event or path of a pull_request_target run, nor its head
+fields. Any other Actions job named `Review Gate` is forged.
 
 DELETE THIS WRAPPER when Option A or B of the aec plan lands (a required workflow or a distinct
 publisher app, making the required checks unforgeable through the Checks API). The detector is then
@@ -35,11 +42,14 @@ env: REPO (required), PR_NUMBER (needed to accept the gate's own job).
 stdin: `set -o pipefail; gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" --paginate`
 Exit 0: none forged. 1: forged (listed on stderr). 2: could not evaluate (fails closed).
 """
+import functools
 import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 
@@ -57,18 +67,94 @@ def _gh(*args):
         raise Ambiguous(f"gh api {args[0]} failed: {exc.stderr.strip()}") from exc
 
 
+@functools.lru_cache(maxsize=None)
+def _api_json(*args):
+    """One `gh api` read per distinct call per invocation (#134: the merge guard's 20 s budget). A failure is
+    not cached: it raises Ambiguous, which ends the invocation with exit 2."""
+    return json.loads(_gh(*args))
+
+
+def _text(obj, *keys):
+    """obj[k1][k2]... as a non-empty string; anything else is Ambiguous (null == null must never match)."""
+    for key in keys:
+        obj = obj.get(key) if isinstance(obj, dict) else None
+    if not isinstance(obj, str) or not obj:
+        raise Ambiguous(f"{'.'.join(keys)} is missing or not a string ({obj!r})")
+    return obj
+
+
+def run_provenance(repo, pr, run_id):
+    """None when workflow run `run_id` was triggered by PR #pr; else why not."""
+    pull = _api_json(f"repos/{repo}/pulls/{pr}")
+    want = (_text(pull, "head", "sha"), _text(pull, "head", "ref"), _text(pull, "head", "repo", "full_name"))
+    opened = _text(pull, "created_at")
+    run = _api_json(f"repos/{repo}/actions/runs/{run_id}")
+    got = (_text(run, "head_sha"), _text(run, "head_branch"), _text(run, "head_repository", "full_name"))
+    started = _text(run, "created_at")
+    if got != want or started < opened:
+        return f"run {run_id} head {got} at {started} is not this PR's head {want} (opened {opened})"
+    # The only way to rule out another PR's run: the run does not name its PR, and `commits/{sha}/pulls` omits
+    # closed-unmerged PRs, so every PR from this head repo and branch, in any state, is listed.
+    query = urllib.parse.urlencode({"state": "all", "head": f"{want[2].split('/')[0]}:{want[1]}", "per_page": 100})
+    return branch_verdict(int(pr), want[0], want[1], started,
+                          _api_json(f"repos/{repo}/pulls?{query}", "--paginate", "--slurp"))
+
+
+def branch_verdict(pr, sha, ref, started, pages):
+    """None when the branch listing proves no other PR could have triggered a run created at `started`; else why.
+
+    One fail-closed shape (3.2.18): the listing must positively contain PR #pr on this head ref and sha, and
+    every other entry must be well formed. Anything else (an empty listing, this PR missing or moved) proves
+    nothing, so it is Ambiguous (exit 2), never "no competitor". Another PR that has this head sha (a closed PR's
+    head is frozen, and labeling it still runs the gate) or was open when the run was created could have
+    triggered it; an older PR closed before the run, on another sha, could not.
+    """
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise Ambiguous(f"the PR listing for {ref} is not a list of pages")
+    found, others = False, []
+    for listed in (item for page in pages for item in page):
+        number = listed.get("number") if isinstance(listed, dict) else None
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise Ambiguous(f"a PR in the listing for {ref} has no number ({listed!r})")
+        if number == pr:
+            found = (_text(listed, "head", "sha"), _text(listed, "head", "ref")) == (sha, ref)
+            if not found:
+                raise Ambiguous(f"PR #{pr} is listed on branch {ref} with another head; retry")
+            continue
+        closed = None if listed.get("closed_at") is None else _text(listed, "closed_at")
+        if _text(listed, "head", "sha") == sha or (
+                _text(listed, "created_at") <= started and (closed is None or closed >= started)):
+            others.append((closed is not None, number))  # open PRs sort first: their remedy is the one that works
+    if not found:
+        raise Ambiguous(f"the PR listing for {ref} does not contain PR #{pr}, so it proves nothing")
+    if not others:
+        return None
+    closed, number = min(others)
+    if not closed:  # a new commit on a shared branch becomes the other open PR's head too
+        return (f"PR #{number} is also open from head branch {ref!r}, so a new commit becomes its head too. "
+                f"Close PR #{number} or open each PR from its own head branch")
+    return (f"this head sha is also PR #{number}'s head. Push a new commit to this PR (an empty commit "
+            "works) so it has a head of its own")  # true only here: the closed PR's head is frozen
+
+
 def foreign_run(repo, pr, run_id):
     """None when workflow run `run_id` is PR #pr's own gate run; else why its job is not this PR's."""
-    title = _gh(f"repos/{repo}/actions/runs/{run_id}", "--jq", ".display_title").strip()
-    want = RUN_TITLE.format(pr=pr)
-    if title == want:
-        return None
-    why = f"run {run_id} is titled {title!r}, not {want!r}"
+    title = _text(_api_json(f"repos/{repo}/actions/runs/{run_id}"), "display_title").strip()
     other = re.fullmatch(re.escape(RUN_TITLE).replace(r"\{pr\}", "([1-9][0-9]*)"), title)
-    if other:  # a real gate run of another PR on this same head sha, not a forgery: name the fix (3.2.13)
-        why += (f": this head sha is also PR #{other.group(1)}'s head, and that PR's Review Gate run is listed "
-                "on it. Push a new commit to this PR (an empty commit works) so it has a head of its own")
-    return why
+    if other and other.group(1) != pr:  # a real gate run of another PR on this same head sha: name the fix (3.2.13)
+        # 3.2.18: provenance names the fix when the other PR is open on this branch (close or split, not a commit).
+        # The title already rejects the run (exit 1); an unreadable provenance only loses that refinement.
+        try:
+            why = run_provenance(repo, pr, run_id)
+        except (Ambiguous, subprocess.CalledProcessError, ValueError) as exc:
+            print(f"::warning::run {run_id}: provenance unreadable, so the remedy assumes a closed PR: {exc}",
+                  file=sys.stderr)
+            why = None
+        return (f"run {run_id} is titled {title!r}, not {RUN_TITLE.format(pr=pr)!r}: " + (
+            why or f"this head sha is also PR #{other.group(1)}'s head, and that PR's "
+            "Review Gate run is listed on it. Push a new commit to this PR (an empty commit works) so it has a head "
+            "of its own"))
+    return run_provenance(repo, pr, run_id)  # a matching title is not trust: on a stale main the PR wrote it
 
 
 def main():
@@ -88,7 +174,9 @@ def main():
         print("::error::REPO is required", file=sys.stderr)
         return 2
     try:
-        lookup = detector._gh_run_lookup(repo)
+        def lookup(run_id):  # the run read provenance reuses (3.2.18: one read per run, not two)
+            run = _api_json(f"repos/{repo}/actions/runs/{run_id}")
+            return _text(run, "path").split("@", 1)[0], _text(run, "event")  # `path@ref` for required workflows
         flagged = []
         for check_run in detector._load_check_runs(sys.stdin.read()):
             seen = []
@@ -113,7 +201,7 @@ def main():
         print(f"::error::could not evaluate check runs, failing closed: {exc}", file=sys.stderr)
         return 2
     for name, where, why in bad:
-        kind = "shared head sha, not this PR's run" if "is also PR #" in why else "from an untrusted Actions job"
+        kind = "shared head sha, not this PR's run" if re.search(r"is also (PR #|open)", why) else "from an untrusted Actions job"
         print(f"::error::forged check '{name}' {kind}: {where} ({why})", file=sys.stderr)
     return 1 if bad else 0
 

@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
+import os
+import re
+import shlex
 import shutil
+import stat
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -23,20 +30,21 @@ KNOWN_OLD = frozenset({
     "9c9bb27b42012952bfb74f82f17e804bf49b6afdc0a21b7d5471513a200438f5",  # aec a9be4dd
     "33315bb0adb6e535ff98ee7105e3fe91fec9797a7d67446c634ab94c814163ce",  # aec 5054ef7
     "06cae65f3e93f2bca211ed248969392d07331a2cd396084d4481ceea56117c65",  # aec dba592db, review-gate 3.2.2/3.2.3
+    "ae587812f39f5fe4e8b67feb2f9289aabae0dbc1ceb7022fae0ec07df4047295",  # aec b4a8c9c pin-less map, review-gate 3.2.4-3.2.19
 })
 
 
 # Every script copied into a repo's scripts/. doctor-review-gate.py reads this tuple, so the two cannot drift.
-# The workflow loads the first three from the default branch. lint-review-body.py is for authors (it imports
+# The workflow loads the first four from the default branch. lint-review-body.py is for authors (it imports
 # the checker beside it); the workflow never runs it.
 VENDORED_SCRIPTS = ("check-review-gate.py", "check-forged-gate-names.py", "check-forged-review-gate.py",
-                    "lint-review-body.py")
+                    "check-security-scan.py", "lint-review-body.py")
 
 
 WRAPPER = "check-forged-review-gate.py"
-# What the bundled wrapper calls on the detector. Checked by parsing, never by running: the
-# installer runs on a developer machine and must not execute repo code (#105 Codex P1).
-WRAPPER_FUNCS = {"forged": 3, "_gh_run_lookup": 1, "_load_check_runs": 1}  # name -> positional args used
+# What the bundled wrapper and security lane (check-security-scan.py: job_run_id) call on the detector. Checked by
+# parsing, never by running: the installer runs on a developer machine and must not execute repo code (#105 Codex P1).
+WRAPPER_FUNCS = {"forged": 3, "_gh_run_lookup": 1, "_load_check_runs": 1, "job_run_id": 1}  # name -> positional args used
 
 
 def _detector_compatible(path: Path) -> bool:
@@ -88,8 +96,38 @@ def _backup(dest: Path) -> Path:
     raise SystemExit(f"error: 1000 backups of {dest} already exist; clean them up first")
 
 
-def _copy(src: Path, dest: Path, force: bool) -> bool:
-    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector."""
+def _check_dest(skill_root: Path, root: Path, dest: Path) -> None:
+    """Exit 1 when `dest`, a FILE destination, may not be written: a symlink or outside-repo path (`_dest_problem`),
+    or an existing directory (a copy onto one lands inside it, through whatever link it holds, 3.2.21)."""
+    problem = _dest_problem(skill_root, root, dest) or ("it is a directory, not a file" if dest.is_dir() else None)
+    if problem:
+        raise SystemExit(f"error: refusing to write {dest}: {problem}. Nothing was written there.")
+
+
+def _replace_file(src: Path, dest: Path) -> None:
+    """Put src's bytes and mode at dest by writing a freshly created sibling and renaming it over dest. A rename
+    swaps the directory entry, so it never writes through a symlink or into a hardlinked inode that another path
+    (maybe outside the repo) shares. The stdlib has no atomic safe-copy: copy2 writes in place."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{dest.name}.new-", dir=dest.parent)  # O_EXCL: always a new inode
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(src.read_bytes())
+        shutil.copystat(src, tmp)  # mode and times, as copy2 did
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass  # the rename already consumed the temp file, so there is nothing to clean up
+        raise
+
+
+def _copy(src: Path, dest: Path, force: bool, skill_root: Path, root: Path) -> bool:
+    """Return True if written. Skip existing unless force; never replace a newer or custom vendored detector.
+    Exits 1 before touching anything when dest, or a directory above it, is a symlink or leaves the repo, or dest
+    is a directory: the exists/is_file calls below follow links, so with or without --force they would read a path
+    outside the repo (3.2.21). The write replaces dest by rename (`_replace_file`), never in place."""
+    _check_dest(skill_root, root, dest)
     if dest.is_file() and dest.read_bytes() == src.read_bytes():
         print(f"unchanged: {dest}")
         return False
@@ -106,9 +144,223 @@ def _copy(src: Path, dest: Path, force: bool) -> bool:
         print(f"already exists: {dest} (pass --force to overwrite)")
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
+    _replace_file(src, dest)
     print(f"wrote {dest}")
     return True
+
+
+VENDORED_SKILL = Path(".claude") / "skills" / "review-gate"  # a repo-tracked copy of this skill (aec project install)
+
+
+def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
+    """The SKILL.md frontmatter version as an int tuple; None when SKILL.md or its version line is missing.
+    Raises ValueError for anything but dotted digits (a prerelease, `3..20`): unknown is never "older"."""
+    try:
+        m = re.search(r"\A---\n(?:.*\n)*?version:[ \t]*(.*?)[ \t]*\n", (skill_dir / "SKILL.md").read_text())
+    except OSError:
+        return None
+    if m and not re.fullmatch(r"\d+(\.\d+)*", m.group(1)):
+        raise ValueError(f"unparseable version {m.group(1)!r} in {skill_dir / 'SKILL.md'}")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def hooks_version(skill_dir: Path) -> str:
+    try:
+        return str(json.loads((skill_dir / "hooks.json").read_text()).get("version"))
+    except (OSError, ValueError, AttributeError) as e:
+        return f"unreadable ({e})"
+
+
+def dotted(version: tuple[int, ...] | None) -> str:
+    return ".".join(map(str, version)) if version else "unknown"
+
+
+def _fd_walk_supported() -> bool:
+    """True when this platform can walk by directory fd without following links (POSIX). Native Windows has no
+    O_NOFOLLOW/O_DIRECTORY and no dir_fd, so `_first_symlink` takes the lstat walk there instead of raising."""
+    return (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+            and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+            and os.stat in os.supports_follow_symlinks)
+
+
+def _first_symlink(root: Path, dest: Path) -> Path | None:
+    """The first component below `root`, down to and including `dest`, that is a symlink; None when there is none or
+    the path is absent from some point down (nothing below an absent component exists to be linked, 3.2.22: an
+    absent `.claude/skills/review-gate` under a symlinked `.claude` used to read as clean). Where the platform allows
+    (`_fd_walk_supported`) each directory is opened from its parent's fd with O_NOFOLLOW, so the walk cannot be
+    steered through a link swapped in mid-walk; elsewhere the same walk runs by lstat, per path component.
+    shortcut: the writes after the walk (mkdir, mkstemp, rename, copytree) address paths on every platform, so a link
+    planted between this check and a write is not closed; upgrade by doing those through the same dir fds. The
+    lstat walk is not race-safe either."""
+    if not _fd_walk_supported():
+        return _first_symlink_lstat(root, dest)
+    return _first_symlink_fd(root, dest)
+
+
+def _first_symlink_lstat(root: Path, dest: Path) -> Path | None:
+    """`_first_symlink` by path: lstat each component below `root`, refusing a symlink or a Windows reparse point
+    (an NTFS junction reads as a plain directory to S_ISLNK, but carries FILE_ATTRIBUTE_REPARSE_POINT in
+    `st_file_attributes`, which exists on every Python that has Windows stat; POSIX stat results lack it, so there
+    only S_ISLNK applies) and stopping at the first absent component or the first non-directory, exactly where the
+    fd walk stops."""
+    node = root
+    parts = dest.relative_to(root).parts
+    for i, part in enumerate(parts):
+        node = node / part
+        try:
+            st = os.lstat(node)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return node  # cannot be inspected (permissions, a name the OS rejects): refuse rather than assume clean
+        mode = st.st_mode
+        if stat.S_ISLNK(mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            return node
+        if i == len(parts) - 1 or not stat.S_ISDIR(mode):
+            return None
+    return None
+
+
+def _first_symlink_fd(root: Path, dest: Path) -> Path | None:
+    node, fd = root, os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parts = dest.relative_to(root).parts
+        for i, part in enumerate(parts):
+            node = node / part
+            try:
+                mode = os.stat(part, dir_fd=fd, follow_symlinks=False).st_mode
+                if stat.S_ISLNK(mode):
+                    return node
+                if i == len(parts) - 1 or not stat.S_ISDIR(mode):
+                    return None
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                return node  # ELOOP/ENOTDIR on a directory we just saw: it became a link mid-walk, so refuse
+            os.close(fd)
+            fd = child
+        return None
+    finally:
+        os.close(fd)
+
+
+def _dest_problem(skill_root: Path, root: Path, dest: Path) -> str | None:
+    """Why `dest` may not be written or deleted (every destination this installer touches goes through here),
+    mirroring aec's install chokepoint (aec/lib/filesystem.py
+    check_install_paths + confine.escapes, and remove_installed_item's never-delete-the-source guard): no
+    symlink from below the repo root down to dest (stricter than aec for dest itself: a vendored copy is a
+    tracked directory, so a link there is refused, not replaced), dest inside the repo, no source overlap."""
+    link = _first_symlink(root, dest)
+    if link:
+        return f"{link} is a symlink, so what it reaches is not this repo's"
+    real, src = dest.resolve(), skill_root.resolve()
+    if root.resolve() not in real.parents:
+        return f"{real} is outside {root.resolve()}"
+    if src in real.parents or real in src.parents:
+        return f"it overlaps this installer's own skill at {src}"
+    return None
+
+
+def refresh_vendored_skill(skill_root: Path, root: Path, force: bool) -> bool:
+    """Replace an OLDER repo-tracked copy of this skill as one unit, the way `aec install skill` does, so no
+    file from an old release is left beside new ones. The old tree is moved aside only once the complete new
+    one exists, and is restored if the swap fails; a run cut off mid-swap is undone by the next run. False (with
+    the reason on stderr) when it refused or failed."""
+    dest = root / VENDORED_SKILL
+    # Confinement before ANY probe or return (3.2.20 for the version compare, 3.2.21 for the equal-to-skill-root and
+    # not-a-directory returns, 3.2.22 for an absent dest): exists() and is_dir() follow links, so a symlinked
+    # `.claude` or `.claude/skills` must be refused here, with or without --force, even when nothing is vendored
+    # and even when the tree it points at is this very skill. The `.old` and staging names below are fixed
+    # siblings of this confined dest, so the same check covers their ancestors.
+    problem = _dest_problem(skill_root, root, dest)
+    if problem:
+        print(f"error: refusing to replace {dest}: {problem}. Nothing was changed.", file=sys.stderr)
+        return False
+    backup = dest.with_name(dest.name + ".old")  # a fixed name, so the next run finds a swap that was cut off
+    if backup.exists() or backup.is_symlink():
+        problem = "it is a symlink" if backup.is_symlink() else None
+        if problem or dest.exists() or dest.is_symlink():
+            # refuse rather than delete: fewer lines than a guarded delete, and it may hold the only local edits
+            print(f"error: {backup} is left from an earlier refresh{f' ({problem})' if problem else ''}; keep the "
+                  f"right copy at {dest}, delete the other, then rerun. Nothing was changed.", file=sys.stderr)
+            return False
+        backup.rename(dest)
+        print(f"recovered {dest} from {backup}, left by an interrupted refresh")
+    if not dest.exists():
+        return True  # nothing vendored here, and no ancestor is a link (checked above)
+    if not dest.is_dir() or dest.resolve() == skill_root:
+        return True
+    try:
+        have, want = skill_version(dest), skill_version(skill_root)
+    except ValueError as e:
+        print(f"error: {e}; not replacing {dest}. Fix the version line or replace the copy by hand.", file=sys.stderr)
+        return False
+    if want is None or have is None:
+        print(f"error: cannot read the version of {dest if have is None else skill_root}; not replacing it",
+              file=sys.stderr)
+        return False
+    if have > want or (have == want and hooks_version(dest) == dotted(have)):
+        return True  # current or newer: never downgrade a copy someone vendored on purpose
+    if not force:
+        print(f"stale: {VENDORED_SKILL} is {dotted(have)} (hooks.json {hooks_version(dest)}), this release is "
+              f"{dotted(want)}; pass --force to replace the whole directory")
+        return True
+    new = Path(tempfile.mkdtemp(prefix=f".{dest.name}.new-", dir=dest.parent))
+    try:
+        shutil.copytree(skill_root, new, ignore=shutil.ignore_patterns(".*", "__pycache__"), dirs_exist_ok=True)
+    except (OSError, shutil.Error) as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own partial temp copy; the old tree was never touched
+        print(f"error: could not copy {skill_root} ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        dest.rename(backup)
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy; dest was never moved
+        print(f"error: could not move {dest} aside ({e}); it is unchanged", file=sys.stderr)
+        return False
+    try:
+        new.rename(dest)
+    except OSError as e:
+        shutil.rmtree(new, ignore_errors=True)  # our own temp copy
+        try:
+            backup.rename(dest)
+        except OSError as e2:
+            print(f"error: could not swap in the new copy ({e}) or move the old one back ({e2}); {dest} is ABSENT and "
+                  f"the old copy is at {backup}. Restore it: mv {shlex.quote(str(backup))} {shlex.quote(str(dest))} "
+                  "(the next run of this installer also does that)", file=sys.stderr)
+            return False
+        print(f"error: could not swap in the new copy ({e}); {dest} is unchanged", file=sys.stderr)
+        return False
+    try:
+        shutil.rmtree(backup)
+    except OSError as e:
+        print(f"refreshed {dest}, but the old copy is kept at {backup} ({e}); delete it before committing",
+              file=sys.stderr)
+    print(f"refreshed {dest} ({dotted(have)} -> {dotted(want)}); commit the whole directory")
+    return True
+
+
+PUBLIC_RUNBOOK = """\
+PUBLIC repo: GitHub's Actions event policy (Dec 2, 2026) blocks pull_request_target in public repos by
+default, and Review Gate runs on pull_request_target. Before requiring it:
+  1. In the org or repo Actions policy (Settings > Actions), allow .github/workflows/review-gate.yml to
+     run on pull_request_target for <owner>/<repo>.
+  2. Open a test PR and confirm a 'Review Gate - PR #<n>' run appears.
+  3. Only then add 'Review Gate' as a required status check."""
+
+
+def repo_visibility(root: Path) -> str | None:
+    """PUBLIC / PRIVATE / INTERNAL from gh, or None when gh is missing or cannot tell."""
+    if shutil.which("gh") is None:
+        return None
+    try:
+        out = subprocess.run(["gh", "repo", "view", "--json", "visibility", "-q", ".visibility"], cwd=root,
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"could not read repo visibility ({e})", file=sys.stderr)
+        return None
+    return out.stdout.strip().upper() or None if out.returncode == 0 else None
 
 
 def main() -> int:
@@ -123,6 +375,12 @@ def main() -> int:
             return 1
 
     root = Path.cwd()
+    plan = [(workflow_src, root / ".github" / "workflows" / "review-gate.yml"),  # scripts must live on the default
+            *((src, root / "scripts" / src.name) for src in script_srcs)]       # branch; the workflow loads that ref
+    if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
+        plan.append((doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml"))
+    for _, dest in plan:  # one refusal before the first write, so a later bad destination leaves no earlier one changed
+        _check_dest(skill_root, root, dest)
     detector = root / "scripts" / VENDORED
     if (not force and detector.is_file() and detector.read_bytes() != (skill_root / "scripts" / VENDORED).read_bytes()
             and not _detector_compatible(detector)):
@@ -131,12 +389,15 @@ def main() -> int:
               "(your copy is backed up), or update it from the newest agents-environment-config.",
               file=sys.stderr)
         return 1
-    _copy(workflow_src, root / ".github" / "workflows" / "review-gate.yml", force)
-    # Scripts must live on the default branch; the workflow loads only that ref.
-    for src in script_srcs:
-        _copy(src, root / "scripts" / src.name, force)
-    if "--doctor-job" in sys.argv:  # opt-in CI drift check; not a required check (see the template header)
-        _copy(doctor_src, root / ".github" / "workflows" / "review-gate-doctor.yml", force)
+    if not refresh_vendored_skill(skill_root, root, force):
+        return 1
+    for src, dest in plan:
+        _copy(src, dest, force, skill_root, root)
+    visibility = repo_visibility(root)
+    if visibility == "PUBLIC":
+        print(PUBLIC_RUNBOOK)
+    elif visibility is None:
+        print("Could not read this repo's visibility with gh. If it is public:\n" + PUBLIC_RUNBOOK)
     print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
     print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
     return 0

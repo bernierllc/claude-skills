@@ -1,6 +1,6 @@
 # Review Gate: add a `cursor` reviewer token
 
-Status: planned, ready to start. PR #105 (review-gate 3.2.8) has merged (d876413), so the attestation grammar this plan extends is the one on main. Build on 3.2.8 or later, never on a pre-3.2.8 checker.
+Status: in-repo steps 1-3 and the SKILL.md half of step 4 done in review-gate 3.5.0 and adversarial-review 2.3.0 (BP-GATE-CURSOR). Re-vendoring into other repos happens per repo through `install-workflow.py --force` and that repo's cop; `~/.claude/references/` prose is outside this repo.
 
 ## Why
 

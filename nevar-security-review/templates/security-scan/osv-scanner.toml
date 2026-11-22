@@ -1,0 +1,3 @@
+# Base-side osv-scanner config for the Security Scan lane. Passed with --config so a PR's own
+# osv-scanner.toml is never loaded. Suppress a vulnerability in exceptions.json (owner and
+# expiry required), never here.
