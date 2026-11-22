@@ -1175,22 +1175,27 @@ def check(cmd, cwd, notes=None):
 
 def payload_cwd(payload, inp):
     """The dir the command runs in: Gemini run_shell_command passes it as tool_input.dir_path, ahead of the session cwd."""
-    return inp.get("dir_path") or payload.get("cwd") or os.getcwd()
+    return next((d for d in (inp.get("dir_path"), payload.get("cwd")) if d and isinstance(d, str)), os.getcwd())
 
 
 def main():
     # Same payload handling as review-gate's merge-guard.py: any routed tool carrying a command is checked, whatever
     # the harness names it (`Bash`, `mcp__…__Bash`, `run_shell_command`) and whether it says tool_input or input; the
-    # old `tool_name == "Bash"` allow-list let every other shape through unchecked. Only text that is not JSON passes
-    # unchecked; a payload of the wrong shape (a list, a string tool_input) raises and the __main__ handler blocks.
+    # old `tool_name == "Bash"` allow-list let every other shape through unchecked. Text that is not JSON passes
+    # unchecked (as before); a payload that is not an object raises and the __main__ handler blocks, and so does a
+    # command that is present but not a string (a list is the Codex shell tool's shape): never skipped as "no command".
     try:
         data = json.load(sys.stdin)
     except ValueError:
         return 0
     inp = data.get("tool_input") or data.get("input") or {}
-    cmd = inp.get("command") or inp.get("cmd") or ""
-    if not isinstance(cmd, str) or not cmd:  # a tool with no command (Edit, Read) is not a shell call
+    if not isinstance(inp, dict):  # a text-argument tool such as apply_patch is not a shell call
         return 0
+    cmd = inp.get("command") or inp.get("cmd") or ""
+    if not cmd:  # a tool with no command (Edit, Read) is not a shell call
+        return 0
+    if not isinstance(cmd, str):
+        raise TypeError(f"command is {type(cmd).__name__}, not a string")
     notes = []
     msg = check(cmd, payload_cwd(data, inp), notes)
     if msg:

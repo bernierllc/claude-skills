@@ -1152,8 +1152,20 @@ for _payload, _cwd in (({"tool_name": "Bash", "tool_input": {"command": _merge}}
                        ({"tool_name": "run_shell_command", "tool_input": {"command": _merge, "dir_path": "/w"}}, "/w"),
                        ({"tool_name": "Bash", "tool_input": {"cmd": _merge}}, "/s")):
     assert run_main({"cwd": "/s", **_payload}) == (2, [(_merge, _cwd)]), _payload
-# A tool with no command is not a shell call; text that is not JSON is passed unchecked as before.
+# A tool with no command is not a shell call, nor is a text-argument tool (tool_input is a string).
 assert run_main({"tool_name": "Edit", "tool_input": {"file_path": "/s/x.py", "old_string": "a"}, "cwd": "/s"}) == (0, [])
+assert run_main({"tool_name": "apply_patch", "tool_input": "*** Begin Patch", "cwd": "/s"}) == (0, [])
+# A non-string dir_path or cwd never reaches check() as the directory.
+assert g.payload_cwd({"cwd": 5}, {"dir_path": ["x"]}) == os.getcwd()
+# Through the real guard (not a stub): a command that is not a string must block, never read as "no command".
+for _bad in ({"tool_name": "Bash", "tool_input": {"command": ["gh", "pr", "merge", "5", "--auto"]}},
+             {"tool_name": "Bash", "tool_input": {"command": {"a": "gh pr merge 5 --auto"}}},
+             {"tool_name": "mcp__x__Bash", "tool_input": {"command": "gh pr merge 5 --auto"}},
+             {"toolName": "Bash", "input": {"cmd": "gh pr merge 5 --auto"}}):
+    _r = _run([g.sys.executable, str(Path(__file__).parent.parent / "scripts" / "pr-guard.py")], input=json.dumps(_bad),
+              capture_output=True, text=True, timeout=20, cwd=str(_home),
+              env={"PATH": "/usr/bin:/bin", "HOME": str(_home), "CLAUDE_PROJECT_DIR": str(_home), "AGENT_FEEDBACK_BIN": ""})
+    assert _r.returncode == 2, (_bad, _r.returncode, _r.stderr)
 
 def test_pr_guard():
     """pytest entry point: the asserts above run at import, so a failure is a collection error."""

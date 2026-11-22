@@ -133,8 +133,8 @@ claude-skills repo's `origin/main` history, so a vendored copy (any checkout whe
 the claude-skills repo root) skips it instead of failing (1.6.2). The guard checks the directory the command runs
 in: `tool_input.dir_path` (Gemini `run_shell_command`) first, then the session `cwd` (1.6.2). It checks every
 routed tool that carries a command (`tool_input` or `input`, `command` or `cmd`), whatever the harness names it
-(`Bash`, `mcp__…__Bash`, `run_shell_command`), the same way review-gate's merge guard does; 1.6.1 and earlier
-checked only `tool_name == "Bash"` (1.6.2).
+(`Bash`, `mcp__…__Bash`, `run_shell_command`), reading the payload as review-gate's merge guard does; a command
+that is present but not a string blocks (1.6.2). 1.6.1 and earlier checked only `tool_name == "Bash"`.
 
 **Override:** when you genuinely need a specific commit from the base (a fix your tests
 depend on), append `# sync-base: <reason>` to the command. Say which commit and why.
