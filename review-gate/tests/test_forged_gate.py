@@ -97,6 +97,11 @@ if "/pulls/" in path:
     if fixture.get("pull") is None:  # null: that lookup fails
         sys.exit(1)
     print(json.dumps(fixture["pull"])); sys.exit(0)
+if "/actions/runs/" in path and "/jobs?" in path:  # the security lane's job listing for one run, slurped
+    found = fixture.get("jobs", {}).get(path.split("/")[-2])
+    if found is None:
+        sys.exit(1)
+    print(json.dumps([{"total_count": len(found), "jobs": found}])); sys.exit(0)
 if "/actions/runs/" in path and "--jq" not in args:  # the wrapper's one run read: head fields and title (3.2.17)
     run_id = path.rsplit("/", 1)[1]
     heads, title = fixture.get("run_heads", {}).get(run_id), fixture.get("titles", {}).get(run_id)

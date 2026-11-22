@@ -150,9 +150,11 @@ Loads `scripts/check-review-gate.py` from the repository **default branch** only
    `.github/workflows/security-scan.yml`. Activation, the scanner config digest and `check-security-scan.py` are all read
    from the default branch (f), so a PR cannot switch the lane off or change its own config. When active the gate passes
    only on a `Security Scan` check run that is (a) the job of a `security-scan.yml` `pull_request_target` run triggered by
-   THIS PR (the forged wrapper's provenance) whose check-run id equals the job id in its `details_url`, so a Checks API POST
-   copying a real job URL never counts; (b) published by `github-actions`; (c) on the current head; (d) the newest such run,
-   completed (an older success never masks a newer failure); (e) carrying exactly one `security-scan` annotation
+   THIS PR (the forged wrapper's provenance) whose check-run id equals the job id in its `details_url`, and which the
+   Actions jobs API lists under that run with a `check_run_url` naming this check run, so a Checks API POST never counts,
+   even one PATCHed to point `details_url` at its own id; (b) published by `github-actions`; (c) on the current head; (d)
+   the newest such run by the job's `started_at`, completed per the job's status and conclusion (an older success never
+   masks a newer failure); (e) carrying exactly one `security-scan` annotation
    `outcome=<passed|not-applicable|findings|scanner-error> config-tree=<sha>`, where the sha is the default branch's current
    tree of `.github/security-scan/` and the outcome agrees with the conclusion. Any other Actions job named `Security Scan`
    is forged. An unreadable listing, an annotation count that disagrees with `annotations_count`, or a head that moved

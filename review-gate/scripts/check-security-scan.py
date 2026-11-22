@@ -8,11 +8,12 @@ are all read from the default branch (trust check f).
 When active, the gate passes only on a `Security Scan` check run that is
   a. the job of a .github/workflows/security-scan.yml pull_request_target run triggered by THIS PR
      (check-forged-review-gate.py's run_provenance), with check-run id == the job id in its details_url,
-     so a Checks API POST that copies a real job URL is never accepted;
+     and that job listed by the Actions jobs API under that run with a check_run_url naming this check
+     run. A Checks API POST (later PATCHed to point details_url at its own id) is never accepted;
   b. published by the github-actions app;
   c. on the PR's current head sha;
-  d. the newest such run (started_at, then id): an older success never masks a newer failure, and a run
-     still in progress is incomplete, which fails;
+  d. the newest such run (the job's started_at, then id): an older success never masks a newer failure,
+     and a job still in progress is incomplete, which fails. Status and conclusion come from the job;
   e. carrying exactly one `security-scan` annotation, `outcome=<o> config-tree=<sha>`, whose sha is the
      default branch's current tree of .github/security-scan (scanner config, rules, baseline, exceptions),
      and whose outcome agrees with the conclusion (success: passed | not-applicable; failure: findings |
@@ -74,16 +75,21 @@ def _entries(w, repo, path, ref):
     return {w._text(e, "name"): e for e in listing if isinstance(e, dict)}
 
 
+def _listing(w, path, key):
+    """Every item of a paginated GitHub listing, or w.Ambiguous when the pages are malformed or short."""
+    pages = w._api_json(path, "--paginate", "--slurp")
+    if not isinstance(pages, list) or not pages or not all(isinstance(p, dict) for p in pages):
+        raise w.Ambiguous(f"{path} is not a list of pages")
+    items = [i for p in pages for i in p.get(key, [])]
+    if len(items) != pages[0].get("total_count"):
+        raise w.Ambiguous(f"{path} has {len(items)} {key}, total_count {pages[0].get('total_count')!r}")
+    return items
+
+
 def verdict(w, detector, repo, pr, head, ref):
     """None when the trusted scan on `head` passed; else why not. Raises w.Ambiguous when unreadable."""
-    pages = w._api_json(f"repos/{repo}/commits/{head}/check-runs?"
-                        + urllib.parse.urlencode({"check_name": NAME, "filter": "all", "per_page": 100}),
-                        "--paginate", "--slurp")
-    if not isinstance(pages, list) or not pages or not all(isinstance(p, dict) for p in pages):
-        raise w.Ambiguous("the Security Scan check-run listing is not a list of pages")
-    runs = [c for p in pages for c in p.get("check_runs", [])]
-    if len(runs) != pages[0].get("total_count"):
-        raise w.Ambiguous(f"the Security Scan listing has {len(runs)} runs, total_count {pages[0].get('total_count')!r}")
+    runs = _listing(w, f"repos/{repo}/commits/{head}/check-runs?"
+                    + urllib.parse.urlencode({"check_name": NAME, "filter": "all", "per_page": 100}), "check_runs")
     trusted = []
     for check in runs:
         if check.get("name") != NAME:
@@ -93,9 +99,14 @@ def verdict(w, detector, repo, pr, head, ref):
             continue  # a Checks API POST: never evidence, so it cannot pass the lane
         run = w._api_json(f"repos/{repo}/actions/runs/{run_id}")
         pair = (w._text(run, "path").split("@", 1)[0], w._text(run, "event"))
-        job = re.search(r"/job/(\d+)", w._text(check, "details_url"))
-        if pair != TRUSTED or not job or check.get("id") != int(job.group(1)):  # (a)
+        linked = re.search(r"/job/(\d+)", w._text(check, "details_url"))
+        if pair != TRUSTED or not linked or check.get("id") != int(linked.group(1)):  # (a)
             return f"forged '{NAME}' check {check.get('id')} from {pair[0]} ({pair[1]}), not the trusted scanner job"
+        jobs = _listing(w, f"repos/{repo}/actions/runs/{run_id}/jobs?filter=all&per_page=100", "jobs")
+        job = next((j for j in jobs if isinstance(j, dict) and j.get("id") == check["id"]), None)
+        if (not job or job.get("run_id") != int(run_id)
+                or not str(job.get("check_run_url", "")).endswith(f"/check-runs/{check['id']}")):  # (a)
+            return f"forged '{NAME}' check {check['id']}: run {run_id} has no Actions job bound to it"
         if w._text(check, "app", "slug") != "github-actions":  # (b)
             return f"'{NAME}' check {check['id']} was published by {check['app']['slug']!r}, not github-actions"
         if w._text(check, "head_sha") != head:  # (c)
@@ -103,10 +114,10 @@ def verdict(w, detector, repo, pr, head, ref):
         why = w.run_provenance(repo, pr, run_id)  # (a) this PR's own run
         if why:
             return f"'{NAME}' check {check['id']} is not this PR's scan: {why}"
-        trusted.append(check)
+        trusted.append({**check, **{k: job.get(k) for k in ("status", "conclusion", "started_at")}})  # (d)
     if not trusted:
         return f"no trusted '{NAME}' run on {head[:12]} yet; re-fire Review Gate once it completes"
-    latest = max(trusted, key=lambda c: (w._text(c, "started_at"), c["id"]))  # (d)
+    latest = max(trusted, key=lambda c: (c.get("started_at") or "", c["id"]))  # (d)
     if latest.get("status") != "completed":
         return f"'{NAME}' check {latest['id']} is {latest.get('status')}; re-fire Review Gate once it completes"
     annotations = w._api_json(f"repos/{repo}/check-runs/{latest['id']}/annotations", "--paginate", "--slurp")

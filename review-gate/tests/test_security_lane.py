@@ -37,13 +37,25 @@ def note(outcome="passed", tree=TREE):
             "message": f"outcome={outcome} config-tree={tree}"}
 
 
-def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=None):
+def job_of(check, **over):
+    """The Actions job GitHub lists for a scanner check run: same id, its run, bound by check_run_url."""
+    return {"id": check["id"], "run_id": int(check["details_url"].split("/runs/")[1].split("/")[0]),
+            "check_run_url": f"https://api.github.com/repos/o/r/check-runs/{check['id']}",
+            **{k: check.get(k) for k in ("status", "conclusion", "started_at", "head_sha")}, **over}
+
+
+def fixture(checks=None, notes=None, runs=None, body="", contents=None, heads=None, jobs=None):
     checks = [scan()] if checks is None else checks
+    listed = {}
+    for c in checks:
+        if "/job/" in c["details_url"]:
+            listed.setdefault(str(job_of(c)["run_id"]), []).append(job_of(c))
     base = copy.deepcopy(PROVENANCE)
     base["pull"]["body"] = body
     return {**base, "scripts": {}, "check_runs": checks,
             "runs": {"700": SCAN_RUN, **(runs or {})},
             "run_heads": {"700": run_heads(), **(heads or {})},
+            "jobs": {**listed, **(jobs or {})},
             "annotations": {str(c["id"]): (notes or {}).get(c["id"], [note()]) for c in checks},
             "contents": {".github/workflows?ref=main": ENABLED,
                          ".github?ref=main": [{"name": "security-scan", "type": "dir", "sha": TREE}],
@@ -93,6 +105,26 @@ class TrustChecks(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("forged", out)
 
+    # (a) SEC-01: a POSTed check PATCHed to point details_url at its own id, under the trusted run
+    def test_a_posted_then_patched_check_is_forged(self):
+        other = job_of(scan(), id=9999, check_run_url="https://api.github.com/repos/o/r/check-runs/9999")
+        rc, out = lane(fixture(jobs={"700": [other]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no Actions job bound to it", out)
+
+    def test_a_job_must_name_this_check_run(self):
+        rc, out = lane(fixture(jobs={"700": [job_of(scan(), check_run_url="https://api.github.com/repos/o/r/check-runs/1")]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no Actions job bound to it", out)
+
+    def test_a_job_must_belong_to_the_run(self):
+        rc, out = lane(fixture(jobs={"700": [job_of(scan(), run_id=701)]}))
+        self.assertEqual(rc, 1, out)
+
+    def test_a_unreadable_job_listing_exits_2(self):
+        fix = fixture(); del fix["jobs"]["700"]
+        self.assertEqual(lane(fix)[0], 2)
+
     def test_a_api_posted_check_is_never_evidence(self):
         posted = {**scan(), "details_url": "https://github.com/o/r/runs/8700"}
         rc, out = lane(fixture(checks=[posted]))
@@ -134,6 +166,23 @@ class TrustChecks(unittest.TestCase):
         rc, out = lane(fixture(checks=[old, new], runs={"701": SCAN_RUN}, heads={"701": run_heads()}))
         self.assertEqual(rc, 1, out)
         self.assertIn("in_progress", out)
+
+    def test_d_status_and_conclusion_come_from_the_job(self):
+        rc, out = lane(fixture(jobs={"700": [job_of(scan(), status="in_progress", conclusion=None)]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("in_progress", out)
+        rc, out = lane(fixture(jobs={"700": [job_of(scan(), conclusion="failure")]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("scanner error", out)
+
+    def test_d_job_started_at_orders_runs(self):
+        old, new = scan(700, started="2026-11-20T11:00:00Z"), scan(701, conclusion="failure")
+        rc, out = lane(fixture(checks=[old, new], runs={"701": SCAN_RUN}, heads={"701": run_heads()},
+                               notes={8701: [note("findings")]},
+                               jobs={"700": [job_of(old, started_at="2026-11-20T09:00:00Z")],
+                                     "701": [job_of(new, started_at="2026-11-20T10:00:00Z")]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("reported findings", out)
 
     def test_d_no_scan_yet_is_incomplete(self):
         rc, out = lane(fixture(checks=[]))
@@ -233,7 +282,7 @@ class GateWiring(unittest.TestCase):
     def test_lane_pass_keeps_the_gate_green(self):
         fix = fixture()
         rc, out = self.gate([scan()], runs={"700": SCAN_RUN}, fixture={
-            "contents": fix["contents"], "annotations": fix["annotations"],
+            "contents": fix["contents"], "annotations": fix["annotations"], "jobs": fix["jobs"],
             "run_heads": {"600": run_heads(), "700": run_heads()}})
         self.assertEqual(rc, 0, out)
         self.assertIn("security lane ok", out)
