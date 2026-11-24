@@ -4,7 +4,6 @@ Plan: agents-environment-config plans/2026-11-24-doctor-required-check-workflow-
 The doctor runs as a real subprocess. `gh` is the only stand-in: a fake executable on PATH that serves
 fixture GitHub API responses (third-party, so no network), in the `gh api --include` output shape.
 """
-import base64
 import json
 import os
 import subprocess
@@ -64,12 +63,9 @@ def fixture(rulesets, workflows=None, default="main", extra=None, pages=None):
             "status": 200, "body": [{"id": r["id"], "name": r["name"]} for r in items]}
     for r in [r for items in (pages or [rulesets]) for r in items]:
         api[f"repos/{REPO}/rulesets/{r['id']}"] = {"status": 200, "body": r}
-    if workflows is not None:
-        api[f"repos/{REPO}/contents/.github/workflows?ref={default}"] = {
-            "status": 200, "body": [{"path": p, "name": p.rsplit("/", 1)[1], "type": "file"} for p in workflows]}
-        for p, text in workflows.items():
-            api[f"repos/{REPO}/contents/{p}?ref={default}"] = {
-                "status": 200, "body": {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}}
+    for p in workflows or {}:  # unlisted paths get the fake's JSON 404
+        api[f"repos/{REPO}/contents/{p}?ref={default}"] = {
+            "status": 200, "body": {"type": "file", "path": p, "name": p.rsplit("/", 1)[1], "sha": "0" * 40}}
     api.update(extra or {})
     return {"repo": REPO, "default": default, "api": api}
 
@@ -98,10 +94,8 @@ def lines(proc, prefix):
 
 GATE = {".github/workflows/review-gate.yml": GATE_YML}
 NO_GATE = {".github/workflows/ci.yml": "name: CI\non: pull_request\n"}
-NO_TRIGGER = {".github/workflows/review-gate.yml": "name: Review Gate\non: pull_request\njobs: {}\n"}
-WORKFLOWS = f"repos/{REPO}/contents/.github/workflows?ref=main"
-DEEP = "on: pull_request_target\nx: " + "[" * 5000 + "]" * 5000 + "\n"  # any content, however nested, is only searched
-MALFORMED = "on: [pull_request_target\n\tjobs: {{{\n\0"
+YML = ".github/workflows/review-gate.yml"
+PROBE = f"repos/{REPO}/contents/{YML}?ref=main"
 
 class WithTheOption(unittest.TestCase):
     def assertFails(self, fx, *needles):
@@ -118,8 +112,9 @@ class WithTheOption(unittest.TestCase):
         proc, _ = run_doctor(fixture([ruleset(1)], GATE), FLAG)
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(lines(proc, "FAIL"), [])
-        self.assertIn("OK 'Review Gate' (required on main) has its producer: .github/workflows/review-gate.yml "
-                      "on 'main' names pull_request_target (the trigger and its branch filters are not analyzed)", proc.stdout)
+        self.assertIn("OK 'Review Gate' (required on main) has its producer: the review-gate workflow "
+                      ".github/workflows/review-gate.yml is present on 'main' (its trigger and branch filters are not "
+                      "analyzed)", proc.stdout)
 
     def test_yaml_extension_counts(self):
         proc, _ = run_doctor(fixture([ruleset(1)], {".github/workflows/review-gate.yaml": GATE_YML}), FLAG)
@@ -134,8 +129,7 @@ class WithTheOption(unittest.TestCase):
     def test_gate_only_on_a_covered_branch_fails_naming_the_default_branch(self):
         rs = ruleset(1, include=("refs/heads/main", "refs/heads/staging"))
         fx = fixture([rs], NO_GATE, extra={  # staging carries the gate; it must not count
-            "repos/my-org/my-app/contents/.github/workflows?ref=staging": {
-                "status": 200, "body": [{"path": ".github/workflows/review-gate.yml", "type": "file"}]}})
+            f"repos/{REPO}/contents/{YML}?ref=staging": {"status": 200, "body": {"type": "file", "path": YML}}})
         line = self.assertFails(fx, "on 'main'", "copy on staging or another branch does not count",
                                 "required on main/staging")
         self.assertIn("default branch only", line)
@@ -188,30 +182,12 @@ class EitherWay(unittest.TestCase):
     def both(self, fx):
         return [run_doctor(fx, *args) for args in ((), (FLAG,))]
 
-    def test_present_gate_without_the_trigger_name_warns_and_never_fails(self):
-        for text in (NO_TRIGGER[".github/workflows/review-gate.yml"], MALFORMED.replace("pull_request_target", "x")):
-            for proc, _ in self.both(fixture([ruleset(1)], {".github/workflows/review-gate.yml": text})):
-                with self.subTest(text=text):
-                    self.assertEqual(proc.returncode, 0, proc.stdout)
-                    self.assertEqual(lines(proc, "FAIL"), [])
-                    warn = lines(proc, "WARN producer of 'Review Gate'")
-                    self.assertEqual(len(warn), 1, proc.stdout)
-                    self.assertIn("review-gate.yml on 'main' exists, trigger not verified", warn[0])
-
-    def test_present_gate_naming_the_trigger_is_ok_however_it_is_written(self):
-        filtered = GATE_YML.replace("    types: [", "    branches: [staging]\n    types: [", 1)  # not analyzed
-        for text in (DEEP, MALFORMED, filtered):  # run_doctor asserts no traceback
-            for proc, _ in self.both(fixture([ruleset(1)], {".github/workflows/review-gate.yml": text})):
-                with self.subTest(text=text[:40]):
-                    self.assertEqual(proc.returncode, 0, proc.stdout)
-                    self.assertIn("has its producer", proc.stdout)
-
     def test_non_actions_integration_id_is_skipped(self):
         for proc, calls in self.both(fixture([ruleset(1, (("Review Gate", 99999),))], None)):
             self.assertEqual(proc.returncode, 0, proc.stdout)
             self.assertIn("pins 'Review Gate' to integration 99999 (not GitHub Actions); producer check skipped",
                           proc.stdout)
-            self.assertNotIn(WORKFLOWS, calls)
+            self.assertNotIn(PROBE, calls)
 
     def test_other_required_context_warns_not_verified(self):
         fx = fixture([ruleset(1, (("Review Gate", None), ("CI / test", None)))], GATE)
@@ -221,96 +197,43 @@ class EitherWay(unittest.TestCase):
                           "of scope)", proc.stdout)
             self.assertIn("other branches are out of scope", proc.stdout)
 
-    def test_contents_api_cap_warns(self):
-        listing = [{"name": f"w{i}.yml", "path": f".github/workflows/w{i}.yml", "type": "file"} for i in range(1000)]
-        fx = fixture([ruleset(1)], NO_GATE, extra={WORKFLOWS: {"status": 200, "body": listing}})
-        for proc, _ in self.both(fx):
-            self.assertEqual(proc.returncode, 0, proc.stdout)
-            self.assertIn("lists 1000 entries, the Contents API cap", proc.stdout)
-
-    def test_denied_missing_ref_transient_and_rate_limit_warn_naming_the_status(self):
+    def test_unverified_probe_statuses_and_shapes_warn_never_fail(self):
+        """Only a 200 file object at the requested path is present, and only a JSON 404 is absent."""
         cases = {
-            "HTTP 403": {WORKFLOWS: {"status": 403, "body": {"message": "Resource not accessible"}}},
-            "HTTP 403, rate limited": {WORKFLOWS: {"status": 403, "headers": {"X-Ratelimit-Remaining": "0"},
-                                                   "body": {"message": "API rate limit exceeded"}}},
-            "HTTP 404": {f"repos/{REPO}/branches/main": {"status": 404, "body": {"message": "Branch not found"}}},
-            "HTTP 404, missing ref": {WORKFLOWS: {"status": 404,
-                                                  "body": {"message": "No commit found for the ref main"}}},
-            "error connecting": {WORKFLOWS: {"transient": True}},
-            "HTTP 404, unparsable body": {WORKFLOWS: {"status": 404, "raw": "<html>Not Found</html>"}},
+            "HTTP 200, a list, not a file at": {PROBE: {"status": 200, "body": [{"type": "file", "path": YML}]}},
+            "HTTP 200, a str, not a file at": {PROBE: {"status": 200, "body": "review-gate.yml"}},
+            "HTTP 200, a NoneType, not a file at": {PROBE: {"status": 200, "body": None}},
+            "HTTP 200, type 'symlink' at path": {PROBE: {"status": 200, "body": {"type": "symlink", "path": YML}}},
+            "HTTP 200, type 'submodule' at path": {PROBE: {"status": 200, "body": {"type": "submodule", "path": YML}}},
+            "at path '.github/workflows/ci.yml', not a file at": {
+                PROBE: {"status": 200, "body": {"type": "file", "path": ".github/workflows/ci.yml"}}},
+            "HTTP 200, unparsable body": {PROBE: {"status": 200, "raw": "<html>"}},
+            "HTTP 403)": {PROBE: {"status": 403, "body": {"message": "Resource not accessible"}}},
+            "HTTP 403, rate limited": {PROBE: {"status": 403, "headers": {"X-Ratelimit-Remaining": "0"},
+                                               "body": {"message": "API rate limit exceeded"}}},
+            "HTTP 429, rate limited": {PROBE: {"status": 429, "body": {"message": "slow down"}}},
+            "HTTP 500": {PROBE: {"status": 500, "body": {"message": "Server Error"}}},
+            "error connecting": {PROBE: {"transient": True}},
+            "HTTP 404, missing ref": {PROBE: {"status": 404, "body": {"message": "No commit found for the ref main"}}},
+            "HTTP 404, unparsable body": {PROBE: {"status": 404, "raw": "<html>Not Found</html>"}},
+            "default branch 'main' is not readable (HTTP 404": {
+                f"repos/{REPO}/branches/main": {"status": 404, "body": {"message": "Branch not found"}}},
         }
         for needle, extra in cases.items():
             for proc, _ in self.both(fixture([ruleset(1)], NO_GATE, extra=extra)):
                 with self.subTest(case=needle):
                     self.assertEqual(proc.returncode, 0, proc.stdout)
-                    warn = lines(proc, "WARN producer of 'Review Gate'")
-                    self.assertEqual(len(warn), 1, proc.stdout)
-                    self.assertIn(needle, warn[0])
-
-    def test_gate_file_reads_that_fail_warn(self):
-        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
-        cases = {
-            "HTTP 403": {gate: {"status": 403, "body": {"message": "denied"}}},
-            "HTTP 429, rate limited": {gate: {"status": 429, "body": {"message": "slow down"}}},
-            "is a symlink, not a file": {WORKFLOWS: {"status": 200, "body": [
-                {"name": "review-gate.yml", "path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
-        }
-        for needle, extra in cases.items():
-            for proc, _ in self.both(fixture([ruleset(1)], GATE, extra=extra)):
-                with self.subTest(case=needle):
-                    self.assertEqual(proc.returncode, 0, proc.stdout)
-                    warn = lines(proc, "WARN producer of 'Review Gate'")
-                    self.assertEqual(len(warn), 1, proc.stdout)
-                    self.assertIn(needle, warn[0])
-
-    def test_malformed_contents_payloads_warn_never_fail_or_crash(self):
-        """The Contents API shape contract: any other listing or file payload is unverified, never OK or FAIL."""
-        entry = {"name": "review-gate.yml", "path": ".github/workflows/review-gate.yml", "type": "file"}
-        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
-        b64 = base64.b64encode(GATE_YML.encode()).decode()
-        listings = {
-            "listing is a dict, not a list": {"message": "a file"},
-            "listing is a NoneType, not a list": None,
-            "entry 0 is not an object": [123],
-            "entry 1 is not an object": [{"name": "ci.yml", "path": ".github/workflows/ci.yml", "type": "file"}, 123],
-            "entry 0 is not an object with string name": [{**entry, "name": None}],
-            "entry 0 is not an object with string name, path": [{**entry, "path": []}],
-            "entry 0 is not an object with string name, path and type": [{**entry, "type": 7}],
-        }
-        contents = {
-            "file payload is a list, not an object": [b64],
-            "file payload is a NoneType, not an object": None,
-            "content is a int, not a string": {"encoding": "base64", "content": 123},
-            "content is a NoneType, not a string": {"encoding": "base64"},
-            "encoding is 'none', not 'base64'": {"encoding": "none", "content": ""},
-            "encoding is None, not 'base64'": {"content": b64},
-            "invalid base64": {"encoding": "base64", "content": "!!!!" + base64.b64encode(b"pull_request_target").decode()},
-            "invalid base64 (": {"encoding": "base64", "content": b64.rstrip("=") + "A"},  # bad padding
-            "invalid base64 (string argument": {"encoding": "base64", "content": "\u00e9"},  # non-ASCII
-            "not UTF-8": {"encoding": "base64", "content": base64.b64encode(b"pull_request_target\xff").decode()},
-        }
-        cases = [(f"could not list .github/workflows on 'main' (HTTP 200, {n}", {WORKFLOWS: {"status": 200, "body": b}})
-                 for n, b in listings.items()]
-        cases += [(f"could not read .github/workflows/review-gate.yml on 'main' (HTTP 200, {n}",
-                   {gate: {"status": 200, "body": b}}) for n, b in contents.items()]
-        for needle, extra in cases:
-            for proc, _ in self.both(fixture([ruleset(1)], GATE, extra=extra)):
-                with self.subTest(case=needle):
-                    self.assertEqual(proc.returncode, 0, proc.stdout)
                     self.assertEqual(lines(proc, "FAIL"), [])
-                    self.assertNotIn("has its producer", proc.stdout)
                     warn = lines(proc, "WARN producer of 'Review Gate'")
                     self.assertEqual(len(warn), 1, proc.stdout)
                     self.assertIn(needle, warn[0])
 
-    def test_line_wrapped_base64_from_the_contents_api_is_read(self):
-        b64 = base64.b64encode(GATE_YML.encode()).decode()
-        wrapped = "\n".join(b64[i:i + 60] for i in range(0, len(b64), 60))
-        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
-        fx = fixture([ruleset(1)], GATE, extra={gate: {"status": 200, "body": {"encoding": "base64", "content": wrapped}}})
-        proc, _ = run_doctor(fx, FLAG)
-        self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertIn("has its producer", proc.stdout)
+    def test_a_present_yaml_gate_is_ok_when_the_yml_probe_is_unverified(self):
+        fx = fixture([ruleset(1)], {".github/workflows/review-gate.yaml": GATE_YML},
+                     extra={PROBE: {"status": 500, "body": {"message": "Server Error"}}})
+        for proc, _ in self.both(fx):
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertIn("review-gate.yaml is present on 'main'", proc.stdout)
 
     def test_unreadable_rulesets_warn_and_say_the_producer_check_is_skipped(self):
         fx = fixture([ruleset(1)], NO_GATE, extra={
