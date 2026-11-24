@@ -107,7 +107,13 @@ FILTERED_GATES = [GATE_YML.replace("    types: [", f"    {key}: [{value}]\n    t
                   for key, value in (("branches", "staging"), ("branches-ignore", "main"), ("paths", "src/**"),
                                      ("paths-ignore", "docs/**"))] + [
                   "on:\n  pull_request_target: {branches: [staging]}\njobs: {}\n",
-                  "on:\n  pull_request_target:\n    branches:\n      - staging\njobs: {}\n"]
+                  "on:\n  pull_request_target:\n    branches:\n      - staging\njobs: {}\n",
+                  "x: &f {branches: [staging]}\non:\n  pull_request_target:\n    <<: *f\njobs: {}\n",
+                  "on:\n  pull_request_target:\n    {branches: [staging]}\njobs: {}\n",
+                  "on:\n  pull_request_target:\n    ? branches\n    : [staging]\njobs: {}\n",
+                  "on:\n  pull_request_target:\n    &k branches: [staging]\njobs: {}\n",
+                  "on:\n  push:\njobs: {}\non:\n  pull_request_target:\n",
+                  "---\nname: x\n---\non:\n  pull_request_target:\n"]
 
 
 class WithTheOption(unittest.TestCase):

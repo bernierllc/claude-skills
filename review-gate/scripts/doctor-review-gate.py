@@ -342,8 +342,12 @@ def declares_pull_request_target(text: str) -> bool | None:
                and ln.rstrip() != "---"]
     if not content or content[0][0] in " \t{[-":
         return None  # indented, flow-style or sequence root: not a block mapping this parser reads
+    on_key = r"""^(?:on|'on'|"on")\s*:(.*)$"""
+    if sum(bool(re.match(on_key, ln)) for ln in lines) > 1 or any(
+            re.match(r"---(\s|$)", ln) for ln in lines[lines.index(content[0]):]):
+        return None  # a duplicate on: key or a second document
     for i, line in enumerate(lines):
-        m = re.match(r"""^(?:on|'on'|"on")\s*:(.*)$""", line)
+        m = re.match(on_key, line)
         if not m:
             continue
         rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
@@ -354,7 +358,7 @@ def declares_pull_request_target(text: str) -> bool | None:
             return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
         if rest:
             return None  # flow mapping, multi-line flow list, anchor, ...
-        events, dashes, indent, filtered = [], set(), None, False
+        events, dashes, indent, filtered, setting = [], set(), None, False, None
         for child in lines[i + 1:]:
             if not child.strip() or child.lstrip().startswith("#"):
                 continue
@@ -362,10 +366,12 @@ def declares_pull_request_target(text: str) -> bool | None:
             if width == 0 and not child.startswith("- "):
                 break  # the next top-level key (a column-0 "- " item is a block list under on:)
             indent = width if indent is None else indent
-            if width > indent:  # an event's own settings
-                filtered |= events[-1:] == ["pull_request_target"] and bool(re.match(
-                    r"""-?\s*['"]?(branches|branches-ignore|paths|paths-ignore)['"]?\s*:""", child.strip()))
+            if width > indent:  # an event's own settings: under pull_request_target only types: is read
+                if events[-1:] == ["pull_request_target"]:
+                    setting = width if setting is None else setting
+                    filtered |= width == setting and not re.match(r"""['"]?types['"]?\s*:""", child.strip())
                 continue
+            setting = None
             if width < indent:
                 return None
             item = re.fullmatch(r"""(-\s+)?['"]?([\w-]+)['"]?\s*(:.*)?(\s+#.*)?""", child.strip())
