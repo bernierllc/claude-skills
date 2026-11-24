@@ -168,7 +168,7 @@ def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
 def hooks_version(skill_dir: Path) -> str:
     try:
         return str(json.loads((skill_dir / "hooks.json").read_text()).get("version"))
-    except (OSError, ValueError, AttributeError) as e:
+    except (OSError, ValueError, AttributeError, RecursionError) as e:  # RecursionError: deeply nested JSON
         return f"unreadable ({e})"
 
 
