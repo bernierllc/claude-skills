@@ -82,7 +82,7 @@ Incumbent named: `vendored_skill_parity()` already compares `have` (the repo's v
 ## Done when
 
 - None of the 15 repos has a `git clone` of claude-skills in `review-gate-doctor.yml`: `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate-doctor.yml --jq .content | base64 -d | grep -c 'git clone'` prints 0 (a retrieval error counts as a failure).
-- A release published after the migration leaves `doctor` green on an open PR in a migrated repo, checked once on the first release after the rollout.
+- A release published after the migration leaves a migrated repo's `doctor` verdict unchanged, checked once on the first release after the rollout: record the repo's newest `doctor` run (PR run or `workflow_dispatch`) and its head SHA before the release, dispatch the doctor on the same ref after it (`gh workflow run review-gate-doctor.yml --ref <ref>`), and both are green. (An unrelated PR no longer carries a doctor run once the job is path-filtered: `2026-11-24-doctor-paths-filter.md`.)
 - Floor behaviour is released and pinned by the tests above, and the re-vendor PRs write it.
 
 ## Not in scope
