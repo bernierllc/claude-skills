@@ -13,6 +13,7 @@ the option or with incomplete evidence, stay warnings, since CI's GITHUB_TOKEN u
 from __future__ import annotations
 
 import base64
+import binascii
 import importlib.util
 import json
 import re
@@ -330,39 +331,66 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
     return status, data, reason
 
 
+def read_contents(full: str, path: str, ref: str, *, listing: bool) -> tuple[int | None, list | str | None, str]:
+    """GET one Contents API path and check the payload shape here, at the boundary, for both reads.
+
+    Returns (status, value, reason). value is the directory listing (every entry an object with string name, path
+    and type) when ``listing``, else the file's decoded UTF-8 text; it is None when the status is not 200 or the
+    payload has any other shape, and then reason names the problem.
+    """
+    status, data, reason = gh_api(f"repos/{full}/contents/{path}?ref={quote(ref, safe='')}")
+    if status != 200:
+        return status, None, reason
+    if listing:
+        if not isinstance(data, list):
+            return status, None, f"{reason}, listing is a {type(data).__name__}, not a list"
+        for i, entry in enumerate(data):
+            if not (isinstance(entry, dict) and all(isinstance(entry.get(k), str) for k in ("name", "path", "type"))):
+                return status, None, f"{reason}, entry {i} is not an object with string name, path and type"
+        return status, data, reason
+    if not isinstance(data, dict):
+        return status, None, f"{reason}, file payload is a {type(data).__name__}, not an object"
+    content, encoding = data.get("content"), data.get("encoding")
+    if encoding != "base64":
+        return status, None, f"{reason}, encoding is {encoding!r}, not 'base64'"
+    if not isinstance(content, str):
+        return status, None, f"{reason}, content is a {type(content).__name__}, not a string"
+    try:
+        raw = base64.b64decode(content.replace("\n", ""), validate=True)  # GitHub wraps the base64 in lines
+    except binascii.Error as exc:
+        return status, None, f"{reason}, invalid base64 ({exc})"
+    try:
+        return status, raw.decode("utf-8"), reason
+    except UnicodeDecodeError as exc:
+        return status, None, f"{reason}, not UTF-8 ({exc.reason} at byte {exc.start})"
+
+
 def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     """Look for the skill's gate workflow on the default branch.
 
     Returns (verdict, detail): "present" (an exact-path review-gate.yml/.yaml whose text names pull_request_target);
     "absent" (the inventory is complete and readable and neither file exists); or "unknown" (the evidence is
-    incomplete, or a gate file exists without that name in it). The trigger is never parsed.
+    incomplete or malformed, or a gate file exists without that name in it). The trigger is never parsed.
     """
     status, _, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
     if status != 200:
         return "unknown", f"default branch {default_branch!r} is not readable ({reason or 'no response'})"
-    status, listing, reason = gh_api(f"repos/{full}/contents/.github/workflows?ref={quote(default_branch, safe='')}")
+    status, listing, reason = read_contents(full, ".github/workflows", default_branch, listing=True)
     if status == 404 and "missing ref" not in reason:
         listing = []  # the repo and branch are readable, so 404 means no .github/workflows directory
-    elif status != 200:
+    elif listing is None:
         return "unknown", f"could not list .github/workflows on {default_branch!r} ({reason})"
-    if not isinstance(listing, list):
-        return "unknown", f"unexpected .github/workflows listing on {default_branch!r}"
-    types = {e.get("path"): e.get("type") for e in listing if isinstance(e, dict)}
-    paths = {path for path, kind in types.items() if kind == "file"}
+    types = {e["path"]: e["type"] for e in listing}
     for path in GATE_PATHS:
         if path in types and types[path] != "file":  # a symlink or submodule there may still be the gate
             return "unknown", f"{path} on {default_branch!r} is a {types[path]}, not a file; not read"
     untriggered = []
     for path in GATE_PATHS:
-        if path not in paths:
+        if types.get(path) != "file":
             continue
-        status, blob, reason = gh_api(f"repos/{full}/contents/{path}?ref={quote(default_branch, safe='')}")
-        if status != 200 or not isinstance(blob, dict) or blob.get("encoding") != "base64":
+        _, text, reason = read_contents(full, path, default_branch, listing=False)
+        if text is None:
             return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
-        try:
-            text = base64.b64decode(blob.get("content") or "").decode("utf-8")
-        except (TypeError, ValueError):  # TypeError: a non-string content; UnicodeDecodeError is a ValueError
-            return "unknown", f"could not decode {path} on {default_branch!r}"
         # shortcut: a substring test, so the trigger and its branch filters are not analyzed; a parser was cut
         # after three review rounds of false OKs and false FAILs, so upgrade only with a real need
         if "pull_request_target" in text:

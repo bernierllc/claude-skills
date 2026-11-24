@@ -222,7 +222,7 @@ class EitherWay(unittest.TestCase):
             self.assertIn("other branches are out of scope", proc.stdout)
 
     def test_contents_api_cap_warns(self):
-        listing = [{"path": f".github/workflows/w{i}.yml", "type": "file"} for i in range(1000)]
+        listing = [{"name": f"w{i}.yml", "path": f".github/workflows/w{i}.yml", "type": "file"} for i in range(1000)]
         fx = fixture([ruleset(1)], NO_GATE, extra={WORKFLOWS: {"status": 200, "body": listing}})
         for proc, _ in self.both(fx):
             self.assertEqual(proc.returncode, 0, proc.stdout)
@@ -251,16 +251,52 @@ class EitherWay(unittest.TestCase):
         cases = {
             "HTTP 403": {gate: {"status": 403, "body": {"message": "denied"}}},
             "HTTP 429, rate limited": {gate: {"status": 429, "body": {"message": "slow down"}}},
-            "could not read .github/workflows/review-gate.yml": {gate: {"status": 200, "body": {"encoding": "none"}}},
-            "could not decode": {gate: {"status": 200, "body": {"encoding": "base64", "content": "//79"}}},
-            "could not decode .github": {gate: {"status": 200, "body": {"encoding": "base64", "content": 123}}},
             "is a symlink, not a file": {WORKFLOWS: {"status": 200, "body": [
-                {"path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
+                {"name": "review-gate.yml", "path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
         }
         for needle, extra in cases.items():
             for proc, _ in self.both(fixture([ruleset(1)], GATE, extra=extra)):
                 with self.subTest(case=needle):
                     self.assertEqual(proc.returncode, 0, proc.stdout)
+                    warn = lines(proc, "WARN producer of 'Review Gate'")
+                    self.assertEqual(len(warn), 1, proc.stdout)
+                    self.assertIn(needle, warn[0])
+
+    def test_malformed_contents_payloads_warn_never_fail_or_crash(self):
+        """The Contents API shape contract: any other listing or file payload is unverified, never OK or FAIL."""
+        entry = {"name": "review-gate.yml", "path": ".github/workflows/review-gate.yml", "type": "file"}
+        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
+        b64 = base64.b64encode(GATE_YML.encode()).decode()
+        listings = {
+            "listing is a dict, not a list": {"message": "a file"},
+            "listing is a NoneType, not a list": None,
+            "entry 0 is not an object": [123],
+            "entry 1 is not an object": [{"name": "ci.yml", "path": ".github/workflows/ci.yml", "type": "file"}, 123],
+            "entry 0 is not an object with string name": [{**entry, "name": None}],
+            "entry 0 is not an object with string name, path": [{**entry, "path": []}],
+            "entry 0 is not an object with string name, path and type": [{**entry, "type": 7}],
+        }
+        contents = {
+            "file payload is a list, not an object": [b64],
+            "file payload is a NoneType, not an object": None,
+            "content is a int, not a string": {"encoding": "base64", "content": 123},
+            "content is a NoneType, not a string": {"encoding": "base64"},
+            "encoding is 'none', not 'base64'": {"encoding": "none", "content": ""},
+            "encoding is None, not 'base64'": {"content": b64},
+            "invalid base64": {"encoding": "base64", "content": "!!!!" + base64.b64encode(b"pull_request_target").decode()},
+            "invalid base64 (": {"encoding": "base64", "content": b64.rstrip("=") + "A"},  # bad padding
+            "not UTF-8": {"encoding": "base64", "content": base64.b64encode(b"pull_request_target\xff").decode()},
+        }
+        cases = [(f"could not list .github/workflows on 'main' (HTTP 200, {n}", {WORKFLOWS: {"status": 200, "body": b}})
+                 for n, b in listings.items()]
+        cases += [(f"could not read .github/workflows/review-gate.yml on 'main' (HTTP 200, {n}",
+                   {gate: {"status": 200, "body": b}}) for n, b in contents.items()]
+        for needle, extra in cases:
+            for proc, _ in self.both(fixture([ruleset(1)], GATE, extra=extra)):
+                with self.subTest(case=needle):
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                    self.assertEqual(lines(proc, "FAIL"), [])
+                    self.assertNotIn("has its producer", proc.stdout)
                     warn = lines(proc, "WARN producer of 'Review Gate'")
                     self.assertEqual(len(warn), 1, proc.stdout)
                     self.assertIn(needle, warn[0])
