@@ -192,6 +192,23 @@ def ruleset_requires_conversation_resolution(detail: dict) -> bool:
     return False
 
 
+def ruleset_shape_problem(detail: dict) -> str:
+    """The first field the ruleset checks below read that has the wrong type, or "" when every one is usable."""
+    cond = detail.get("conditions") or {}
+    ref = (cond.get("ref_name") or {}) if isinstance(cond, dict) else None
+    if not isinstance(ref, dict) or not all(isinstance(ref.get(k) or [], list) for k in ("include", "exclude")):
+        return "conditions.ref_name is not an object with include/exclude lists"
+    rules = detail.get("rules") or []
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+        return "rules is not a list of objects"
+    for r in rules:
+        params = r.get("parameters") or {}
+        checks = (params.get("required_status_checks") or []) if isinstance(params, dict) else None
+        if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
+            return f"rule {r.get('type')!r} parameters are not an object with a list of check objects"
+    return ""
+
+
 def local_checks(root: Path) -> int:
     """Workflow and vendored-script checks; returns how many WARNs they printed."""
     problems = 0
@@ -335,7 +352,9 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     readable and every path is a JSON 404 that is not a missing ref); or "unknown" (any other status or shape).
     The file's content, trigger and branch filters are never read.
     """
-    status, _, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
+    status, data, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
+    if status == 200 and not isinstance(data, dict):
+        status, reason = None, f"{reason}, a {type(data).__name__}, not a branch object"
     if status != 200:
         return "unknown", f"default branch {default_branch!r} is not readable ({reason or 'no response'})"
     problems = []
@@ -363,8 +382,9 @@ def list_rulesets(full: str) -> tuple[list | None, str]:
         status, data, reason = gh_api(f"repos/{full}/rulesets?per_page={PAGE}&page={page}")
         if status != 200:
             return None, reason
-        if not isinstance(data, list):
-            return None, "unexpected rulesets payload"
+        if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
+            return None, (f"{reason}, a {type(data).__name__}" + (" with a non-object entry" if isinstance(data, list)
+                          else "") + ", not a list of ruleset objects")
         rulesets.extend(data)
         if len(data) < PAGE:
             return rulesets, ""
@@ -388,11 +408,14 @@ def remote_checks(*, expect_gate: bool = False) -> int:
         return 0
     full = repo.stdout.strip()
     labels = gh_json(["label", "list", "-R", full, "--search", MAIN_REVIEW_LABEL, "--json", "name"])
-    if isinstance(labels, list) and any(lb.get("name") == MAIN_REVIEW_LABEL for lb in labels):
+    if not (isinstance(labels, list) and all(isinstance(lb, dict) for lb in labels)):
+        print(f"WARN label {MAIN_REVIEW_LABEL!r} unverified: the label list is unreadable or not a list of objects "
+              f"(a {type(labels).__name__})")
+    elif any(lb.get("name") == MAIN_REVIEW_LABEL for lb in labels):
         print(f"OK label {MAIN_REVIEW_LABEL!r} exists")
     else:
         print(
-            f"WARN label {MAIN_REVIEW_LABEL!r} missing (or unreadable): every PR into main fails the gate; "
+            f"WARN label {MAIN_REVIEW_LABEL!r} missing: every PR into main fails the gate; "
             f"gh label create {MAIN_REVIEW_LABEL} -R {full}"
         )
     default_branch_proc = subprocess.run(
@@ -431,6 +454,11 @@ def remote_checks(*, expect_gate: bool = False) -> int:
         if status != 200 or not isinstance(detail, dict):
             print(f"WARN could not read ruleset {name!r} ({reason}); ignored")
             continue
+        shape = ruleset_shape_problem(detail)
+        if shape:
+            print(f"WARN ruleset {name!r} unverified: {shape}; its branch coverage, {REVIEW_GATE_CONTEXT!r} and "
+                  "conversation-resolution requirements are not counted")
+            continue
         if not ruleset_is_enforcing(detail):
             skipped_non_enforcing += 1
             enf = detail.get("enforcement") or "unknown"
@@ -451,8 +479,6 @@ def remote_checks(*, expect_gate: bool = False) -> int:
             if rule.get("type") != "required_status_checks":
                 continue
             for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
-                if not isinstance(check, dict):
-                    continue
                 context = check.get("context")
                 if context != REVIEW_GATE_CONTEXT:
                     other_contexts.setdefault(str(context))

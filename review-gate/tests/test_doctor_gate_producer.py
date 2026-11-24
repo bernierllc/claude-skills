@@ -31,7 +31,7 @@ if a[:2] == ["repo", "view"]:
         print("gh: could not read repo", file=sys.stderr); sys.exit(1)
     print(fx["default"]); sys.exit(0)
 if a[:2] == ["label", "list"]:
-    print(json.dumps([{{"name": "review:high"}}])); sys.exit(0)
+    print(json.dumps(fx.get("labels", [{{"name": "review:high"}}]))); sys.exit(0)
 if a[:2] == ["api", "--include"] and len(a) == 3:
     with open(os.environ["FAKE_GH"] + ".calls", "a") as log:
         log.write(a[2] + "\\n")
@@ -227,6 +227,56 @@ class EitherWay(unittest.TestCase):
                     warn = lines(proc, "WARN producer of 'Review Gate'")
                     self.assertEqual(len(warn), 1, proc.stdout)
                     self.assertIn(needle, warn[0])
+
+    def test_every_api_consumer_warns_unverified_on_a_wrong_shape(self):
+        """A 200 with the wrong shape at any consumer is unverified: WARN naming it, exit 0, never OK or FAIL."""
+        branch, rulesets, detail = (f"repos/{REPO}/branches/main", f"repos/{REPO}/rulesets?per_page=100&page=1",
+                                    f"repos/{REPO}/rulesets/1")
+
+        def rs(**over):
+            return {detail: {"status": 200, "body": {**ruleset(1), **over}}}
+
+        def rule(params):
+            return rs(rules=[{"type": "required_status_checks", "parameters": params}])
+
+        cond = "WARN ruleset 'rs1' unverified: conditions.ref_name is not an object with include/exclude lists"
+        bad_rule = "WARN ruleset 'rs1' unverified: rule 'required_status_checks' parameters are not an object"
+        cases = [
+            ({branch: {"status": 200, "raw": "<html>proxy error</html>"}}, None,
+             "default branch 'main' is not readable (HTTP 200, unparsable body, a NoneType, not a branch object)"),
+            ({branch: {"status": 200, "body": None}}, None, "is not readable (HTTP 200, a NoneType, not a branch"),
+            ({branch: {"status": 200, "body": []}}, None, "is not readable (HTTP 200, a list, not a branch object)"),
+            ({rulesets: {"status": 200, "body": [None]}}, None,
+             "WARN could not list rulesets (HTTP 200, a list with a non-object entry, not a list of ruleset objects"),
+            ({rulesets: {"status": 200, "body": [1]}}, None, "(HTTP 200, a list with a non-object entry, not a list"),
+            ({rulesets: {"status": 200, "body": "x"}}, None, "(HTTP 200, a str, not a list of ruleset objects"),
+            ({rulesets: {"status": 200, "body": {}}}, None, "(HTTP 200, a dict, not a list of ruleset objects"),
+            (rs(rules=[None]), None, "WARN ruleset 'rs1' unverified: rules is not a list of objects"),
+            (rs(rules={"type": "x"}), None, "WARN ruleset 'rs1' unverified: rules is not a list of objects"),
+            (rule("x"), None, bad_rule),
+            (rule({"required_status_checks": 5}), None, bad_rule),
+            (rule({"required_status_checks": [1]}), None, bad_rule),
+            (rs(conditions="x"), None, cond),
+            (rs(conditions={"ref_name": [1]}), None, cond),
+            (rs(conditions={"ref_name": {"include": 5}}), None, cond),
+            ({}, [None], "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects"),
+            ({}, [1], "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects"),
+            ({}, "x", "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects (a "
+                      "str)"),
+        ]
+        for extra, labels, needle in cases:
+            fx = fixture([ruleset(1)], NO_GATE if labels is None else GATE, extra=extra)  # labels feed no FAIL
+            if labels is not None:
+                fx["labels"] = labels
+            proc, _ = run_doctor(fx, FLAG)
+            with self.subTest(case=needle, extra=extra, labels=labels):
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                self.assertEqual(lines(proc, "FAIL"), [])
+                self.assertTrue(any(needle in ln for ln in lines(proc, "WARN")), proc.stdout)
+                if labels is not None:
+                    self.assertNotIn("OK label", proc.stdout)
+                if extra is not None and detail in extra:
+                    self.assertNotIn("OK ruleset 'rs1'", proc.stdout)
 
     def test_a_present_yaml_gate_is_ok_when_the_yml_probe_is_unverified(self):
         fx = fixture([ruleset(1)], {".github/workflows/review-gate.yaml": GATE_YML},
