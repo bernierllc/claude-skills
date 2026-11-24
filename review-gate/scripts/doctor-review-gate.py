@@ -6,8 +6,8 @@ Prints WARN / OK / FAIL lines on stdout. It exits 1, with or without --strict, w
 SKILL.md disagree (3.2.19). With --strict (3.2.14) it also exits 1 when the workflow or a vendored script is
 missing or differs from this skill's copy: the local checks, which need no token. With
 --expect-default-branch-gate (3.8.0) it also exits 1 when an enforcing main/staging ruleset requires `Review Gate`
-and the default branch, read completely, has no .github/workflows/review-gate.yml (or .yaml) with a
-pull_request_target trigger. Otherwise it exits 0: the label and ruleset checks, and that producer check without
+and the default branch, read completely, has no .github/workflows/review-gate.yml (or .yaml); a gate file
+that exists never fails, and its trigger is not analyzed. Otherwise it exits 0: the label and ruleset checks, and that producer check without
 the option or with incomplete evidence, stay warnings, since CI's GITHUB_TOKEN usually cannot read rulesets.
 """
 from __future__ import annotations
@@ -330,43 +330,12 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
     return status, data, reason
 
 
-def declares_pull_request_target(text: str) -> tuple[bool | None, str]:
-    """(True, _) an unfiltered pull_request_target; (False, _) one parsed workflow whose on: lacks it; (None, why)
-    anything unverified, which the doctor reports as a warning and never as a failure."""
-    try:
-        import yaml  # third-party: CI installs it, a standalone doctor run may not have it
-    except ImportError:
-        return None, "PyYAML is needed to verify the trigger (python3 -m pip install pyyaml)"
-    try:
-        docs = list(yaml.safe_load_all(text))
-    except yaml.YAMLError as exc:
-        return None, f"not valid YAML ({type(exc).__name__})"
-    if len(docs) != 1 or not isinstance(docs[0], dict):
-        return None, "not a single YAML mapping document"
-    keys = [k for k in ("on", True) if k in docs[0]]  # YAML 1.1 loads a bare `on` key as True
-    if len(keys) != 1:
-        return None, "no single top-level on: key"
-    on = docs[0][keys[0]]
-    if isinstance(on, str):
-        on = {on: None}
-    elif isinstance(on, list) and all(isinstance(e, str) for e in on):
-        on = dict.fromkeys(on)
-    if not isinstance(on, dict):
-        return None, "on: is not an event name, list or mapping"
-    if "pull_request_target" not in on:
-        return False, "no pull_request_target trigger"
-    settings = on["pull_request_target"]
-    if settings is None or (isinstance(settings, dict) and set(settings) <= {"types"}):
-        return True, "declares pull_request_target"
-    # shortcut: a branch or path filter is not matched against the required branches; upgrade if one is needed
-    return None, "pull_request_target has a filter or setting other than types, not checked against the branches"
-
-
 def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     """Look for the skill's gate workflow on the default branch.
 
-    Returns (verdict, detail): "present"; "absent" (the inventory is complete and readable, and no exact-path
-    review-gate.yml/.yaml with a pull_request_target trigger exists); or "unknown" (the evidence is incomplete).
+    Returns (verdict, detail): "present" (an exact-path review-gate.yml/.yaml whose text names pull_request_target);
+    "absent" (the inventory is complete and readable and neither file exists); or "unknown" (the evidence is
+    incomplete, or a gate file exists without that name in it). The trigger is never parsed.
     """
     status, _, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
     if status != 200:
@@ -383,7 +352,7 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     for path in GATE_PATHS:
         if path in types and types[path] != "file":  # a symlink or submodule there may still be the gate
             return "unknown", f"{path} on {default_branch!r} is a {types[path]}, not a file; not read"
-    found_without_trigger = []
+    untriggered = []
     for path in GATE_PATHS:
         if path not in paths:
             continue
@@ -392,19 +361,20 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
             return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
         try:
             text = base64.b64decode(blob.get("content") or "").decode("utf-8")
-            found, why = declares_pull_request_target(text)
         except (ValueError, UnicodeDecodeError):
             return "unknown", f"could not decode {path} on {default_branch!r}"
-        if found is None:
-            return "unknown", f"could not verify the trigger of {path} on {default_branch!r}: {why}"
-        if found:
-            return "present", f"{path} on {default_branch!r} declares pull_request_target"
-        found_without_trigger.append(path)
+        # shortcut: a substring test, so the trigger and its branch filters are not analyzed; a parser was cut
+        # after three review rounds of false OKs and false FAILs, so upgrade only with a real need
+        if "pull_request_target" in text:
+            return "present", (f"{path} on {default_branch!r} names pull_request_target (the trigger and its "
+                               "branch filters are not analyzed)")
+        untriggered.append(path)
+    if untriggered:
+        return "unknown", (f"{untriggered[0]} on {default_branch!r} exists, trigger not verified: it never names "
+                           "pull_request_target")
     if len(listing) >= CONTENTS_CAP:
         return "unknown", (f".github/workflows on {default_branch!r} lists {len(listing)} entries, the Contents API "
                            "cap, so the listing may be incomplete")
-    if found_without_trigger:
-        return "absent", f"{found_without_trigger[0]} on {default_branch!r} has no pull_request_target trigger"
     return "absent", f"no .github/workflows/review-gate.yml (or .yaml) on {default_branch!r}"
 
 
