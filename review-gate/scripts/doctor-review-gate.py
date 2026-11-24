@@ -334,7 +334,7 @@ def declares_pull_request_target(text: str) -> bool | None:
     """Does a workflow's top-level ``on:`` name ``pull_request_target``? None when ``on:`` has a form this
     parser does not read, so an unread form is never taken as proof of absence (or presence)."""
     # shortcut: a line parser, not YAML: scalar, one-line [list], block list and block mapping forms only.
-    lines = text.lstrip("﻿").splitlines()
+    lines = re.split(r"\r\n|\r|\n", text.lstrip("\ufeff"))  # YAML line breaks only, unlike splitlines()
     for i, line in enumerate(lines):
         m = re.match(r"""^(?:on|'on'|"on")\s*:(.*)$""", line)
         if not m:
@@ -346,7 +346,7 @@ def declares_pull_request_target(text: str) -> bool | None:
             return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
         if rest:
             return None  # flow mapping, multi-line flow list, anchor, ...
-        events, indent = [], None
+        events, dashes, indent = [], set(), None
         for child in lines[i + 1:]:
             if not child.strip() or child.lstrip().startswith("#"):
                 continue
@@ -362,7 +362,10 @@ def declares_pull_request_target(text: str) -> bool | None:
             if not item or (item.group(1) and item.group(3)):
                 return None
             events.append(item.group(2))
-        return "pull_request_target" in events if events else None
+            dashes.add(bool(item.group(1)))
+        if not events or len(dashes) > 1:
+            return None  # "- x" beside "y:" is a list under the event above, not an event
+        return "pull_request_target" in events
     return False
 
 

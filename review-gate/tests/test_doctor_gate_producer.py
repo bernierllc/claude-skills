@@ -290,8 +290,10 @@ class TriggerParser(unittest.TestCase):
         for text in ("on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n"):
             self.assertTrue(f(text), repr(text))
         for text in ("on: {pull_request: {branches: [pull_request_target]}}\n", "on: [push,\n  pull_request_target]\n",
-                     "on:\n  - pull_request_target: x\n", "on:\njobs: {}\n"):
+                     "on:\n  - pull_request_target: x\n", "on:\njobs: {}\n",
+                     "on:\n  push:\n  - pull_request_target\n"):
             self.assertIsNone(f(text), text)
+        self.assertTrue(f("on:\n  push:\n    branches: [\"a\u2028b\"]\n  pull_request_target:\n"))
 
 
 class InstallerHint(unittest.TestCase):
