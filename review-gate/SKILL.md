@@ -45,7 +45,7 @@ A PR body the gate accepts (rule 2): under `## Review`, only the attestation lin
 ## Review
 
 Fallback review: claude-sonnet on 0123456789abcdef0123456789abcdef01234567 — verdict: findings fixed
-Two P2s were fixed in this head and one is a separate planned unit, tracked in Notion.
+Two P2s were fixed in this head and one is a separate planned unit with an existing plan file, tracked in Notion.
 
 ## Notes
 
