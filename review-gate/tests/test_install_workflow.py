@@ -1039,7 +1039,7 @@ class DoctorVersionParity(unittest.TestCase):
             proc, _ = doctor_script_lines(repo, self.no_gh())
             self.assertNotIn("Traceback", proc.stdout + proc.stderr)
             self.assertEqual(proc.returncode, 1, proc.stdout)
-            self.assertIn("FAIL .claude/skills/review-gate/hooks.json is unreadable (maximum recursion depth", proc.stdout)
+            self.assertIn("FAIL .claude/skills/review-gate/hooks.json is unreadable (", proc.stdout)  # wording varies by Python
 
     def test_unparseable_vendored_version_fails_naming_it_without_a_traceback(self):
         with tempfile.TemporaryDirectory() as repo:

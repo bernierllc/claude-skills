@@ -149,7 +149,8 @@ def parse_ruleset(d: object) -> tuple[Ruleset | None, str]:
     try:
         include, exclude = (tuple(_ref_pattern(p) for p in ref[k]) for k in ("include", "exclude"))
     except (re.error, ValueError) as e:
-        return None, f"conditions.ref_name holds a pattern this doctor cannot read ({e})"
+        why = str(e).encode("ascii", "backslashreplace").decode()  # a lone surrogate in a pattern cannot print
+        return None, f"conditions.ref_name holds a pattern this doctor cannot read ({why})"
     rules = d.get("rules")
     if not (isinstance(rules, list) and all(isinstance(r, dict) and isinstance(r.get("type"), str) for r in rules)):
         return None, "rules is not a list of objects with a string type"
@@ -279,6 +280,8 @@ PAGE = 100
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # API text can hold lone surrogates; print them escaped, never raise
+        stream.reconfigure(errors="backslashreplace")
     args = sys.argv[1:] if argv is None else argv
     strict = "--strict" in args
     root = Path.cwd()
@@ -313,7 +316,8 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
         data = json.loads(body) if body.strip() else None
     except (ValueError, RecursionError):  # bad JSON, a huge int, deep nesting
         return status, None, reason + ", unparsable body"
-    if status == 404 and isinstance(data, dict) and "No commit found" in str(data.get("message", "")):
+    if status == 404 and isinstance(data, dict) and isinstance(data.get("message"), str) \
+            and "No commit found" in data["message"]:
         reason += ", missing ref"
     return status, data, reason
 
@@ -336,14 +340,15 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
         if status == 200 and isinstance(data, dict) and data.get("type") == "file" and data.get("path") == path:
             return "present", (f"the review-gate workflow {path} is present on {default_branch!r} (its trigger and "
                                "branch filters are not analyzed)")
-        if status == 404 and reason == "HTTP 404" and isinstance(data, dict):  # GitHub's JSON 404, not a missing ref
+        error_object = isinstance(data, dict) and isinstance(data.get("message"), str)
+        if status == 404 and reason == "HTTP 404" and error_object:  # GitHub's JSON 404, not a missing ref
             continue
         if status == 200:
             shape = (f"type {data.get('type')!r} at path {data.get('path')!r}" if isinstance(data, dict)
                      else f"a {type(data).__name__}")
             reason = f"{reason}, {shape}, not a file at {path}"
         elif status == 404 and reason == "HTTP 404":
-            reason = f"{reason}, a {type(data).__name__}, not an error object"
+            reason = f"{reason}, a {type(data).__name__}, not an error object with a string message"
         problems.append(f"{path} ({reason or 'no response'})")
     if problems:
         return "unknown", f"could not probe {'; '.join(problems)} on {default_branch!r}"

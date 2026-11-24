@@ -398,8 +398,8 @@ class FuzzEveryApiShape(unittest.TestCase):
 
     def test_contents_404_body(self):
         base = fixture([ruleset(1)], NO_GATE, extra={PROBE: {"status": 404, "body": {"message": "Not Found"}}})
-        results = self.walk(base, PROBE, {"message": "Not Found"},
-                            lambda p, g, j: "same" if p or isinstance(j, dict) else "invalid")
+        results = self.walk(base, PROBE, {"message": "Not Found"},  # absent needs an object with a string message
+                            lambda p, g, j: "same" if p == ("message",) and well_typed(g, j) else "invalid")
         self.check(results, "WARN producer of 'Review Gate' (required on main) not verified")
 
 
@@ -427,6 +427,22 @@ class NamedRegressions(unittest.TestCase):
     def test_target(self):
         self.assertIn("WARN ruleset 'rs1' unverified: target [] is not one of", self.run_detail(target=[]).stdout)
         self.assertIn("WARN ruleset 'rs1' targets tag, not branches; ignored", self.run_detail(target="tag").stdout)
+
+    def test_a_404_message_that_is_not_a_string_is_unverified(self):
+        """Codex high on b36dcab: a 404 with a null, bool, int or list message counted as absent and FAILed."""
+        for message in (None, True, 404, ["Not Found"]):
+            fx = fixture([ruleset(1)], NO_GATE, extra={PROBE: {"status": 404, "body": {"message": message}}})
+            with self.subTest(message=message):
+                proc, _ = run_doctor(fx, FLAG)
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                self.assertEqual(lines(proc, "FAIL"), [])
+                self.assertIn("not an error object with a string message", proc.stdout)
+
+    def test_a_lone_surrogate_ref_pattern_is_unverified(self):
+        """Codex high on b36dcab: the re.error text held the surrogate and printing it raised UnicodeEncodeError."""
+        proc = self.run_detail(conditions={"ref_name": {"include": ["[\udfff-a]"], "exclude": []}})
+        self.assertIn("WARN ruleset 'rs1' unverified: conditions.ref_name holds a pattern this doctor cannot read",
+                      proc.stdout)
 
     def test_uncompilable_ref_pattern(self):
         proc = self.run_detail(conditions={"ref_name": {"include": ["[z-a]"], "exclude": []}})
