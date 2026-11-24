@@ -457,10 +457,11 @@ def remote_checks(*, expect_gate: bool = False) -> int:
         rid = rs.get("id")
         name = rs.get("name")
         status, detail, reason = gh_api(f"repos/{full}/rulesets/{rid}")
-        if status != 200 or not isinstance(detail, dict):
+        if status != 200:
             print(f"WARN could not read ruleset {name!r} ({reason}); ignored")
             continue
-        shape = ruleset_shape_problem(detail)
+        shape = (ruleset_shape_problem(detail) if isinstance(detail, dict)
+                 else f"{reason}, a {type(detail).__name__}, not a ruleset object")
         if shape:
             unverified += 1
             print(f"WARN ruleset {name!r} unverified: {shape}; its branch coverage, {REVIEW_GATE_CONTEXT!r} and "
