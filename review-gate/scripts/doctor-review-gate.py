@@ -330,63 +330,36 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
     return status, data, reason
 
 
-def declares_pull_request_target(text: str) -> bool | None:
-    """Does a workflow's top-level ``on:`` name ``pull_request_target``? False only when a column-0 block
-    mapping's ``on:`` was read and lacks it; None for any form this parser does not read (an indented or
-    flow-style root, no top-level ``on:``, an unread ``on:`` value), so an unread form never proves absence.
-    A ``pull_request_target`` with a branch or path filter, or any inline value, is None too: it may never
-    run for PRs into the branch that requires the check."""
-    # shortcut: a line parser, not YAML: scalar, one-line [list], block list and block mapping forms only.
-    lines = re.split(r"\r\n|\r|\n", text.lstrip("\ufeff"))  # YAML line breaks only, unlike splitlines()
-    content = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#") and not ln.startswith("%")
-               and ln.rstrip() != "---"]
-    if not content or content[0][0] in " \t{[-":
-        return None  # indented, flow-style or sequence root: not a block mapping this parser reads
-    on_key = r"""^(?:on|'on'|"on")\s*:(.*)$"""
-    if sum(bool(re.match(on_key, ln)) for ln in lines) > 1 or any(
-            re.match(r"---(\s|$)", ln) for ln in lines[lines.index(content[0]):]):
-        return None  # a duplicate on: key or a second document
-    for i, line in enumerate(lines):
-        m = re.match(on_key, line)
-        if not m:
-            continue
-        rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
-        scalar = re.fullmatch(r"""(['"]?)([\w-]+)\1""", rest)
-        if scalar:
-            return scalar.group(2) == "pull_request_target"
-        if re.fullmatch(r"\[[^\[\]{}]*\]", rest):
-            return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
-        if rest:
-            return None  # flow mapping, multi-line flow list, anchor, ...
-        events, dashes, indent, filtered, setting = [], set(), None, False, None
-        for child in lines[i + 1:]:
-            if not child.strip() or child.lstrip().startswith("#"):
-                continue
-            width = len(child) - len(child.lstrip())
-            if width == 0 and not child.startswith("- "):
-                break  # the next top-level key (a column-0 "- " item is a block list under on:)
-            indent = width if indent is None else indent
-            if width > indent:  # an event's own settings: under pull_request_target only types: is read
-                if events[-1:] == ["pull_request_target"]:
-                    setting = width if setting is None else setting
-                    filtered |= width == setting and not re.match(r"""['"]?types['"]?\s*:""", child.strip())
-                continue
-            setting = None
-            if width < indent:
-                return None
-            item = re.fullmatch(r"""(-\s+)?['"]?([\w-]+)['"]?\s*(:.*)?(\s+#.*)?""", child.strip())
-            if not item or (item.group(1) and item.group(3)):
-                return None
-            events.append(item.group(2))
-            dashes.add(bool(item.group(1)))
-            inline = re.sub(r"\s+#.*$", "", (item.group(3) or ":")[1:]).strip()
-            filtered |= item.group(2) == "pull_request_target" and inline not in ("", "{}", "null", "~")
-        if not events or len(dashes) > 1:
-            return None  # "- x" beside "y:" is a list under the event above, not an event
-        if "pull_request_target" not in events:
-            return False
-        return None if filtered else True  # shortcut: a filter is not matched against the required branches
-    return None  # no top-level on: key was read
+def declares_pull_request_target(text: str) -> tuple[bool | None, str]:
+    """(True, _) an unfiltered pull_request_target; (False, _) one parsed workflow whose on: lacks it; (None, why)
+    anything unverified, which the doctor reports as a warning and never as a failure."""
+    try:
+        import yaml  # third-party: CI installs it, a standalone doctor run may not have it
+    except ImportError:
+        return None, "PyYAML is needed to verify the trigger (python3 -m pip install pyyaml)"
+    try:
+        docs = list(yaml.safe_load_all(text))
+    except yaml.YAMLError as exc:
+        return None, f"not valid YAML ({type(exc).__name__})"
+    if len(docs) != 1 or not isinstance(docs[0], dict):
+        return None, "not a single YAML mapping document"
+    keys = [k for k in ("on", True) if k in docs[0]]  # YAML 1.1 loads a bare `on` key as True
+    if len(keys) != 1:
+        return None, "no single top-level on: key"
+    on = docs[0][keys[0]]
+    if isinstance(on, str):
+        on = {on: None}
+    elif isinstance(on, list) and all(isinstance(e, str) for e in on):
+        on = dict.fromkeys(on)
+    if not isinstance(on, dict):
+        return None, "on: is not an event name, list or mapping"
+    if "pull_request_target" not in on:
+        return False, "no pull_request_target trigger"
+    settings = on["pull_request_target"]
+    if settings is None or (isinstance(settings, dict) and set(settings) <= {"types"}):
+        return True, "declares pull_request_target"
+    # shortcut: a branch or path filter is not matched against the required branches; upgrade if one is needed
+    return None, "pull_request_target has a filter or setting other than types, not checked against the branches"
 
 
 def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
@@ -419,12 +392,11 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
             return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
         try:
             text = base64.b64decode(blob.get("content") or "").decode("utf-8")
-            found = declares_pull_request_target(text)
+            found, why = declares_pull_request_target(text)
         except (ValueError, UnicodeDecodeError):
             return "unknown", f"could not decode {path} on {default_branch!r}"
         if found is None:
-            return "unknown", (f"could not read the on: triggers of {path} on {default_branch!r} (an unread form, "
-                               "or a branch or path filter on pull_request_target)")
+            return "unknown", f"could not verify the trigger of {path} on {default_branch!r}: {why}"
         if found:
             return "present", f"{path} on {default_branch!r} declares pull_request_target"
         found_without_trigger.append(path)

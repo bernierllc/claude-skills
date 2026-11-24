@@ -75,7 +75,7 @@ def fixture(rulesets, workflows=None, default="main", extra=None, pages=None):
     return {"repo": REPO, "default": default, "api": api}
 
 
-def run_doctor(fx, *args):
+def run_doctor(fx, *args, yaml_stub=None):
     with tempfile.TemporaryDirectory() as tmp:
         bin_dir, cwd = Path(tmp, "bin"), Path(tmp, "repo")
         bin_dir.mkdir()
@@ -86,6 +86,9 @@ def run_doctor(fx, *args):
         fx_path = Path(tmp, "fx.json")
         fx_path.write_text(json.dumps(fx))
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(fx_path)}
+        if yaml_stub is not None:  # a yaml module that fails to import, as on a machine without PyYAML
+            Path(tmp, "yaml.py").write_text(yaml_stub)
+            env["PYTHONPATH"] = tmp
         proc = subprocess.run([sys.executable, str(DOCTOR), *args], cwd=cwd, env=env, capture_output=True, text=True)
         calls_path = Path(str(fx_path) + ".calls")
         calls = calls_path.read_text().splitlines() if calls_path.exists() else []
@@ -109,12 +112,11 @@ FILTERED_GATES = [GATE_YML.replace("    types: [", f"    {key}: [{value}]\n    t
                   "on:\n  pull_request_target: {branches: [staging]}\njobs: {}\n",
                   "on:\n  pull_request_target:\n    branches:\n      - staging\njobs: {}\n",
                   "x: &f {branches: [staging]}\non:\n  pull_request_target:\n    <<: *f\njobs: {}\n",
-                  "on:\n  pull_request_target:\n    {branches: [staging]}\njobs: {}\n",
-                  "on:\n  pull_request_target:\n    ? branches\n    : [staging]\njobs: {}\n",
-                  "on:\n  pull_request_target:\n    &k branches: [staging]\njobs: {}\n",
-                  "on:\n  push:\njobs: {}\non:\n  pull_request_target:\n",
-                  "---\nname: x\n---\non:\n  pull_request_target:\n"]
-
+                  "on:\n  pull_request: &filters\n    branches: [staging]\n  pull_request_target: *filters\n",
+                  'on:\n  pull_request_target:\n    "\\x62ranches": [staging]\njobs: {}\n',
+                  "on:\n  pull_request_target:\n    ? branches\n    : [staging]\njobs: {}\n"]
+MULTI_DOCS = ["on: pull_request_target\n---\non: push\n", "on: push\n---\non: pull_request_target\n"]
+NO_YAML = "raise ImportError('PyYAML is not installed in this test')\n"
 
 class WithTheOption(unittest.TestCase):
     def assertFails(self, fx, *needles):
@@ -204,16 +206,29 @@ class EitherWay(unittest.TestCase):
     def both(self, fx):
         return [run_doctor(fx, *args) for args in ((), (FLAG,))]
 
-    def test_indented_or_json_style_gate_warns_instead_of_failing(self):
-        for text in (INDENTED_GATE, JSON_GATE, *FILTERED_GATES):
+    def test_filtered_multi_document_unparsable_and_no_pyyaml_warn_instead_of_failing(self):
+        cases = [(text, None, "has a filter or setting other than types") for text in FILTERED_GATES]
+        cases += [(text, None, "not a single YAML mapping document") for text in MULTI_DOCS]
+        cases += [("on: [unclosed\n", None, "not valid YAML"), (GATE_YML, NO_YAML, "PyYAML is needed"),
+                  (NO_TRIGGER[".github/workflows/review-gate.yml"], NO_YAML, "PyYAML is needed")]
+        for text, stub, needle in cases:
             fx = fixture([ruleset(1)], {".github/workflows/review-gate.yml": text})
-            for proc, _ in self.both(fx):
-                with self.subTest(text=text):
+            for args in ((), (FLAG,)):
+                proc, _ = run_doctor(fx, *args, yaml_stub=stub)
+                with self.subTest(text=text, args=args):
                     self.assertEqual(proc.returncode, 0, proc.stdout)
                     self.assertEqual(lines(proc, "FAIL"), [])
                     warn = lines(proc, "WARN producer of 'Review Gate'")
                     self.assertEqual(len(warn), 1, proc.stdout)
-                    self.assertIn("could not read the on: triggers of .github/workflows/review-gate.yml", warn[0])
+                    self.assertIn("could not verify the trigger of .github/workflows/review-gate.yml", warn[0])
+                    self.assertIn(needle, warn[0])
+
+    def test_indented_and_json_style_gates_are_read_as_present(self):
+        for text in (INDENTED_GATE, JSON_GATE, 'on: ["pull_request\\x5ftarget"]\n'):
+            proc, _ = run_doctor(fixture([ruleset(1)], {".github/workflows/review-gate.yml": text}), FLAG)
+            with self.subTest(text=text):
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                self.assertIn("has its producer", proc.stdout)
 
     def test_non_actions_integration_id_is_skipped(self):
         for proc, calls in self.both(fixture([ruleset(1, (("Review Gate", 99999),))], None)):
@@ -262,8 +277,8 @@ class EitherWay(unittest.TestCase):
             "HTTP 429, rate limited": {gate: {"status": 429, "body": {"message": "slow down"}}},
             "could not read .github/workflows/review-gate.yml": {gate: {"status": 200, "body": {"encoding": "none"}}},
             "could not decode": {gate: {"status": 200, "body": {"encoding": "base64", "content": "//79"}}},
-            "could not read the on: triggers": {gate: {"status": 200, "body": {"encoding": "base64", "content":
-                base64.b64encode(b"on: {pull_request: {branches: [pull_request_target]}}\n").decode()}}},
+            "not valid YAML": {gate: {"status": 200, "body": {"encoding": "base64", "content":
+                base64.b64encode(b"on: [unclosed\n").decode()}}},
             "is a symlink, not a file": {WORKFLOWS: {"status": 200, "body": [
                 {"path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
         }
@@ -302,27 +317,24 @@ def _doctor_module():
 
 class TriggerParser(unittest.TestCase):
     def test_forms(self):
-        f = _doctor_module().declares_pull_request_target
-        self.assertTrue(f(GATE_YML))
+        def f(text):
+            return _doctor_module().declares_pull_request_target(text)[0]
+        self.assertTrue(f(GATE_YML))  # types only
         self.assertFalse(f(DOCTOR_YML))
         for text in ("on: pull_request_target\n", "on: [push, pull_request_target]  # x\n",
-                     "'on':\n  - pull_request_target\n", "on:\n  push:\n  pull_request_target:\n    types: [opened]\n"):
-            self.assertTrue(f(text), text)
-        for text in ("on: pull_request\n", "on:\n  pull_request:\n    branches: [pull_request_target]\n",
-                     "# on: pull_request_target\non: push\n", "on: 'push'\n", "on: [push, pull_request]\n",
-                     "---\nname: x\non:\n  push:\njobs: {}\n"):
-            self.assertFalse(f(text), text)
-        for text in ("on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n",
-                     'on: "pull_request_target"\n', "%YAML 1.2\n---\non: [pull_request_target]\n",
-                     "on:\n  pull_request_target:\n  push:\n    branches: [main]\n",
-                     "on:\n  pull_request_target: {}\n", "on:\n  pull_request_target:\n    types: [opened]\n"):
+                     "'on':\n  - pull_request_target\n", "on:\n  push:\n  pull_request_target:\n    types: [opened]\n",
+                     "on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n",
+                     'on: ["pull_request_target"]\n', 'on: ["pull_request\\x5ftarget"]\n',
+                     "%YAML 1.1\n---\non: [pull_request_target]\n", "on:\n  pull_request_target: {}\n",
+                     "on:\n  pull_request_target:\n  push:\n    branches: [main]\n", INDENTED_GATE, JSON_GATE):
             self.assertTrue(f(text), repr(text))
-        for text in ("on: {pull_request: {branches: [pull_request_target]}}\n", "on: [push,\n  pull_request_target]\n",
-                     "on:\n  - pull_request_target: x\n", "on:\njobs: {}\n",
-                     "on:\n  push:\n  - pull_request_target\n", "jobs:\n  x:\n    on: pull_request_target\n",
-                     INDENTED_GATE, JSON_GATE, "{on: push}\n", "name: x\n", *FILTERED_GATES):
+        for text in ("on: pull_request\n", "on:\n  pull_request:\n    branches: [pull_request_target]\n",
+                     "on: {pull_request: {branches: [pull_request_target]}}\n", "on: [push, pull_request]\n"):
+            self.assertFalse(f(text), text)
+        for text in ("on:\njobs: {}\n", "jobs:\n  x:\n    on: pull_request_target\n", "name: x\n",
+                     "- on: pull_request_target\n", "on: pull_request_target\n'on': push\n", "on: [unclosed\n",
+                     *FILTERED_GATES, *MULTI_DOCS):
             self.assertIsNone(f(text), text)
-        self.assertTrue(f("on:\n  push:\n    branches: [\"a\u2028b\"]\n  pull_request_target:\n"))
 
 
 class InstallerHint(unittest.TestCase):
