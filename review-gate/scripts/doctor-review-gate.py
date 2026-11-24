@@ -194,18 +194,24 @@ def ruleset_requires_conversation_resolution(detail: dict) -> bool:
 
 def ruleset_shape_problem(detail: dict) -> str:
     """The first field the ruleset checks below read that has the wrong type, or "" when every one is usable."""
+    if not isinstance(detail.get("enforcement"), str):
+        return "enforcement is not a string"
     cond = detail.get("conditions") or {}
     ref = (cond.get("ref_name") or {}) if isinstance(cond, dict) else None
-    if not isinstance(ref, dict) or not all(isinstance(ref.get(k) or [], list) for k in ("include", "exclude")):
-        return "conditions.ref_name is not an object with include/exclude lists"
+    refs = [ref.get(k) or [] for k in ("include", "exclude")] if isinstance(ref, dict) else None
+    if refs is None or not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in refs):
+        return "conditions.ref_name is not an object with include/exclude lists of strings"
     rules = detail.get("rules") or []
-    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
-        return "rules is not a list of objects"
+    if not isinstance(rules, list) or not all(isinstance(r, dict) and isinstance(r.get("type"), str) for r in rules):
+        return "rules is not a list of objects with a string type"
     for r in rules:
         params = r.get("parameters") or {}
         checks = (params.get("required_status_checks") or []) if isinstance(params, dict) else None
-        if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
-            return f"rule {r.get('type')!r} parameters are not an object with a list of check objects"
+        if not isinstance(checks, list) or not all(
+                isinstance(c, dict) and isinstance(c.get("context"), str)
+                and (c.get("integration_id") is None or type(c.get("integration_id")) is int) for c in checks):
+            return (f"rule {r['type']!r} parameters are not an object with a list of checks, each a string context "
+                    "and an integer or absent integration_id")
     return ""
 
 
@@ -381,7 +387,7 @@ def list_rulesets(full: str) -> tuple[list | None, str]:
     while True:
         status, data, reason = gh_api(f"repos/{full}/rulesets?per_page={PAGE}&page={page}")
         if status != 200:
-            return None, reason
+            return None, f"{reason}; needs Metadata read, which CI's GITHUB_TOKEN usually lacks"
         if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
             return None, (f"{reason}, a {type(data).__name__}" + (" with a non-object entry" if isinstance(data, list)
                           else "") + ", not a list of ruleset objects")
@@ -436,8 +442,7 @@ def remote_checks(*, expect_gate: bool = False) -> int:
     default_branch = default_branch_proc.stdout.strip() if default_known else "main"
     rulesets, reason = list_rulesets(full)
     if rulesets is None:
-        print(f"WARN could not list rulesets ({reason}; needs Metadata read, which CI's GITHUB_TOKEN usually "
-              "lacks); the ruleset and Review Gate producer checks are skipped")
+        print(f"WARN could not list rulesets ({reason}); the ruleset and Review Gate producer checks are skipped")
         return 0
 
     branch_state = {
@@ -445,6 +450,7 @@ def remote_checks(*, expect_gate: bool = False) -> int:
     }
     skipped_non_enforcing = 0
     skipped_wrong_branch = 0
+    unverified = 0
     gate_branches: list[str] = []  # covered branches whose Review Gate requirement this doctor analyzes
     other_contexts: dict[str, None] = {}
     for rs in rulesets:
@@ -456,6 +462,7 @@ def remote_checks(*, expect_gate: bool = False) -> int:
             continue
         shape = ruleset_shape_problem(detail)
         if shape:
+            unverified += 1
             print(f"WARN ruleset {name!r} unverified: {shape}; its branch coverage, {REVIEW_GATE_CONTEXT!r} and "
                   "conversation-resolution requirements are not counted")
             continue
@@ -529,6 +536,8 @@ def remote_checks(*, expect_gate: bool = False) -> int:
             bits.append(f"{skipped_non_enforcing} disabled/evaluate")
         if skipped_wrong_branch:
             bits.append(f"{skipped_wrong_branch} not targeting main/staging")
+        if unverified:
+            bits.append(f"{unverified} unverified")
         suffix = f" (saw {', '.join(bits)})" if bits else ""
         print(f"WARN no actively enforcing main/staging rulesets found{suffix}")
 

@@ -241,6 +241,7 @@ class EitherWay(unittest.TestCase):
 
         cond = "WARN ruleset 'rs1' unverified: conditions.ref_name is not an object with include/exclude lists"
         bad_rule = "WARN ruleset 'rs1' unverified: rule 'required_status_checks' parameters are not an object"
+        bad_type = "WARN ruleset 'rs1' unverified: rules is not a list of objects with a string type"
         cases = [
             ({branch: {"status": 200, "raw": "<html>proxy error</html>"}}, None,
              "default branch 'main' is not readable (HTTP 200, unparsable body, a NoneType, not a branch object)"),
@@ -250,9 +251,18 @@ class EitherWay(unittest.TestCase):
              "WARN could not list rulesets (HTTP 200, a list with a non-object entry, not a list of ruleset objects"),
             ({rulesets: {"status": 200, "body": [1]}}, None, "(HTTP 200, a list with a non-object entry, not a list"),
             ({rulesets: {"status": 200, "body": "x"}}, None, "(HTTP 200, a str, not a list of ruleset objects"),
-            ({rulesets: {"status": 200, "body": {}}}, None, "(HTTP 200, a dict, not a list of ruleset objects"),
-            (rs(rules=[None]), None, "WARN ruleset 'rs1' unverified: rules is not a list of objects"),
-            (rs(rules={"type": "x"}), None, "WARN ruleset 'rs1' unverified: rules is not a list of objects"),
+            ({rulesets: {"status": 200, "body": {}}}, None, "(HTTP 200, a dict, not a list of ruleset objects); the"),
+            ({rulesets: {"status": 200, "body": [{"id": 1, "name": "rs1"}, None]}}, None,
+             "(HTTP 200, a list with a non-object entry, not a list of ruleset objects)"),
+            (rs(enforcement=["active"]), None, "WARN ruleset 'rs1' unverified: enforcement is not a string"),
+            (rs(rules=[{"type": ["pull_request"]}]), None, bad_type),
+            (rule([{"required_status_checks": []}]), None, bad_rule),
+            (rule({"required_status_checks": [{"context": None}]}), None, bad_rule),
+            (rule({"required_status_checks": [{"context": "Review Gate", "integration_id": "15368"}]}), None,
+             bad_rule),
+            (rs(conditions={"ref_name": {"include": ["~ALL"], "exclude": [["main"]]}}), None, cond),
+            (rs(rules=[None]), None, bad_type),
+            (rs(rules={"type": "x"}), None, bad_type),
             (rule("x"), None, bad_rule),
             (rule({"required_status_checks": 5}), None, bad_rule),
             (rule({"required_status_checks": [1]}), None, bad_rule),
@@ -277,6 +287,7 @@ class EitherWay(unittest.TestCase):
                     self.assertNotIn("OK label", proc.stdout)
                 if extra is not None and detail in extra:
                     self.assertNotIn("OK ruleset 'rs1'", proc.stdout)
+                    self.assertIn("(saw 1 unverified)", proc.stdout)
 
     def test_a_present_yaml_gate_is_ok_when_the_yml_probe_is_unverified(self):
         fx = fixture([ruleset(1)], {".github/workflows/review-gate.yaml": GATE_YML},
