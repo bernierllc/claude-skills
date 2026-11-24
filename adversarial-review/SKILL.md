@@ -1,7 +1,7 @@
 ---
 name: adversarial-review
 description: Run the adversarial PR review loop with Codex-first spend and inline line-item PR comments. Use whenever you open or push a PR, say a PR is ready, hand work to a traffic cop, need a code review, or fall through reviewers after Codex/agy quota failures. Prefer this skill over remembering review order from AGENTS.md prose.
-version: 2.3.0
+version: 2.4.0
 author: Bernier LLC
 ---
 
@@ -41,14 +41,14 @@ Every P0/P1 finding must become a **GitHub review thread on the relevant line**,
 
 - Prefer `gh api graphql` / `POST /repos/{owner}/{repo}/pulls/{n}/comments` with `commit_id`, `path`, `line` (or `subject_type` + multi-line fields as appropriate).
 - Summary sticky comment is fine **in addition** for the round overview; it does not replace line threads.
-- P2: one-line each; fix ≤10 lines in touched files or Tracker row + PR reply with Notion link.
+- P2: one-line each; fix now in this PR, no defer. A Tracker row only when the fix is a separate planned unit (a plan file exists), with a PR reply linking it.
 
 Every review brief opens with the redundancy question: *does this reimplement something the framework, a dependency, or this repo already provides?*
 
 ## Severity and convergence
 
 - **P0/P1:** fix at root before merge.
-- **P2:** ≤10-line fix in touched files, else Tracker + closing reply.
+- **P2:** fix now, no defer (Matt's standing rule); a Tracker row only when the fix is a separate planned unit (a plan file exists).
 - **Nit:** answer or ignore; never a new round.
 - Done when a round has **no new P0/P1**.
 - One push per round. Cap: third P0/P1 in the same area → simplify or plan, tell Matt.

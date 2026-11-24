@@ -1,6 +1,6 @@
 ---
 name: nevar-security-review
-version: 1.2.0
+version: 1.3.0
 author: Bernier LLC
 license: MIT (adapted from davila7/claude-code-templates vulnerability-scanner; see PROVENANCE.md)
 description: Security review of a code change or repository that proves each finding from source to sink, tries to refute it, and reports P0/P1/P2 findings with stable ids, evidence, refuted leads and an explicit not-covered list. Covers authentication vs authorization, role provenance, admin/editor/anonymous guards, Supabase RLS and service-role bypass, tenant identity, API and MCP key scopes, webhooks and jobs, fail-open error handling, prompt injection into agents, MCP and RAG, CI workflows, secrets and dependencies. Use when a PR touches auth, RLS or migrations, routes, MCP tools, CI workflows, shared guards, manifests, skills or dependencies, when asked to security-review or audit code, or before shipping. Read-only by default.
@@ -89,7 +89,7 @@ Mark reach honestly:
 ### 4. Rate with the existing review policy
 
 Severity uses the repo's review policy unchanged (`adversarial-review`): P0/P1 block merge
-and are fixed at the root; P2 is a ten-line fix or a Tracker row.
+and are fixed at the root; P2 is fixed now, no defer; a Tracker row only when the fix is a separate planned unit that already has a plan file.
 
 - **P0:** unauthenticated or low-privilege remote code execution, authentication or
   authorization bypass, cross-tenant data access, account takeover, default-admin, an agent
