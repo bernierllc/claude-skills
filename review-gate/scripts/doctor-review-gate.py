@@ -52,7 +52,7 @@ def gh_json(args: list[str]) -> object | None:
         return None
     try:
         return json.loads(proc.stdout)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # bad JSON, a huge int, deep nesting
         return None
 
 
@@ -311,7 +311,7 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
         reason = f"HTTP {status}"
     try:
         data = json.loads(body) if body.strip() else None
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # bad JSON, a huge int, deep nesting
         return status, None, reason + ", unparsable body"
     if status == 404 and isinstance(data, dict) and "No commit found" in str(data.get("message", "")):
         reason += ", missing ref"

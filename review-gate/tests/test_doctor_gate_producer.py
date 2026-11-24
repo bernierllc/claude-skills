@@ -38,7 +38,7 @@ if a[:2] == ["repo", "view"]:
         print("gh: could not read repo", file=sys.stderr); sys.exit(1)
     emit(fx["default"], "defaultBranchRef"); sys.exit(0)
 if a[:2] == ["label", "list"]:
-    emit(json.dumps(fx.get("labels", [{{"name": "review:high"}}])), "label"); sys.exit(0)
+    emit(fx.get("labels_raw") or json.dumps(fx.get("labels", [{{"name": "review:high"}}])), "label"); sys.exit(0)
 if a[:2] == ["api", "--include"] and len(a) == 3:
     with open(os.environ["FAKE_GH"] + ".calls", "a") as log:
         log.write(a[2] + "\\n")
@@ -446,6 +446,24 @@ class NamedRegressions(unittest.TestCase):
                 else:
                     self.assertEqual(proc.returncode, 0, proc.stdout)
                     self.assertEqual(lines(proc, "FAIL"), [])
+
+    def test_undecodable_json_at_every_call_site(self):
+        """claude-sonnet on 31a8b7d: a huge int or deep nesting raised ValueError or RecursionError."""
+        for raw in ("1" * 6000, "[" * 200000):
+            for site in ("label", LIST, DETAIL, BRANCH, PROBE):
+                fx = fixture([ruleset(1)], NO_GATE)
+                if site == "label":
+                    fx["labels_raw"] = raw
+                else:
+                    fx["api"][site] = {"status": 200, "raw": raw}
+                with self.subTest(site=site, raw=raw[:3]):
+                    proc, _ = run_doctor(fx, FLAG)  # asserts no traceback
+                    if site == "label":
+                        self.assertIn("WARN label 'review:high' unverified", proc.stdout)
+                        self.assertEqual(proc.returncode, 1, proc.stdout)
+                    else:
+                        self.assertEqual(proc.returncode, 0, proc.stdout)
+                        self.assertEqual(lines(proc, "FAIL"), [])
 
 
 class InstallerHint(unittest.TestCase):
