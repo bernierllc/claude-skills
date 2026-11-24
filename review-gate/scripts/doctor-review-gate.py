@@ -333,7 +333,9 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
 def declares_pull_request_target(text: str) -> bool | None:
     """Does a workflow's top-level ``on:`` name ``pull_request_target``? False only when a column-0 block
     mapping's ``on:`` was read and lacks it; None for any form this parser does not read (an indented or
-    flow-style root, no top-level ``on:``, an unread ``on:`` value), so an unread form never proves absence."""
+    flow-style root, no top-level ``on:``, an unread ``on:`` value), so an unread form never proves absence.
+    A ``pull_request_target`` with a branch or path filter, or any inline value, is None too: it may never
+    run for PRs into the branch that requires the check."""
     # shortcut: a line parser, not YAML: scalar, one-line [list], block list and block mapping forms only.
     lines = re.split(r"\r\n|\r|\n", text.lstrip("\ufeff"))  # YAML line breaks only, unlike splitlines()
     content = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#") and not ln.startswith("%")
@@ -352,7 +354,7 @@ def declares_pull_request_target(text: str) -> bool | None:
             return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
         if rest:
             return None  # flow mapping, multi-line flow list, anchor, ...
-        events, dashes, indent = [], set(), None
+        events, dashes, indent, filtered = [], set(), None, False
         for child in lines[i + 1:]:
             if not child.strip() or child.lstrip().startswith("#"):
                 continue
@@ -360,8 +362,10 @@ def declares_pull_request_target(text: str) -> bool | None:
             if width == 0 and not child.startswith("- "):
                 break  # the next top-level key (a column-0 "- " item is a block list under on:)
             indent = width if indent is None else indent
-            if width > indent:
-                continue  # an event's own settings
+            if width > indent:  # an event's own settings
+                filtered |= events[-1:] == ["pull_request_target"] and bool(re.match(
+                    r"""-?\s*['"]?(branches|branches-ignore|paths|paths-ignore)['"]?\s*:""", child.strip()))
+                continue
             if width < indent:
                 return None
             item = re.fullmatch(r"""(-\s+)?['"]?([\w-]+)['"]?\s*(:.*)?(\s+#.*)?""", child.strip())
@@ -369,9 +373,13 @@ def declares_pull_request_target(text: str) -> bool | None:
                 return None
             events.append(item.group(2))
             dashes.add(bool(item.group(1)))
+            inline = re.sub(r"\s+#.*$", "", (item.group(3) or ":")[1:]).strip()
+            filtered |= item.group(2) == "pull_request_target" and inline not in ("", "{}", "null", "~")
         if not events or len(dashes) > 1:
             return None  # "- x" beside "y:" is a list under the event above, not an event
-        return "pull_request_target" in events
+        if "pull_request_target" not in events:
+            return False
+        return None if filtered else True  # shortcut: a filter is not matched against the required branches
     return None  # no top-level on: key was read
 
 
@@ -409,7 +417,8 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
         except (ValueError, UnicodeDecodeError):
             return "unknown", f"could not decode {path} on {default_branch!r}"
         if found is None:
-            return "unknown", f"could not read the on: triggers of {path} on {default_branch!r}"
+            return "unknown", (f"could not read the on: triggers of {path} on {default_branch!r} (an unread form, "
+                               "or a branch or path filter on pull_request_target)")
         if found:
             return "present", f"{path} on {default_branch!r} declares pull_request_target"
         found_without_trigger.append(path)
