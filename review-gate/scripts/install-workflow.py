@@ -408,8 +408,10 @@ def main() -> int:
     if not has_scan:
         print("No .github/workflows/review-gate-security-scan.yml: the security lane stays off. After installing "
               "nevar-security-review's scan, rerun this installer to add Security Refresh.")
-    print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
-    print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
+    # order matters: Review Gate runs on pull_request_target, read from the default branch only
+    print("Next: 1. merge these files to the default branch. 2. Only then add 'Review Gate' as a required status "
+          "check on staging/main rulesets; required earlier, the check cannot report and every PR stays blocked.")
+    print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py", "--expect-default-branch-gate")
     return 0
 
 

@@ -4,11 +4,15 @@
 Prints WARN / OK / FAIL lines on stdout. It exits 1, with or without --strict, when the repo-tracked
 .claude/skills/review-gate is older than this release, has an unreadable version, or its hooks.json and
 SKILL.md disagree (3.2.19). With --strict (3.2.14) it also exits 1 when the workflow or a vendored script is
-missing or differs from this skill's copy: the local checks, which need no token. Otherwise it exits 0. The
-label and ruleset checks stay warnings, since CI's GITHUB_TOKEN usually cannot read rulesets.
+missing or differs from this skill's copy: the local checks, which need no token. With
+--expect-default-branch-gate (3.8.0) it also exits 1 when an enforcing main/staging ruleset requires `Review Gate`
+and the default branch, read completely, has no .github/workflows/review-gate.yml (or .yaml) with a
+pull_request_target trigger. Otherwise it exits 0: the label and ruleset checks, and that producer check without
+the option or with incomplete evidence, stay warnings, since CI's GITHUB_TOKEN usually cannot read rulesets.
 """
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import re
@@ -16,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 REVIEW_GATE_CONTEXT = "Review Gate"
 # Branches the install instructions say must carry Review Gate + conversation rules.
@@ -278,26 +283,139 @@ RERUN_HINT = ("NOTE Review Gate does not re-run when a thread is resolved or a r
               "(a PR into main; other bases add the label, then remove it)")
 
 
+EXPECT_GATE_FLAG = "--expect-default-branch-gate"
+ACTIONS_INTEGRATION_ID = 15368  # GitHub Actions' app id: a check pinned to it is a workflow job
+GATE_PATHS = (".github/workflows/review-gate.yml", ".github/workflows/review-gate.yaml")
+CONTENTS_CAP = 1000  # the Contents API lists at most this many directory entries
+PAGE = 100
+
+
 def main(argv: list[str] | None = None) -> int:
-    strict = "--strict" in (sys.argv[1:] if argv is None else argv)
+    args = sys.argv[1:] if argv is None else argv
+    strict = "--strict" in args
     root = Path.cwd()
     problems = local_checks(root)
     parity = vendored_skill_parity(root)
-    remote_checks()
+    remote_failures = remote_checks(expect_gate=EXPECT_GATE_FLAG in args)
     print(RERUN_HINT)
     if not parity:
         return 1  # a stale vendored skill fails with or without --strict
     if strict and problems:
         print(f"FAIL --strict: {problems} workflow/vendored-script problem(s) above")
         return 1
+    if remote_failures:
+        print(f"FAIL {remote_failures} required-check problem(s) above")
+        return 1
     return 0
 
 
-def remote_checks() -> None:
-    """Label and ruleset checks through gh; warnings only."""
+def gh_api(path: str) -> tuple[int | None, object | None, str]:
+    """GET through ``gh api --include``: (HTTP status or None when no response arrived, parsed body, reason)."""
+    proc = subprocess.run(["gh", "api", "--include", path], capture_output=True, text=True)
+    m = re.match(r"HTTP/\S+ (\d{3})", proc.stdout)
+    if not m:
+        return None, None, (proc.stderr.strip() or "no HTTP response")[:200]
+    status = int(m.group(1))
+    head, _, body = proc.stdout.replace("\r\n", "\n").partition("\n\n")
+    if status == 429 or (status == 403 and re.search(r"(?im)^x-ratelimit-remaining:\s*0\s*$", head)):
+        reason = f"HTTP {status}, rate limited"
+    else:
+        reason = f"HTTP {status}"
+    try:
+        data = json.loads(body) if body.strip() else None
+    except json.JSONDecodeError:
+        return status, None, reason + ", unparsable body"
+    if status == 404 and isinstance(data, dict) and "No commit found" in str(data.get("message", "")):
+        reason += ", missing ref"
+    return status, data, reason
+
+
+def declares_pull_request_target(text: str) -> bool:
+    """True when a workflow's top-level ``on:`` names ``pull_request_target`` (string, list or mapping form)."""
+    # shortcut: a line parser, not YAML; flow mappings ({pull_request_target: ...}) and anchors are not read.
+    lines = text.splitlines()
+    event = re.compile(r"""['"]?pull_request_target['"]?""")
+    for i, line in enumerate(lines):
+        m = re.match(r"""^(?:on|'on'|"on")\s*:(.*)$""", line)
+        if not m:
+            continue
+        rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        if rest:
+            return "pull_request_target" in re.findall(r"[A-Za-z_]+", rest)
+        indent = None
+        for child in lines[i + 1:]:
+            if not child.strip() or child.lstrip().startswith("#"):
+                continue
+            if not child[0].isspace():
+                break
+            width = len(child) - len(child.lstrip())
+            indent = width if indent is None else indent
+            if width == indent and re.match(r"-?\s*" + event.pattern + r"\s*(:|$|#)", child.strip()):
+                return True
+        return False
+    return False
+
+
+def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
+    """Look for the skill's gate workflow on the default branch.
+
+    Returns (verdict, detail): "present"; "absent" (the inventory is complete and readable, and no exact-path
+    review-gate.yml/.yaml with a pull_request_target trigger exists); or "unknown" (the evidence is incomplete).
+    """
+    status, _, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
+    if status != 200:
+        return "unknown", f"default branch {default_branch!r} is not readable ({reason or 'no response'})"
+    status, listing, reason = gh_api(f"repos/{full}/contents/.github/workflows?ref={quote(default_branch, safe='')}")
+    if status == 404 and "missing ref" not in reason:
+        listing = []  # the repo and branch are readable, so 404 means no .github/workflows directory
+    elif status != 200:
+        return "unknown", f"could not list .github/workflows on {default_branch!r} ({reason})"
+    if not isinstance(listing, list):
+        return "unknown", f"unexpected .github/workflows listing on {default_branch!r}"
+    paths = {e.get("path") for e in listing if isinstance(e, dict) and e.get("type") == "file"}
+    found_without_trigger = []
+    for path in GATE_PATHS:
+        if path not in paths:
+            continue
+        status, blob, reason = gh_api(f"repos/{full}/contents/{path}?ref={quote(default_branch, safe='')}")
+        if status != 200 or not isinstance(blob, dict) or blob.get("encoding") != "base64":
+            return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
+        try:
+            text = base64.b64decode(blob.get("content") or "").decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return "unknown", f"could not decode {path} on {default_branch!r}"
+        if declares_pull_request_target(text):
+            return "present", f"{path} on {default_branch!r} declares pull_request_target"
+        found_without_trigger.append(path)
+    if len(listing) >= CONTENTS_CAP:
+        return "unknown", (f".github/workflows on {default_branch!r} lists {len(listing)} entries, the Contents API "
+                           "cap, so the listing may be incomplete")
+    if found_without_trigger:
+        return "absent", f"{found_without_trigger[0]} on {default_branch!r} has no pull_request_target trigger"
+    return "absent", f"no .github/workflows/review-gate.yml (or .yaml) on {default_branch!r}"
+
+
+def list_rulesets(full: str) -> tuple[list | None, str]:
+    rulesets: list = []
+    page = 1
+    while True:
+        status, data, reason = gh_api(f"repos/{full}/rulesets?per_page={PAGE}&page={page}")
+        if status != 200:
+            return None, reason
+        if not isinstance(data, list):
+            return None, "unexpected rulesets payload"
+        rulesets.extend(data)
+        if len(data) < PAGE:
+            return rulesets, ""
+        page += 1
+
+
+def remote_checks(*, expect_gate: bool = False) -> int:
+    """Label, ruleset and Review Gate producer checks through gh. Returns the number of FAIL lines printed:
+    only the producer check can fail, and only with --expect-default-branch-gate; everything else warns."""
     if shutil.which("gh") is None:  # the local checks above still ran; the rest needs the GitHub CLI
         print("WARN gh (GitHub CLI) not found; skip label and ruleset checks")
-        return
+        return 0
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.
     repo = subprocess.run(
         ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
@@ -306,7 +424,7 @@ def remote_checks() -> None:
     )
     if repo.returncode != 0:
         print("WARN could not resolve repo via gh; skip ruleset check")
-        return
+        return 0
     full = repo.stdout.strip()
     labels = gh_json(["label", "list", "-R", full, "--search", MAIN_REVIEW_LABEL, "--json", "name"])
     if isinstance(labels, list) and any(lb.get("name") == MAIN_REVIEW_LABEL for lb in labels):
@@ -330,29 +448,27 @@ def remote_checks() -> None:
         capture_output=True,
         text=True,
     )
-    default_branch = (
-        default_branch_proc.stdout.strip()
-        if default_branch_proc.returncode == 0 and default_branch_proc.stdout.strip()
-        else "main"
-    )
-    rulesets = gh_json(["api", f"repos/{full}/rulesets"])
+    default_known = default_branch_proc.returncode == 0 and bool(default_branch_proc.stdout.strip())
+    default_branch = default_branch_proc.stdout.strip() if default_known else "main"
+    rulesets, reason = list_rulesets(full)
     if rulesets is None:
-        print("WARN could not list rulesets (need admin:repo_hook or similar)")
-        return
-    if not isinstance(rulesets, list):
-        print("WARN unexpected rulesets payload")
-        return
+        print(f"WARN could not list rulesets ({reason}; needs Metadata read, which CI's GITHUB_TOKEN usually "
+              "lacks); the ruleset and Review Gate producer checks are skipped")
+        return 0
 
     branch_state = {
         b: {"resolution": False, "gate": False, "seen": False} for b in MERGE_BRANCHES
     }
     skipped_non_enforcing = 0
     skipped_wrong_branch = 0
+    gate_branches: list[str] = []  # covered branches whose Review Gate requirement this doctor analyzes
+    other_contexts: dict[str, None] = {}
     for rs in rulesets:
         rid = rs.get("id")
         name = rs.get("name")
-        detail = gh_json(["api", f"repos/{full}/rulesets/{rid}"])
-        if not isinstance(detail, dict):
+        status, detail, reason = gh_api(f"repos/{full}/rulesets/{rid}")
+        if status != 200 or not isinstance(detail, dict):
+            print(f"WARN could not read ruleset {name!r} ({reason}); ignored")
             continue
         if not ruleset_is_enforcing(detail):
             skipped_non_enforcing += 1
@@ -370,6 +486,20 @@ def remote_checks() -> None:
                 "(conditions.ref_name); ignored for Review Gate coverage"
             )
             continue
+        for rule in detail.get("rules") or []:
+            if rule.get("type") != "required_status_checks":
+                continue
+            for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
+                if not isinstance(check, dict):
+                    continue
+                context = check.get("context")
+                if context != REVIEW_GATE_CONTEXT:
+                    other_contexts.setdefault(str(context))
+                elif check.get("integration_id") not in (None, ACTIONS_INTEGRATION_ID):
+                    print(f"OK ruleset {name!r} pins {REVIEW_GATE_CONTEXT!r} to integration "
+                          f"{check.get('integration_id')} (not GitHub Actions); producer check skipped")
+                else:
+                    gate_branches.extend(b for b in covered if b not in gate_branches)
         has_resolution = ruleset_requires_conversation_resolution(detail)
         has_gate = ruleset_requires_review_gate(detail)
         has_status_rule = any(
@@ -433,6 +563,41 @@ def remote_checks() -> None:
                 f"WARN branch {branch!r} missing required status check "
                 f"{REVIEW_GATE_CONTEXT!r}"
             )
+
+    for context in other_contexts:
+        print(f"WARN required check {context!r}: producer not verified (generic producer analysis is out of scope)")
+    if other_contexts or gate_branches:
+        print("NOTE required checks are read only from rulesets covering main/staging; other branches are out of "
+              "scope")
+    return gate_producer_check(full, default_branch, default_known, gate_branches, expect_gate)
+
+
+def gate_producer_check(full: str, default_branch: str, default_known: bool, gate_branches: list[str],
+                        expect_gate: bool) -> int:
+    """Can the default branch publish the required Review Gate? 1 for a confirmed failure, else 0."""
+    if not gate_branches:
+        return 0
+    required = f"{REVIEW_GATE_CONTEXT!r} (required on {'/'.join(gate_branches)})"
+    if not default_known:
+        print(f"WARN could not read the default branch name; producer of {required} not verified")
+        return 0
+    verdict, detail = gate_producer(full, default_branch)
+    if verdict == "present":
+        print(f"OK {required} has its producer: {detail}")
+        return 0
+    if verdict == "unknown":
+        print(f"WARN producer of {required} not verified: {detail}")
+        return 0
+    fix = (f"{detail}; merge review-gate.yml to {default_branch} before requiring the check (GitHub loads a "
+           "pull_request_target workflow from the default branch only, so a copy on staging or another branch "
+           "does not count)")
+    if expect_gate:
+        print(f"FAIL {required} cannot report: {fix}")
+        return 1
+    print(f"WARN {required} may not report: {fix}. A PR-supplied pull_request workflow or an external app can "
+          f"also publish it; pass {EXPECT_GATE_FLAG} to make this a failure when this repo uses the skill's "
+          "review-gate.yml")
+    return 0
 
 
 if __name__ == "__main__":
