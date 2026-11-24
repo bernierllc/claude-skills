@@ -53,7 +53,7 @@ def _detector_compatible(path: Path) -> bool:
     signatures, and a PROTECTED dict literal with a non-empty `Review Gate` entry."""
     try:
         tree = ast.parse(path.read_bytes())
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):  # RecursionError: a very deep expression
         return False
     funcs, protected = {}, None
     for node in tree.body:
