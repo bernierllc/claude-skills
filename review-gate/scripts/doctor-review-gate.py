@@ -330,29 +330,39 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
     return status, data, reason
 
 
-def declares_pull_request_target(text: str) -> bool:
-    """True when a workflow's top-level ``on:`` names ``pull_request_target`` (string, list or mapping form)."""
-    # shortcut: a line parser, not YAML; flow mappings ({pull_request_target: ...}) and anchors are not read.
-    lines = text.splitlines()
-    event = re.compile(r"""['"]?pull_request_target['"]?""")
+def declares_pull_request_target(text: str) -> bool | None:
+    """Does a workflow's top-level ``on:`` name ``pull_request_target``? None when ``on:`` has a form this
+    parser does not read, so an unread form is never taken as proof of absence (or presence)."""
+    # shortcut: a line parser, not YAML: scalar, one-line [list], block list and block mapping forms only.
+    lines = text.lstrip("﻿").splitlines()
     for i, line in enumerate(lines):
         m = re.match(r"""^(?:on|'on'|"on")\s*:(.*)$""", line)
         if not m:
             continue
         rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        if re.fullmatch(r"[\w-]+", rest):
+            return rest == "pull_request_target"
+        if re.fullmatch(r"\[[^\[\]{}]*\]", rest):
+            return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
         if rest:
-            return "pull_request_target" in re.findall(r"[A-Za-z_]+", rest)
-        indent = None
+            return None  # flow mapping, multi-line flow list, anchor, ...
+        events, indent = [], None
         for child in lines[i + 1:]:
             if not child.strip() or child.lstrip().startswith("#"):
                 continue
-            if not child[0].isspace():
-                break
             width = len(child) - len(child.lstrip())
+            if width == 0 and not child.startswith("- "):
+                break  # the next top-level key (a column-0 "- " item is a block list under on:)
             indent = width if indent is None else indent
-            if width == indent and re.match(r"-?\s*" + event.pattern + r"\s*(:|$|#)", child.strip()):
-                return True
-        return False
+            if width > indent:
+                continue  # an event's own settings
+            if width < indent:
+                return None
+            item = re.fullmatch(r"""(-\s+)?['"]?([\w-]+)['"]?\s*(:.*)?(\s+#.*)?""", child.strip())
+            if not item or (item.group(1) and item.group(3)):
+                return None
+            events.append(item.group(2))
+        return "pull_request_target" in events if events else None
     return False
 
 
@@ -372,7 +382,11 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
         return "unknown", f"could not list .github/workflows on {default_branch!r} ({reason})"
     if not isinstance(listing, list):
         return "unknown", f"unexpected .github/workflows listing on {default_branch!r}"
-    paths = {e.get("path") for e in listing if isinstance(e, dict) and e.get("type") == "file"}
+    types = {e.get("path"): e.get("type") for e in listing if isinstance(e, dict)}
+    paths = {path for path, kind in types.items() if kind == "file"}
+    for path in GATE_PATHS:
+        if path in types and types[path] != "file":  # a symlink or submodule there may still be the gate
+            return "unknown", f"{path} on {default_branch!r} is a {types[path]}, not a file; not read"
     found_without_trigger = []
     for path in GATE_PATHS:
         if path not in paths:
@@ -382,9 +396,12 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
             return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
         try:
             text = base64.b64decode(blob.get("content") or "").decode("utf-8")
+            found = declares_pull_request_target(text)
         except (ValueError, UnicodeDecodeError):
             return "unknown", f"could not decode {path} on {default_branch!r}"
-        if declares_pull_request_target(text):
+        if found is None:
+            return "unknown", f"could not read the on: triggers of {path} on {default_branch!r}"
+        if found:
             return "present", f"{path} on {default_branch!r} declares pull_request_target"
         found_without_trigger.append(path)
     if len(listing) >= CONTENTS_CAP:

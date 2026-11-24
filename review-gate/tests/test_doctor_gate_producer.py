@@ -231,6 +231,35 @@ class EitherWay(unittest.TestCase):
                     self.assertEqual(len(warn), 1, proc.stdout)
                     self.assertIn(needle, warn[0])
 
+    def test_gate_file_reads_that_fail_or_cannot_be_parsed_warn(self):
+        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
+        cases = {
+            "HTTP 403": {gate: {"status": 403, "body": {"message": "denied"}}},
+            "HTTP 429, rate limited": {gate: {"status": 429, "body": {"message": "slow down"}}},
+            "could not read .github/workflows/review-gate.yml": {gate: {"status": 200, "body": {"encoding": "none"}}},
+            "could not decode": {gate: {"status": 200, "body": {"encoding": "base64", "content": "//79"}}},
+            "could not read the on: triggers": {gate: {"status": 200, "body": {"encoding": "base64", "content":
+                base64.b64encode(b"on: {pull_request: {branches: [pull_request_target]}}\n").decode()}}},
+            "is a symlink, not a file": {WORKFLOWS: {"status": 200, "body": [
+                {"path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
+        }
+        for needle, extra in cases.items():
+            for proc, _ in self.both(fixture([ruleset(1)], GATE, extra=extra)):
+                with self.subTest(case=needle):
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                    warn = lines(proc, "WARN producer of 'Review Gate'")
+                    self.assertEqual(len(warn), 1, proc.stdout)
+                    self.assertIn(needle, warn[0])
+
+    def test_line_wrapped_base64_from_the_contents_api_is_read(self):
+        b64 = base64.b64encode(GATE_YML.encode()).decode()
+        wrapped = "\n".join(b64[i:i + 60] for i in range(0, len(b64), 60))
+        gate = f"repos/{REPO}/contents/.github/workflows/review-gate.yml?ref=main"
+        fx = fixture([ruleset(1)], GATE, extra={gate: {"status": 200, "body": {"encoding": "base64", "content": wrapped}}})
+        proc, _ = run_doctor(fx, FLAG)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("has its producer", proc.stdout)
+
     def test_unreadable_rulesets_warn_and_say_the_producer_check_is_skipped(self):
         fx = fixture([ruleset(1)], NO_GATE, extra={
             f"repos/{REPO}/rulesets?per_page=100&page=1": {"status": 403, "body": {"message": "denied"}}})
@@ -258,6 +287,11 @@ class TriggerParser(unittest.TestCase):
         for text in ("on: pull_request\n", "on:\n  pull_request:\n    branches: [pull_request_target]\n",
                      "jobs:\n  x:\n    on: pull_request_target\n", "# on: pull_request_target\non: push\n"):
             self.assertFalse(f(text), text)
+        for text in ("on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n"):
+            self.assertTrue(f(text), repr(text))
+        for text in ("on: {pull_request: {branches: [pull_request_target]}}\n", "on: [push,\n  pull_request_target]\n",
+                     "on:\n  - pull_request_target: x\n", "on:\njobs: {}\n"):
+            self.assertIsNone(f(text), text)
 
 
 class InstallerHint(unittest.TestCase):
