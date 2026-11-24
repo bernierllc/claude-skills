@@ -42,6 +42,7 @@ INCOMPATIBLE_VARIANTS = (
     b"def _gh_run_lookup(repo): return None\ndef _load_check_runs(text): return []\n",  # no Review Gate entry
     b"# old custom detector\nPROTECTED = {}\ndef forged(c, l): return []\n",
     b"def broken(:\n",
+    b"x = " + b"1 + " * 100000 + b"1\n",  # claude-sonnet on 260ef36: ast.parse raised RecursionError
     DETECTOR.replace(SIGNATURE, b"def forged(check_runs, run_lookup, protected=None, *, audit):"),  # required kw-only
     NO_JOB_RUN_ID,
 )
@@ -1028,6 +1029,17 @@ class DoctorVersionParity(unittest.TestCase):
             proc, _ = doctor_script_lines(repo, self.no_gh())
             self.assertEqual(proc.returncode, 1, proc.stdout)
             self.assertIn("FAIL .claude/skills/review-gate/hooks.json", proc.stdout)
+
+    def test_deeply_nested_hooks_json_fails_without_a_traceback(self):
+        """claude-sonnet on fafc9fa: json.loads raised RecursionError through hooks_version."""
+        with tempfile.TemporaryDirectory() as repo:
+            dest = vendor(repo)
+            install(repo)
+            (dest / "hooks.json").write_text("[" * 200000)
+            proc, _ = doctor_script_lines(repo, self.no_gh())
+            self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("FAIL .claude/skills/review-gate/hooks.json is unreadable (", proc.stdout)  # wording varies by Python
 
     def test_unparseable_vendored_version_fails_naming_it_without_a_traceback(self):
         with tempfile.TemporaryDirectory() as repo:

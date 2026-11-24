@@ -1,7 +1,7 @@
 ---
 name: review-gate
 description: Enforce adversarial review before merge via a trusted pull_request_target gate and PreToolUse merge guard. Use when installing review gates on nevar* repos, when merge must wait for unresolved threads or unanswered P2s, or when doctoring whether a repo's ruleset and review-gate.yml are configured. Companion to adversarial-review and pr-merge-flow.
-version: 3.7.1
+version: 3.8.0
 author: Bernier LLC
 ---
 
@@ -19,7 +19,7 @@ Programmatic enforcement for the adversarial review loop. Ships:
    and `Notion Sync` (notion-sync.yml), all `pull_request_target`. Names match exactly: `Notion Sync (daily)` is
    not protected. It also ships
    its wrapper `scripts/check-forged-review-gate.py`, also loaded from the default branch
-3. **Doctor** — warns when the workflow, checker, ruleset conversation-resolution flag, or required `Review Gate` status check is missing
+3. **Doctor** — warns when the workflow, checker, ruleset conversation-resolution flag, or required `Review Gate` status check is missing; with `--expect-default-branch-gate` it fails when a ruleset requires `Review Gate` that the default branch cannot publish
 4. **PreToolUse merge guard** — blocks `gh pr merge` when the local gate check fails
 
 ## Install (per repo)
@@ -66,6 +66,8 @@ aec run-script skill:review-gate reply-close.py -- -R my-org/my-app --pr 12 --th
 Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` (only when the fix is a separate planned unit that already has a plan file; otherwise fix the P2 now) or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
 
 3.4.0 adds `scripts/reply-close.py` (above) and `tests/test_reply_close.py`. Authors run it through `aec run-script`; it is not vendored into repos, and the workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor.
+
+Upgrading to 3.8.0: `doctor-review-gate.py --expect-default-branch-gate` fails (exit 1) when an enforcing `main`/`staging` ruleset requires `Review Gate` and the default branch has no `review-gate.yml`/`.yaml`, the state that deadlocks every ordinary merge in a new repo. Without the option the same finding is a WARN. Details under Doctor below. The doctor now pages through rulesets (it read only the first 30) and names the HTTP status when a read fails. `install-workflow.py` now says to merge the workflow to the default branch first and only then require the check. The workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor for the gate itself; re-vendor `.claude/skills/review-gate` to get the new doctor.
 
 Upgrading to 3.7.0 (claude-skills #152): the vendored detector `scripts/check-forged-gate-names.py` also protects `Notion Sync`, pinned to (`.github/workflows/notion-sync.yml`, `pull_request_target`). An Actions job named exactly `Notion Sync` from any other workflow or event is forged (exit 1) when a repo runs the detector unscoped, as `main-via-staging.yml` does; names match exactly, so `Notion Sync (daily)` is not flagged. The Review Gate step's wrapper still checks only `Review Gate`. `install-workflow.py --force` replaces the 3.2.20-3.6.0 detector (aec 41f6299) instead of keeping it as a newer copy. Re-run `install-workflow.py --force` and commit `scripts/` and the whole `.claude/skills/review-gate` directory.
 
@@ -148,6 +150,8 @@ Doctor:
 aec run-script skill:review-gate doctor-review-gate.py
 # or: python3 review-gate/scripts/doctor-review-gate.py
 ```
+
+The doctor also checks that a required `Review Gate` can report (3.8.0). For each enforcing ruleset covering `main` or `staging` that requires `Review Gate` (unpinned, or pinned to GitHub Actions, integration 15368), it probes exactly `.github/workflows/review-gate.yml` and `.github/workflows/review-gate.yaml` on the **default branch**, one Contents API request per path; it lists nothing and reads no file content. GitHub loads that workflow from the default branch only, so a copy on `staging` does not count, and no other file does either: `review-gate-doctor.yml` mentions the name but publishes no such check. With `--expect-default-branch-gate`, which says this repo uses the skill's `review-gate.yml`, a readable default branch where both paths return a JSON 404 is a FAIL (exit 1) naming the branch and the fix: merge review-gate.yml to the default branch before requiring the check. Without the option it is a WARN, since a PR-supplied `pull_request` workflow or an app could publish the name. A gate file that exists (a 200 file object at the requested path) never FAILs and reports OK; the doctor does not analyze its trigger or branch filters. A `Review Gate` pinned to another app is skipped. Every other required context WARNs as not verified. Any other probe result WARNs, exit 0 even with the option, and names the status or shape: a directory, symlink or submodule at the path, another path, an unparsable body, an unreadable branch, a missing ref, a denied, rate-limited or failed request. Ruleset reads need Metadata read and workflow reads Contents read, so in the `--doctor-job` CI job, whose token cannot read rulesets, the check is skipped with a WARN that says so. Pass the option where `gh` can read both: an operator shell, or a repo-create post-create step.
 
 ## What the workflow does
 

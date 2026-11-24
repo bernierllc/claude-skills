@@ -53,7 +53,7 @@ def _detector_compatible(path: Path) -> bool:
     signatures, and a PROTECTED dict literal with a non-empty `Review Gate` entry."""
     try:
         tree = ast.parse(path.read_bytes())
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):  # RecursionError: a very deep expression
         return False
     funcs, protected = {}, None
     for node in tree.body:
@@ -168,7 +168,7 @@ def skill_version(skill_dir: Path) -> tuple[int, ...] | None:
 def hooks_version(skill_dir: Path) -> str:
     try:
         return str(json.loads((skill_dir / "hooks.json").read_text()).get("version"))
-    except (OSError, ValueError, AttributeError) as e:
+    except (OSError, ValueError, AttributeError, RecursionError) as e:  # RecursionError: deeply nested JSON
         return f"unreadable ({e})"
 
 
@@ -408,8 +408,10 @@ def main() -> int:
     if not has_scan:
         print("No .github/workflows/review-gate-security-scan.yml: the security lane stays off. After installing "
               "nevar-security-review's scan, rerun this installer to add Security Refresh.")
-    print("Next: add 'Review Gate' as a required status check on staging/main rulesets.")
-    print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py")
+    # order matters: Review Gate runs on pull_request_target, read from the default branch only
+    print("Next: 1. merge these files to the default branch. 2. Only then add 'Review Gate' as a required status "
+          "check on staging/main rulesets; required earlier, the check cannot report and every PR stays blocked.")
+    print("Doctor: python3", skill_root / "scripts" / "doctor-review-gate.py", "--expect-default-branch-gate")
     return 0
 
 
