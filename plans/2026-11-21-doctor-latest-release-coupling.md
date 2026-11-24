@@ -82,7 +82,7 @@ Incumbent named: `vendored_skill_parity()` already compares `have` (the repo's v
 ## Done when
 
 - None of the 15 repos has a `git clone` of claude-skills in `review-gate-doctor.yml`: `gh api repos/bernierllc/<repo>/contents/.github/workflows/review-gate-doctor.yml --jq .content | base64 -d | grep -c 'git clone'` prints 0 (a retrieval error counts as a failure).
-- A release published after the migration leaves a migrated repo's `doctor` verdict unchanged, checked once on the first release after the rollout: dispatch the doctor (`gh workflow run review-gate-doctor.yml --ref <tag-or-branch>`) before and after the release against one immutable ref (a tag, or a recorded SHA reachable from a branch that carries the dispatch-enabled workflow), confirm both runs report the same `headSha`, and both are green. A PR run does not serve: it checks a synthetic merge commit, and an unrelated PR carries no doctor run once the job is path-filtered (`2026-11-24-doctor-paths-filter.md`).
+- A release published after the migration leaves a migrated repo's `doctor` verdict unchanged, checked once on the first release after the rollout: dispatch the doctor (`gh workflow run review-gate-doctor.yml --ref <tag-or-branch>`) before and after the release against one immutable ref (a tag that carries the dispatch-enabled workflow and is not moved; a branch is not immutable, since dispatch checks its current tip), confirm both runs report the same `headSha`, and both are green. A PR run does not serve: it checks a synthetic merge commit, and an unrelated PR carries no doctor run once the job is path-filtered (`2026-11-24-doctor-paths-filter.md`).
 - Floor behaviour is released and pinned by the tests above, and the re-vendor PRs write it.
 
 ## Not in scope
