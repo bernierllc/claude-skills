@@ -41,7 +41,7 @@ if a[:2] == ["api", "--include"] and len(a) == 3:
         print("error connecting to api.github.com", file=sys.stderr); sys.exit(1)
     st = r["status"]
     hdr = "".join(f"{{k}}: {{v}}\\n" for k, v in r.get("headers", {{}}).items())
-    sys.stdout.write(f"HTTP/2.0 {{st}} X\\nContent-Type: application/json\\n{{hdr}}\\n" + json.dumps(r.get("body")))
+    sys.stdout.write(f"HTTP/2.0 {{st}} X\\nContent-Type: application/json\\n{{hdr}}\\n" + r.get("raw", json.dumps(r.get("body"))))
     if st >= 400:
         print(f"gh: error (HTTP {{st}})", file=sys.stderr); sys.exit(1)
     sys.exit(0)
@@ -237,6 +237,7 @@ class EitherWay(unittest.TestCase):
             "HTTP 404, missing ref": {WORKFLOWS: {"status": 404,
                                                   "body": {"message": "No commit found for the ref main"}}},
             "error connecting": {WORKFLOWS: {"transient": True}},
+            "HTTP 404, unparsable body": {WORKFLOWS: {"status": 404, "raw": "<html>Not Found</html>"}},
         }
         for needle, extra in cases.items():
             for proc, _ in self.both(fixture([ruleset(1)], NO_GATE, extra=extra)):
@@ -285,6 +286,7 @@ class EitherWay(unittest.TestCase):
             "encoding is None, not 'base64'": {"content": b64},
             "invalid base64": {"encoding": "base64", "content": "!!!!" + base64.b64encode(b"pull_request_target").decode()},
             "invalid base64 (": {"encoding": "base64", "content": b64.rstrip("=") + "A"},  # bad padding
+            "invalid base64 (string argument": {"encoding": "base64", "content": "\u00e9"},  # non-ASCII
             "not UTF-8": {"encoding": "base64", "content": base64.b64encode(b"pull_request_target\xff").decode()},
         }
         cases = [(f"could not list .github/workflows on 'main' (HTTP 200, {n}", {WORKFLOWS: {"status": 200, "body": b}})

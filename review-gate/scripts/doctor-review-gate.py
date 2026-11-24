@@ -13,7 +13,6 @@ the option or with incomplete evidence, stay warnings, since CI's GITHUB_TOKEN u
 from __future__ import annotations
 
 import base64
-import binascii
 import importlib.util
 import json
 import re
@@ -357,7 +356,7 @@ def read_contents(full: str, path: str, ref: str, *, listing: bool) -> tuple[int
         return status, None, f"{reason}, content is a {type(content).__name__}, not a string"
     try:
         raw = base64.b64decode(content.replace("\n", ""), validate=True)  # GitHub wraps the base64 in lines
-    except binascii.Error as exc:
+    except ValueError as exc:  # binascii.Error for bad characters or padding, plain ValueError for non-ASCII
         return status, None, f"{reason}, invalid base64 ({exc})"
     try:
         return status, raw.decode("utf-8"), reason
@@ -376,7 +375,7 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     if status != 200:
         return "unknown", f"default branch {default_branch!r} is not readable ({reason or 'no response'})"
     status, listing, reason = read_contents(full, ".github/workflows", default_branch, listing=True)
-    if status == 404 and "missing ref" not in reason:
+    if status == 404 and reason == "HTTP 404":  # a JSON 404 body, not a missing ref nor an unparsable page
         listing = []  # the repo and branch are readable, so 404 means no .github/workflows directory
     elif listing is None:
         return "unknown", f"could not list .github/workflows on {default_branch!r} ({reason})"
