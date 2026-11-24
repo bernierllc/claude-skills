@@ -235,6 +235,15 @@ class EitherWay(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout)
             self.assertIn("review-gate.yaml is present on 'main'", proc.stdout)
 
+    def test_an_absent_yml_with_an_unverified_yaml_probe_warns_never_fails(self):
+        yaml_probe = f"repos/{REPO}/contents/.github/workflows/review-gate.yaml?ref=main"
+        fx = fixture([ruleset(1)], NO_GATE, extra={yaml_probe: {"status": 500, "body": {"message": "Server Error"}}})
+        for proc, _ in self.both(fx):
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            self.assertNotIn("FAIL", proc.stdout)
+            self.assertIn("WARN producer of 'Review Gate'", proc.stdout)
+            self.assertIn("review-gate.yaml (HTTP 500", proc.stdout)
+
     def test_unreadable_rulesets_warn_and_say_the_producer_check_is_skipped(self):
         fx = fixture([ruleset(1)], NO_GATE, extra={
             f"repos/{REPO}/rulesets?per_page=100&page=1": {"status": 403, "body": {"message": "denied"}}})
