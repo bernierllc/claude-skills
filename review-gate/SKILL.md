@@ -45,7 +45,7 @@ A PR body the gate accepts (rule 2): under `## Review`, only the attestation lin
 ## Review
 
 Fallback review: claude-sonnet on 0123456789abcdef0123456789abcdef01234567 — verdict: findings fixed
-Two P2s were fixed in this head and one is tracked in Notion.
+Two P2s were fixed in this head and one is a separate planned unit with an existing plan file, tracked in Notion.
 
 ## Notes
 
@@ -63,7 +63,7 @@ aec run-script skill:review-gate reply-close.py -- -R my-org/my-app --pr 12 --th
   --head <full 40-hex head OID you reviewed> --fixed --note "The parser now rejects empty input." --dry-run
 ```
 
-Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
+Name exactly one disposition: `--fixed` (writes `fixed in <head>`), `--tracked <Notion URL>` (only when the fix is a separate planned unit that already has a plan file; otherwise fix the P2 now) or `--not-a-finding <reason>`. Nothing is inferred, and fixed is never the default. `--head` must equal the PR's live head, or the helper refuses, so a reply cannot vouch for a head nobody reviewed. It refuses a thread from another PR and a `--thread` that is not a `PRRT_` id, and warns when your repo permission is below write, since the gate then counts the reply only if GitHub lists you as an owner, member or collaborator. `--dry-run` runs every check and prints the reply without posting it. Exit 0 = posted (or the dry run passed), 1 = a check failed and nothing was posted, 2 = usage or API error. It never resolves the thread and never changes labels, the body or checks: it prints the command that re-fires the gate, for you to run.
 
 3.4.0 adds `scripts/reply-close.py` (above) and `tests/test_reply_close.py`. Authors run it through `aec run-script`; it is not vendored into repos, and the workflow, checker and detector bytes are unchanged, so there is nothing to re-vendor.
 
