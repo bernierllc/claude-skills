@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote
 
 REVIEW_GATE_CONTEXT = "Review Gate"
@@ -40,8 +41,13 @@ def _load_installer():
     return mod
 
 
+def gh(*args: str) -> subprocess.CompletedProcess:
+    """Run gh. An undecodable byte becomes U+FFFD, so bad output reaches the unverified paths, not a traceback."""
+    return subprocess.run(["gh", *args], capture_output=True, text=True, errors="replace")
+
+
 def gh_json(args: list[str]) -> object | None:
-    proc = subprocess.run(["gh", *args], capture_output=True, text=True)
+    proc = gh(*args)
     if proc.returncode != 0:
         return None
     try:
@@ -50,19 +56,18 @@ def gh_json(args: list[str]) -> object | None:
         return None
 
 
-def ruleset_is_enforcing(detail: dict) -> bool:
-    """True when the ruleset actively blocks merges (not disabled/evaluate)."""
-    return detail.get("enforcement") == "active"
-
-
-def _github_path_fnmatch(name: str, pat: str) -> bool:
-    """Match ``name`` against ``pat`` with GitHub ruleset pathname semantics.
+def _ref_pattern(pat: str) -> str | re.Pattern:
+    """A GitHub ruleset ref pattern compiled to a regex, or the ``~ALL`` / ``~DEFAULT_BRANCH`` token.
 
     ``*`` and ``?`` do not cross ``/``. Recursive traversal requires ``**/``
     (GitHub/Ruby ``FNM_PATHNAME``); a bare ``**`` is pathname-local like ``*``.
     See GitHub ruleset fnmatch docs (not Python ``fnmatch``, which treats ``/``
-    as an ordinary character).
+    as an ordinary character). Raises re.error or ValueError for a pattern it cannot read.
     """
+    if pat in ("~ALL", "~DEFAULT_BRANCH"):
+        return pat
+    if pat.startswith("~"):
+        raise ValueError(f"unknown token {pat!r}")
     i = 0
     out: list[str] = []
     while i < len(pat):
@@ -106,113 +111,75 @@ def _github_path_fnmatch(name: str, pat: str) -> bool:
             continue
         out.append(re.escape(ch))
         i += 1
-    return re.fullmatch("".join(out), name) is not None
+    return re.compile("".join(out))
 
 
-def _fnmatch_ref(
-    pat: str, ref: str, branch: str, *, default_branch: str = "main"
-) -> bool:
-    """True when a GitHub ruleset fnmatch pattern matches ``ref`` / ``branch``."""
-    if pat == "~ALL":
-        return True
-    if pat == "~DEFAULT_BRANCH":
-        return branch == default_branch
-    if _github_path_fnmatch(ref, pat) or _github_path_fnmatch(branch, pat):
-        return True
-    return False
+RULESET_TARGETS = ("branch", "tag", "push", "repository")
 
 
-def _branch_covered_by_ref_name(
-    branch: str,
-    include: list[str],
-    exclude: list[str],
-    *,
-    default_branch: str = "main",
-) -> bool:
-    ref = f"refs/heads/{branch}"
-    # Exclusions use the same fnmatch semantics as GitHub rulesets.
-    for pat in exclude:
-        if _fnmatch_ref(pat, ref, branch, default_branch=default_branch):
-            return False
-    if not include:
-        return False
-    return any(
-        _fnmatch_ref(pat, ref, branch, default_branch=default_branch) for pat in include
-    )
+class Ruleset(NamedTuple):
+    """The ruleset fields the doctor uses, each already type-checked by parse_ruleset."""
+    target: str
+    enforcement: str = ""
+    include: tuple = ()  # compiled ref patterns or ~ALL / ~DEFAULT_BRANCH
+    exclude: tuple = ()
+    checks: tuple = ()  # (context, integration_id or None) of every required status check
+    rule_types: frozenset = frozenset()
+    resolution: bool = False  # a pull_request rule requires review-thread resolution
 
 
-def ruleset_covered_branches(
-    detail: dict, *, default_branch: str = "main"
-) -> list[str]:
-    """Return ``main``/``staging`` branches this ruleset's ref conditions cover."""
-    conditions = detail.get("conditions") or {}
-    ref_name = conditions.get("ref_name") or {}
-    include = [str(x) for x in (ref_name.get("include") or [])]
-    exclude = [str(x) for x in (ref_name.get("exclude") or [])]
-    if not include:
-        return []
-    return [
-        b
-        for b in MERGE_BRANCHES
-        if _branch_covered_by_ref_name(
-            b, include, exclude, default_branch=default_branch
-        )
-    ]
+def _strs(v: object) -> bool:
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
 
 
-def ruleset_targets_merge_branches(
-    detail: dict, *, default_branch: str = "main"
-) -> bool:
-    """True when ruleset ``conditions.ref_name`` covers ``main`` and/or ``staging``."""
-    return bool(ruleset_covered_branches(detail, default_branch=default_branch))
-
-
-def ruleset_requires_review_gate(detail: dict) -> bool:
-    """True when a ruleset detail requires the ``Review Gate`` status check."""
-    for rule in detail.get("rules") or []:
-        if rule.get("type") != "required_status_checks":
-            continue
-        params = rule.get("parameters") or {}
-        for check in params.get("required_status_checks") or []:
-            if not isinstance(check, dict):
-                continue
-            if check.get("context") == REVIEW_GATE_CONTEXT:
-                return True
-    return False
-
-
-def ruleset_requires_conversation_resolution(detail: dict) -> bool:
-    """True when a ruleset requires review-thread resolution on pull requests."""
-    for rule in detail.get("rules") or []:
-        if rule.get("type") != "pull_request":
-            continue
-        params = rule.get("parameters") or {}
-        if params.get("required_review_thread_resolution") is True:
-            return True
-    return False
-
-
-def ruleset_shape_problem(detail: dict) -> str:
-    """The first field the ruleset checks below read that has the wrong type, or "" when every one is usable."""
-    if not isinstance(detail.get("enforcement"), str):
-        return "enforcement is not a string"
-    cond = detail.get("conditions") or {}
-    ref = (cond.get("ref_name") or {}) if isinstance(cond, dict) else None
-    refs = [ref.get(k) or [] for k in ("include", "exclude")] if isinstance(ref, dict) else None
-    if refs is None or not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in refs):
-        return "conditions.ref_name is not an object with include/exclude lists of strings"
-    rules = detail.get("rules") or []
-    if not isinstance(rules, list) or not all(isinstance(r, dict) and isinstance(r.get("type"), str) for r in rules):
-        return "rules is not a list of objects with a string type"
+def parse_ruleset(d: object) -> tuple[Ruleset | None, str]:
+    """Read every ruleset field the doctor uses, with an explicit type check each: (parsed, "") or (None, the
+    first problem). A missing key is a problem like a wrong type. Nothing downstream reads the raw API object."""
+    if not isinstance(d, dict):
+        return None, f"a {type(d).__name__}, not a ruleset object"
+    if d.get("target") not in RULESET_TARGETS:
+        return None, f"target {d.get('target')!r} is not one of {', '.join(RULESET_TARGETS)}"
+    if d["target"] != "branch":
+        return Ruleset(d["target"]), ""  # rules for tags, pushes or repositories never gate a branch merge
+    if not isinstance(d.get("enforcement"), str):
+        return None, "enforcement is missing or not a string"
+    ref = d["conditions"].get("ref_name") if isinstance(d.get("conditions"), dict) else None
+    if not (isinstance(ref, dict) and _strs(ref.get("include")) and _strs(ref.get("exclude"))):
+        return None, "conditions.ref_name is not an object with include and exclude lists of strings"
+    try:
+        include, exclude = (tuple(_ref_pattern(p) for p in ref[k]) for k in ("include", "exclude"))
+    except (re.error, ValueError) as e:
+        return None, f"conditions.ref_name holds a pattern this doctor cannot read ({e})"
+    rules = d.get("rules")
+    if not (isinstance(rules, list) and all(isinstance(r, dict) and isinstance(r.get("type"), str) for r in rules)):
+        return None, "rules is not a list of objects with a string type"
+    checks, resolution = [], False
     for r in rules:
-        params = r.get("parameters") or {}
-        checks = (params.get("required_status_checks") or []) if isinstance(params, dict) else None
-        if not isinstance(checks, list) or not all(
-                isinstance(c, dict) and isinstance(c.get("context"), str)
-                and (c.get("integration_id") is None or type(c.get("integration_id")) is int) for c in checks):
-            return (f"rule {r['type']!r} parameters are not an object with a list of checks, each a string context "
-                    "and an integer or absent integration_id")
-    return ""
+        params = r.get("parameters")
+        if r["type"] == "required_status_checks":
+            cs = params.get("required_status_checks") if isinstance(params, dict) else None
+            if not (isinstance(cs, list) and all(
+                    isinstance(c, dict) and isinstance(c.get("context"), str)
+                    and ("integration_id" not in c or type(c["integration_id"]) is int) for c in cs)):
+                return None, ("rule 'required_status_checks' parameters are not an object with a list of checks, "
+                              "each a string context and an integer or absent integration_id")
+            checks += [(c["context"], c.get("integration_id")) for c in cs]
+        elif r["type"] == "pull_request":
+            if not (isinstance(params, dict) and type(params.get("required_review_thread_resolution")) is bool):
+                return None, "rule 'pull_request' parameters have no boolean required_review_thread_resolution"
+            resolution = resolution or params["required_review_thread_resolution"]
+    return Ruleset("branch", d["enforcement"], include, exclude, tuple(checks),
+                   frozenset(r["type"] for r in rules), resolution), ""
+
+
+def ruleset_covered_branches(rs: Ruleset, *, default_branch: str = "main") -> list[str]:
+    """Return the ``main``/``staging`` branches this ruleset's ref conditions cover."""
+    def hit(pat: str | re.Pattern, b: str) -> bool:
+        if isinstance(pat, str):
+            return pat == "~ALL" or b == default_branch
+        return bool(pat.fullmatch(f"refs/heads/{b}") or pat.fullmatch(b))
+    return [b for b in MERGE_BRANCHES
+            if not any(hit(p, b) for p in rs.exclude) and any(hit(p, b) for p in rs.include)]
 
 
 def local_checks(root: Path) -> int:
@@ -332,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def gh_api(path: str) -> tuple[int | None, object | None, str]:
     """GET through ``gh api --include``: (HTTP status or None when no response arrived, parsed body, reason)."""
-    proc = subprocess.run(["gh", "api", "--include", path], capture_output=True, text=True)
+    proc = gh("api", "--include", path)
     m = re.match(r"HTTP/\S+ (\d{3})", proc.stdout)
     if not m:
         return None, None, (proc.stderr.strip() or "no HTTP response")[:200]
@@ -355,8 +322,8 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
     """Probe each exact gate path on the default branch through the Contents API; nothing is listed or decoded.
 
     Returns (verdict, detail): "present" (a 200 file object at the requested path); "absent" (the branch is
-    readable and every path is a JSON 404 that is not a missing ref); or "unknown" (any other status or shape).
-    The file's content, trigger and branch filters are never read.
+    readable and every path is a JSON-object 404 that is not a missing ref); or "unknown" (any other status or
+    shape). The file's content, trigger and branch filters are never read.
     """
     status, data, reason = gh_api(f"repos/{full}/branches/{quote(default_branch)}")
     if status == 200 and not isinstance(data, dict):
@@ -369,12 +336,14 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
         if status == 200 and isinstance(data, dict) and data.get("type") == "file" and data.get("path") == path:
             return "present", (f"the review-gate workflow {path} is present on {default_branch!r} (its trigger and "
                                "branch filters are not analyzed)")
-        if status == 404 and reason == "HTTP 404":  # a JSON 404 body, not a missing ref nor an unparsable page
+        if status == 404 and reason == "HTTP 404" and isinstance(data, dict):  # GitHub's JSON 404, not a missing ref
             continue
         if status == 200:
             shape = (f"type {data.get('type')!r} at path {data.get('path')!r}" if isinstance(data, dict)
                      else f"a {type(data).__name__}")
             reason = f"{reason}, {shape}, not a file at {path}"
+        elif status == 404 and reason == "HTTP 404":
+            reason = f"{reason}, a {type(data).__name__}, not an error object"
         problems.append(f"{path} ({reason or 'no response'})")
     if problems:
         return "unknown", f"could not probe {'; '.join(problems)} on {default_branch!r}"
@@ -382,16 +351,17 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
 
 
 def list_rulesets(full: str) -> tuple[list | None, str]:
+    """Every ruleset summary as {"id": int, "name": str}, or (None, why not)."""
     rulesets: list = []
     page = 1
     while True:
         status, data, reason = gh_api(f"repos/{full}/rulesets?per_page={PAGE}&page={page}")
         if status != 200:
             return None, f"{reason}; needs Metadata read, which CI's GITHUB_TOKEN usually lacks"
-        if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
-            return None, (f"{reason}, a {type(data).__name__}" + (" with a non-object entry" if isinstance(data, list)
-                          else "") + ", not a list of ruleset objects")
-        rulesets.extend(data)
+        if not (isinstance(data, list) and all(
+                isinstance(r, dict) and type(r.get("id")) is int and isinstance(r.get("name"), str) for r in data)):
+            return None, f"{reason}, a {type(data).__name__}, not a list of objects with an integer id and a string name"
+        rulesets += [{"id": r["id"], "name": r["name"]} for r in data]
         if len(data) < PAGE:
             return rulesets, ""
         page += 1
@@ -404,40 +374,24 @@ def remote_checks(*, expect_gate: bool = False) -> int:
         print("WARN gh (GitHub CLI) not found; skip label and ruleset checks")
         return 0
     # gh doesn't expand {owner}/{repo} in all versions; resolve explicitly.
-    repo = subprocess.run(
-        ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-        capture_output=True,
-        text=True,
-    )
+    repo = gh("repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
     if repo.returncode != 0:
         print("WARN could not resolve repo via gh; skip ruleset check")
         return 0
     full = repo.stdout.strip()
     labels = gh_json(["label", "list", "-R", full, "--search", MAIN_REVIEW_LABEL, "--json", "name"])
-    if not (isinstance(labels, list) and all(isinstance(lb, dict) for lb in labels)):
+    if not (isinstance(labels, list) and all(isinstance(lb, dict) and isinstance(lb.get("name"), str)
+                                             for lb in labels)):
         print(f"WARN label {MAIN_REVIEW_LABEL!r} unverified: the label list is unreadable or not a list of objects "
-              f"(a {type(labels).__name__})")
-    elif any(lb.get("name") == MAIN_REVIEW_LABEL for lb in labels):
+              f"with a string name (a {type(labels).__name__})")
+    elif any(lb["name"] == MAIN_REVIEW_LABEL for lb in labels):
         print(f"OK label {MAIN_REVIEW_LABEL!r} exists")
     else:
         print(
             f"WARN label {MAIN_REVIEW_LABEL!r} missing: every PR into main fails the gate; "
             f"gh label create {MAIN_REVIEW_LABEL} -R {full}"
         )
-    default_branch_proc = subprocess.run(
-        [
-            "gh",
-            "repo",
-            "view",
-            full,
-            "--json",
-            "defaultBranchRef",
-            "-q",
-            ".defaultBranchRef.name",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    default_branch_proc = gh("repo", "view", full, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name")
     default_known = default_branch_proc.returncode == 0 and bool(default_branch_proc.stdout.strip())
     default_branch = default_branch_proc.stdout.strip() if default_known else "main"
     rulesets, reason = list_rulesets(full)
@@ -453,29 +407,27 @@ def remote_checks(*, expect_gate: bool = False) -> int:
     unverified = 0
     gate_branches: list[str] = []  # covered branches whose Review Gate requirement this doctor analyzes
     other_contexts: dict[str, None] = {}
-    for rs in rulesets:
-        rid = rs.get("id")
-        name = rs.get("name")
-        status, detail, reason = gh_api(f"repos/{full}/rulesets/{rid}")
-        if status != 200:
-            print(f"WARN could not read ruleset {name!r} ({reason}); ignored")
-            continue
-        shape = (ruleset_shape_problem(detail) if isinstance(detail, dict)
-                 else f"{reason}, a {type(detail).__name__}, not a ruleset object")
-        if shape:
+    for entry in rulesets:
+        name = entry["name"]
+        status, detail, reason = gh_api(f"repos/{full}/rulesets/{entry['id']}")
+        rs, problem = parse_ruleset(detail) if status == 200 else (None, f"not readable ({reason})")
+        if rs is None:
             unverified += 1
-            print(f"WARN ruleset {name!r} unverified: {shape}; its branch coverage, {REVIEW_GATE_CONTEXT!r} and "
+            print(f"WARN ruleset {name!r} unverified: {problem}; its branch coverage, {REVIEW_GATE_CONTEXT!r} and "
                   "conversation-resolution requirements are not counted")
             continue
-        if not ruleset_is_enforcing(detail):
+        if rs.target != "branch":
+            skipped_wrong_branch += 1
+            print(f"WARN ruleset {name!r} targets {rs.target}, not branches; ignored for Review Gate coverage")
+            continue
+        if rs.enforcement != "active":
             skipped_non_enforcing += 1
-            enf = detail.get("enforcement") or "unknown"
             print(
-                f"WARN ruleset {name!r} enforcement={enf!r} "
+                f"WARN ruleset {name!r} enforcement={rs.enforcement!r} "
                 "(disabled/evaluate does not block merges); ignored"
             )
             continue
-        covered = ruleset_covered_branches(detail, default_branch=default_branch)
+        covered = ruleset_covered_branches(rs, default_branch=default_branch)
         if not covered:
             skipped_wrong_branch += 1
             print(
@@ -483,31 +435,27 @@ def remote_checks(*, expect_gate: bool = False) -> int:
                 "(conditions.ref_name); ignored for Review Gate coverage"
             )
             continue
-        for rule in detail.get("rules") or []:
-            if rule.get("type") != "required_status_checks":
-                continue
-            for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
-                context = check.get("context")
-                if context != REVIEW_GATE_CONTEXT:
-                    other_contexts.setdefault(str(context))
-                elif check.get("integration_id") not in (None, ACTIONS_INTEGRATION_ID):
-                    print(f"OK ruleset {name!r} pins {REVIEW_GATE_CONTEXT!r} to integration "
-                          f"{check.get('integration_id')} (not GitHub Actions); producer check skipped")
-                else:
-                    gate_branches.extend(b for b in covered if b not in gate_branches)
-        has_resolution = ruleset_requires_conversation_resolution(detail)
-        has_gate = ruleset_requires_review_gate(detail)
-        has_status_rule = any(
-            rule.get("type") == "required_status_checks"
-            for rule in (detail.get("rules") or [])
-        )
+        for context, integration in rs.checks:
+            if context != REVIEW_GATE_CONTEXT:
+                other_contexts.setdefault(context)
+            elif integration not in (None, ACTIONS_INTEGRATION_ID):
+                print(f"OK ruleset {name!r} pins {REVIEW_GATE_CONTEXT!r} to integration "
+                      f"{integration} (not GitHub Actions); producer check skipped")
+            else:
+                gate_branches.extend(b for b in covered if b not in gate_branches)
+        has_gate = any(context == REVIEW_GATE_CONTEXT for context, _ in rs.checks)
         for branch in covered:
             branch_state[branch]["seen"] = True
-            if has_resolution:
+            if rs.resolution:
                 branch_state[branch]["resolution"] = True
                 print(
                     f"OK ruleset {name!r} requires conversation resolution "
                     f"on {branch}"
+                )
+            elif "pull_request" in rs.rule_types:
+                print(
+                    f"WARN ruleset {name!r} has pull_request rule on {branch} but "
+                    f"required_review_thread_resolution is not true"
                 )
             if has_gate:
                 branch_state[branch]["gate"] = True
@@ -515,21 +463,11 @@ def remote_checks(*, expect_gate: bool = False) -> int:
                     f"OK ruleset {name!r} requires status check "
                     f"{REVIEW_GATE_CONTEXT!r} on {branch}"
                 )
-            elif has_status_rule:
+            elif "required_status_checks" in rs.rule_types:
                 print(
                     f"WARN ruleset {name!r} has required_status_checks on {branch} "
                     f"but missing context {REVIEW_GATE_CONTEXT!r}"
                 )
-            if not has_resolution:
-                # pull_request rule present without the flag
-                if any(
-                    rule.get("type") == "pull_request"
-                    for rule in (detail.get("rules") or [])
-                ):
-                    print(
-                        f"WARN ruleset {name!r} has pull_request rule on {branch} but "
-                        f"required_review_thread_resolution is not true"
-                    )
 
     if not any(st["seen"] for st in branch_state.values()):
         bits: list[str] = []

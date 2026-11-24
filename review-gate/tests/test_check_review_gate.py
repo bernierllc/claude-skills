@@ -2091,163 +2091,70 @@ _doctor = importlib.util.module_from_spec(_doctor_spec)
 assert _doctor_spec.loader is not None
 _doctor_spec.loader.exec_module(_doctor)
 assert {_doctor.MAIN_REVIEW_LABEL} == g.MAIN_REVIEW_LABELS  # doctor checks the label the gate requires
-assert _doctor.ruleset_requires_review_gate(
-    {
-        "rules": [
-            {
-                "type": "required_status_checks",
-                "parameters": {
-                    "required_status_checks": [{"context": "Review Gate"}],
-                },
-            }
-        ]
-    }
-)
-assert not _doctor.ruleset_requires_review_gate(
-    {
-        "rules": [
-            {
-                "type": "required_status_checks",
-                "parameters": {
-                    "required_status_checks": [{"context": "CI"}],
-                },
-            }
-        ]
-    }
-)
-assert not _doctor.ruleset_requires_review_gate(
-    {"rules": [{"type": "pull_request", "parameters": {}}]}
-)
-assert _doctor.ruleset_is_enforcing({"enforcement": "active"})
-assert not _doctor.ruleset_is_enforcing({"enforcement": "disabled"})
-assert not _doctor.ruleset_is_enforcing({"enforcement": "evaluate"})
-assert not _doctor.ruleset_is_enforcing({})
-assert _doctor.ruleset_targets_merge_branches(
-    {
-        "conditions": {
-            "ref_name": {"include": ["refs/heads/main"], "exclude": []}
-        }
-    }
-)
-assert _doctor.ruleset_targets_merge_branches(
-    {"conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
-)
-assert not _doctor.ruleset_targets_merge_branches(
-    {
-        "conditions": {
-            "ref_name": {"include": ["refs/heads/experimental"], "exclude": []}
-        }
-    }
-)
-assert not _doctor.ruleset_targets_merge_branches(
-    {
-        "conditions": {
-            "ref_name": {
-                "include": ["~ALL"],
-                "exclude": ["refs/heads/main", "refs/heads/staging"],
-            }
-        }
-    }
-)
+def _rs(include=("refs/heads/main",), exclude=(), rules=(), enforcement="active"):
+    """A ruleset detail through the doctor's one parser; fails the suite if it does not parse."""
+    parsed, problem = _doctor.parse_ruleset({"target": "branch", "enforcement": enforcement, "rules": list(rules),
+                                             "conditions": {"ref_name": {"include": list(include),
+                                                                         "exclude": list(exclude)}}})
+    assert parsed is not None, problem
+    return parsed
+
+
+def _covered(include, exclude=(), **kw):
+    return _doctor.ruleset_covered_branches(_rs(include, exclude), **kw)
+
+
+def _status(*contexts):
+    return {"type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": c} for c in contexts]}}
+
+
+def _pr(resolution):
+    return {"type": "pull_request", "parameters": {"required_review_thread_resolution": resolution}}
+
+
+def _glob(name, pat):
+    return _doctor._ref_pattern(pat).fullmatch(name) is not None
+
+
+assert _rs(rules=[_status("Review Gate")]).checks == (("Review Gate", None),)
+assert _rs(rules=[_status("CI")]).checks == (("CI", None),)
+assert _rs(rules=[_pr(False)]).checks == ()
+assert _rs(enforcement="disabled").enforcement == "disabled"
+assert _covered(["refs/heads/main"])
+assert _covered(["~ALL"])
+assert not _covered(["refs/heads/experimental"])
+assert not _covered(["~ALL"], ["refs/heads/main", "refs/heads/staging"])
 # fnmatch exclusions: refs/heads/m* excludes main (staging still covered)
-assert _doctor.ruleset_covered_branches(
-    {
-        "conditions": {
-            "ref_name": {
-                "include": ["~ALL"],
-                "exclude": ["refs/heads/m*"],
-            }
-        }
-    }
-) == ["staging"]
-assert "main" not in _doctor.ruleset_covered_branches(
-    {
-        "conditions": {
-            "ref_name": {
-                "include": ["~ALL"],
-                "exclude": ["refs/heads/m*"],
-            }
-        }
-    }
-)
+assert _covered(["~ALL"], ["refs/heads/m*"]) == ["staging"]
 # GitHub slash-aware: refs/* does not match refs/heads/main
-assert not _doctor.ruleset_covered_branches(
-    {"conditions": {"ref_name": {"include": ["refs/*"], "exclude": []}}}
-)
-assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/*")
-assert _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/*")
+assert not _covered(["refs/*"])
+assert not _glob("refs/heads/main", "refs/*")
+assert _glob("refs/heads/main", "refs/heads/*")
 # Bare ``**`` does not cross ``/``; recursive form needs ``**/``
-assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/**")
-assert _doctor._github_path_fnmatch("refs/heads/main", "refs/**/*")
-assert _doctor._github_path_fnmatch("refs/heads/main", "**/heads/main")
+assert not _glob("refs/heads/main", "refs/**")
+assert _glob("refs/heads/main", "refs/**/*")
+assert _glob("refs/heads/main", "**/heads/main")
 # fnmatch [!m] is negation, not a literal '!' class member
-assert not _doctor._github_path_fnmatch("refs/heads/main", "refs/heads/[!m]*")
-assert _doctor._github_path_fnmatch("refs/heads/staging", "refs/heads/[!m]*")
-assert "main" not in _doctor.ruleset_covered_branches(
-    {
-        "conditions": {
-            "ref_name": {"include": ["refs/heads/[!m]*"], "exclude": []}
-        }
-    }
-)
-assert _doctor.ruleset_covered_branches(
-    {
-        "conditions": {
-            "ref_name": {"include": ["refs/heads/[!m]*"], "exclude": []}
-        }
-    }
-) == ["staging"]
-assert set(
-    _doctor.ruleset_covered_branches(
-        {"conditions": {"ref_name": {"include": ["refs/heads/*"], "exclude": []}}}
-    )
-) == {"main", "staging"}
-assert not _doctor.ruleset_covered_branches(
-    {"conditions": {"ref_name": {"include": ["refs/**"], "exclude": []}}}
-)
-assert set(
-    _doctor.ruleset_covered_branches(
-        {"conditions": {"ref_name": {"include": ["refs/**/*"], "exclude": []}}}
-    )
-) == {"main", "staging"}
-assert _doctor.ruleset_covered_branches(
-    {
-        "conditions": {
-            "ref_name": {"include": ["refs/heads/main"], "exclude": []}
-        }
-    }
-) == ["main"]
-assert set(
-    _doctor.ruleset_covered_branches(
-        {"conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
-    )
-) == {"main", "staging"}
+assert not _glob("refs/heads/main", "refs/heads/[!m]*")
+assert _glob("refs/heads/staging", "refs/heads/[!m]*")
+assert _covered(["refs/heads/[!m]*"]) == ["staging"]
+assert set(_covered(["refs/heads/*"])) == {"main", "staging"}
+assert not _covered(["refs/**"])
+assert set(_covered(["refs/**/*"])) == {"main", "staging"}
+assert _covered(["refs/heads/main"]) == ["main"]
+assert set(_covered(["~ALL"])) == {"main", "staging"}
 # ~DEFAULT_BRANCH follows repository default (not hardcoded main)
-assert _doctor.ruleset_covered_branches(
-    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
-    default_branch="staging",
-) == ["staging"]
-assert _doctor.ruleset_covered_branches(
-    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
-    default_branch="main",
-) == ["main"]
-assert not _doctor.ruleset_covered_branches(
-    {"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}},
-    default_branch="develop",
-)
-assert _doctor.ruleset_requires_conversation_resolution(
-    {
-        "rules": [
-            {
-                "type": "pull_request",
-                "parameters": {"required_review_thread_resolution": True},
-            }
-        ]
-    }
-)
-assert not _doctor.ruleset_requires_conversation_resolution(
-    {"rules": [{"type": "pull_request", "parameters": {}}]}
-)
+assert _covered(["~DEFAULT_BRANCH"], default_branch="staging") == ["staging"]
+assert _covered(["~DEFAULT_BRANCH"], default_branch="main") == ["main"]
+assert not _covered(["~DEFAULT_BRANCH"], default_branch="develop")
+assert _rs(rules=[_pr(True)]).resolution
+assert not _rs(rules=[_pr(False)]).resolution
+# a pattern the translator cannot compile, or an unknown token, makes the ruleset unparsed, never a traceback
+for _bad in ("[z-a]", "~NOPE"):
+    _parsed, _problem = _doctor.parse_ruleset({"target": "branch", "enforcement": "active", "rules": [],
+                                               "conditions": {"ref_name": {"include": [_bad], "exclude": []}}})
+    assert _parsed is None and "pattern" in _problem, (_bad, _problem)
 
 # pr_payload reads every page of every connection, and fails closed on a missing one; main() exits
 # 0/1/2 (pass/fail/error) through the real script (Sonnet b on 035394a, P1 1-2). A fake gh serves GraphQL.

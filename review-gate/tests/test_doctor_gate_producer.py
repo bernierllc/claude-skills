@@ -4,12 +4,14 @@ Plan: agents-environment-config plans/2026-11-24-doctor-required-check-workflow-
 The doctor runs as a real subprocess. `gh` is the only stand-in: a fake executable on PATH that serves
 fixture GitHub API responses (third-party, so no network), in the `gh api --include` output shape.
 """
+import copy
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1]
@@ -24,14 +26,19 @@ FAKE_GH = f"""#!{sys.executable}
 import json, os, sys
 fx = json.load(open(os.environ["FAKE_GH"]))
 a = sys.argv[1:]
+def emit(text, site):
+    sys.stdout.write(text); sys.stdout.flush()
+    if fx.get("ff") == site:  # an undecodable byte at this call site
+        sys.stdout.buffer.write(b"\\xff"); sys.stdout.flush()
+    sys.stdout.write("\\n")
 if a[:2] == ["repo", "view"]:
     if "nameWithOwner" in a:
-        print(fx["repo"]); sys.exit(0)
+        emit(fx["repo"], "nameWithOwner"); sys.exit(0)
     if fx.get("default") is None:
         print("gh: could not read repo", file=sys.stderr); sys.exit(1)
-    print(fx["default"]); sys.exit(0)
+    emit(fx["default"], "defaultBranchRef"); sys.exit(0)
 if a[:2] == ["label", "list"]:
-    print(json.dumps(fx.get("labels", [{{"name": "review:high"}}]))); sys.exit(0)
+    emit(json.dumps(fx.get("labels", [{{"name": "review:high"}}])), "label"); sys.exit(0)
 if a[:2] == ["api", "--include"] and len(a) == 3:
     with open(os.environ["FAKE_GH"] + ".calls", "a") as log:
         log.write(a[2] + "\\n")
@@ -40,7 +47,7 @@ if a[:2] == ["api", "--include"] and len(a) == 3:
         print("error connecting to api.github.com", file=sys.stderr); sys.exit(1)
     st = r["status"]
     hdr = "".join(f"{{k}}: {{v}}\\n" for k, v in r.get("headers", {{}}).items())
-    sys.stdout.write(f"HTTP/2.0 {{st}} X\\nContent-Type: application/json\\n{{hdr}}\\n" + r.get("raw", json.dumps(r.get("body"))))
+    emit(f"HTTP/2.0 {{st}} X\\nContent-Type: application/json\\n{{hdr}}\\n" + r.get("raw", json.dumps(r.get("body"))), a[2])
     if st >= 400:
         print(f"gh: error (HTTP {{st}})", file=sys.stderr); sys.exit(1)
     sys.exit(0)
@@ -50,7 +57,7 @@ print("unexpected gh call: " + " ".join(a), file=sys.stderr); sys.exit(2)
 
 def ruleset(rid, contexts=(("Review Gate", None),), include=("~DEFAULT_BRANCH",), enforcement="active"):
     checks = [{"context": c, **({"integration_id": i} if i is not None else {})} for c, i in contexts]
-    return {"id": rid, "name": f"rs{rid}", "enforcement": enforcement,
+    return {"id": rid, "name": f"rs{rid}", "target": "branch", "enforcement": enforcement,
             "conditions": {"ref_name": {"include": list(include), "exclude": []}},
             "rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": checks}}]}
 
@@ -228,72 +235,6 @@ class EitherWay(unittest.TestCase):
                     self.assertEqual(len(warn), 1, proc.stdout)
                     self.assertIn(needle, warn[0])
 
-    def test_every_api_consumer_warns_unverified_on_a_wrong_shape(self):
-        """A 200 with the wrong shape at any consumer is unverified: WARN naming it, exit 0, never OK or FAIL."""
-        branch, rulesets, detail = (f"repos/{REPO}/branches/main", f"repos/{REPO}/rulesets?per_page=100&page=1",
-                                    f"repos/{REPO}/rulesets/1")
-
-        def rs(**over):
-            return {detail: {"status": 200, "body": {**ruleset(1), **over}}}
-
-        def rule(params):
-            return rs(rules=[{"type": "required_status_checks", "parameters": params}])
-
-        cond = "WARN ruleset 'rs1' unverified: conditions.ref_name is not an object with include/exclude lists"
-        bad_rule = "WARN ruleset 'rs1' unverified: rule 'required_status_checks' parameters are not an object"
-        bad_type = "WARN ruleset 'rs1' unverified: rules is not a list of objects with a string type"
-        cases = [
-            ({branch: {"status": 200, "raw": "<html>proxy error</html>"}}, None,
-             "default branch 'main' is not readable (HTTP 200, unparsable body, a NoneType, not a branch object)"),
-            ({branch: {"status": 200, "body": None}}, None, "is not readable (HTTP 200, a NoneType, not a branch"),
-            ({branch: {"status": 200, "body": []}}, None, "is not readable (HTTP 200, a list, not a branch object)"),
-            ({rulesets: {"status": 200, "body": [None]}}, None,
-             "WARN could not list rulesets (HTTP 200, a list with a non-object entry, not a list of ruleset objects"),
-            ({rulesets: {"status": 200, "body": [1]}}, None, "(HTTP 200, a list with a non-object entry, not a list"),
-            ({rulesets: {"status": 200, "body": "x"}}, None, "(HTTP 200, a str, not a list of ruleset objects"),
-            ({rulesets: {"status": 200, "body": {}}}, None, "(HTTP 200, a dict, not a list of ruleset objects); the"),
-            ({rulesets: {"status": 200, "body": [{"id": 1, "name": "rs1"}, None]}}, None,
-             "(HTTP 200, a list with a non-object entry, not a list of ruleset objects)"),
-            ({detail: {"status": 200, "body": []}}, None,
-             "WARN ruleset 'rs1' unverified: HTTP 200, a list, not a ruleset object"),
-            ({detail: {"status": 200, "raw": "<html>"}}, None,
-             "WARN ruleset 'rs1' unverified: HTTP 200, unparsable body, a NoneType, not a ruleset object"),
-            (rule({"required_status_checks": [{"context": "Review Gate", "integration_id": True}]}), None, bad_rule),
-            (rs(enforcement=["active"]), None, "WARN ruleset 'rs1' unverified: enforcement is not a string"),
-            (rs(rules=[{"type": ["pull_request"]}]), None, bad_type),
-            (rule([{"required_status_checks": []}]), None, bad_rule),
-            (rule({"required_status_checks": [{"context": None}]}), None, bad_rule),
-            (rule({"required_status_checks": [{"context": "Review Gate", "integration_id": "15368"}]}), None,
-             bad_rule),
-            (rs(conditions={"ref_name": {"include": ["~ALL"], "exclude": [["main"]]}}), None, cond),
-            (rs(rules=[None]), None, bad_type),
-            (rs(rules={"type": "x"}), None, bad_type),
-            (rule("x"), None, bad_rule),
-            (rule({"required_status_checks": 5}), None, bad_rule),
-            (rule({"required_status_checks": [1]}), None, bad_rule),
-            (rs(conditions="x"), None, cond),
-            (rs(conditions={"ref_name": [1]}), None, cond),
-            (rs(conditions={"ref_name": {"include": 5}}), None, cond),
-            ({}, [None], "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects"),
-            ({}, [1], "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects"),
-            ({}, "x", "WARN label 'review:high' unverified: the label list is unreadable or not a list of objects (a "
-                      "str)"),
-        ]
-        for extra, labels, needle in cases:
-            fx = fixture([ruleset(1)], NO_GATE if labels is None else GATE, extra=extra)  # labels feed no FAIL
-            if labels is not None:
-                fx["labels"] = labels
-            proc, _ = run_doctor(fx, FLAG)
-            with self.subTest(case=needle, extra=extra, labels=labels):
-                self.assertEqual(proc.returncode, 0, proc.stdout)
-                self.assertEqual(lines(proc, "FAIL"), [])
-                self.assertTrue(any(needle in ln for ln in lines(proc, "WARN")), proc.stdout)
-                if labels is not None:
-                    self.assertNotIn("OK label", proc.stdout)
-                if extra is not None and detail in extra:
-                    self.assertNotIn("OK ruleset 'rs1'", proc.stdout)
-                    self.assertIn("(saw 1 unverified)", proc.stdout)
-
     def test_a_present_yaml_gate_is_ok_when_the_yml_probe_is_unverified(self):
         fx = fixture([ruleset(1)], {".github/workflows/review-gate.yaml": GATE_YML},
                      extra={PROBE: {"status": 500, "body": {"message": "Server Error"}}})
@@ -317,6 +258,194 @@ class EitherWay(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout)
             self.assertIn("WARN could not list rulesets (HTTP 403;", proc.stdout)
             self.assertIn("Review Gate producer checks are skipped", proc.stdout)
+
+
+DETAIL, LIST, BRANCH = (f"repos/{REPO}/rulesets/1", f"repos/{REPO}/rulesets?per_page=100&page=1",
+                        f"repos/{REPO}/branches/main")
+TARGETS = ("branch", "tag", "push", "repository")
+WELL_FORMED = {  # every ruleset field the doctor reads, each holding a value of its documented type
+    "id": 1, "name": "rs1", "target": "branch", "enforcement": "active",
+    "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH", "refs/heads/staging"], "exclude": ["refs/heads/x"]}},
+    "rules": [
+        {"type": "required_status_checks",
+         "parameters": {"required_status_checks": [{"context": "Review Gate", "integration_id": 15368}]}},
+        {"type": "pull_request", "parameters": {"required_review_thread_resolution": True}},
+    ],
+}
+JUNK = [None, 0, 1, True, "", "x", [], {}, [None], [1], {"a": 1}]
+DELETE = "<deleted>"
+
+
+def key_paths(v, path=()):
+    yield path
+    for k, x in (v.items() if isinstance(v, dict) else enumerate(v) if isinstance(v, list) else ()):
+        yield from key_paths(x, path + (k,))
+
+
+def mutations(body):
+    """(path, good value, junk, mutated body) for every key path and every junk value, plus deleting each key."""
+    for path in key_paths(body):
+        good = body
+        for k in path:
+            good = good[k]
+        for junk in JUNK + ([DELETE] if path and isinstance(path[-1], str) else []):
+            if not path:
+                yield path, good, junk, junk
+                continue
+            out = copy.deepcopy(body)
+            parent = out
+            for k in path[:-1]:
+                parent = parent[k]
+            if junk == DELETE:
+                del parent[path[-1]]
+            else:
+                parent[path[-1]] = junk
+            yield path, good, junk, out
+
+
+def well_typed(good, junk):
+    """True when junk has the type the doctor requires where good sits: same scalar type (bool is not int), an
+    empty list where a list sits; never an object (its required keys are missing) and never a deletion."""
+    if junk == DELETE or isinstance(good, dict):
+        return False
+    return junk == [] if isinstance(good, list) else type(junk) is type(good)
+
+
+class FuzzEveryApiShape(unittest.TestCase):
+    """Generated coverage: junk at every key path of each well-formed GitHub response, run with the option.
+
+    Each mutation must give rc 0 with no traceback and the consumer reported unverified, or, where the junk
+    keeps the documented type (or the key is optional or never read), a result with no unverified line."""
+
+    def walk(self, base, site, body, classify):
+        """classify(path, good, junk) -> "same" (stdout equals the baseline), "valid" or "invalid"."""
+        def run(m):
+            fx = copy.deepcopy(base)
+            if site == "labels":
+                fx["labels"] = m[3]
+            else:
+                fx["api"][site] = {"status": base["api"].get(site, {}).get("status", 200), "body": m[3]}
+            return m, run_doctor(fx, FLAG)[0]
+        baseline = run_doctor(base, FLAG)[0]
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+            results = list(pool.map(run, mutations(body)))
+        self.assertGreater(len(results), len(JUNK))
+        for (path, good, junk, _), proc in results:
+            yield classify(path, good, junk), proc, baseline, {"path": path, "junk": junk}
+
+    def check(self, results, unverified, invalid_rc=(0,)):
+        for kind, proc, baseline, case in results:
+            with self.subTest(**case, kind=kind):
+                if kind == "same":
+                    self.assertEqual(proc.stdout, baseline.stdout)
+                    self.assertEqual(proc.returncode, baseline.returncode)
+                elif kind == "valid":
+                    self.assertIn(proc.returncode, (0, 1), proc.stdout)
+                    self.assertNotIn(unverified, proc.stdout)
+                else:
+                    self.assertIn(proc.returncode, invalid_rc, proc.stdout)
+                    self.assertIn(unverified, proc.stdout)
+
+    def test_ruleset_detail(self):
+        base = fixture([ruleset(1)], NO_GATE, extra={DETAIL: {"status": 200, "body": WELL_FORMED}})
+        self.assertIn("FAIL 'Review Gate' (required on main/staging)", run_doctor(base, FLAG)[0].stdout)
+
+        def classify(path, good, junk):
+            if path in (("id",), ("name",)):
+                return "same"  # the summary list supplies id and name; the detail's copies are never read
+            if path[-1:] == ("integration_id",) and junk == DELETE:
+                return "same"  # optional, and absent means unpinned, which this doctor analyses like Actions
+            if path == ("target",):
+                return "valid" if junk in TARGETS else "invalid"
+            return "valid" if well_typed(good, junk) else "invalid"
+        results = list(self.walk(base, DETAIL, WELL_FORMED, classify))
+        self.check(results, "WARN ruleset 'rs1' unverified")
+        for kind, proc, _, case in results:
+            if kind == "invalid":
+                with self.subTest(**case):
+                    self.assertEqual(lines(proc, "FAIL"), [])
+                    self.assertNotIn("OK ruleset 'rs1'", proc.stdout)
+                    self.assertIn("(saw 1 unverified)", proc.stdout)
+
+    def test_rulesets_list(self):
+        base = fixture([ruleset(1)], NO_GATE)
+        results = self.walk(base, LIST, [{"id": 1, "name": "rs1"}], lambda p, g, j: "valid" if well_typed(g, j)
+                            else "invalid")
+        self.check(results, "WARN could not list rulesets")
+
+    def test_labels(self):
+        base = fixture([ruleset(1)], GATE)
+        results = list(self.walk(base, "labels", [{"name": "review:high"}],
+                                 lambda p, g, j: "valid" if well_typed(g, j) else "invalid"))
+        self.check(results, "WARN label 'review:high' unverified")
+        for kind, proc, _, case in results:
+            with self.subTest(**case):
+                self.assertEqual(proc.returncode, 0, proc.stdout)  # labels feed no FAIL
+                if kind == "invalid":
+                    self.assertNotIn("OK label", proc.stdout)
+
+    def test_branch(self):
+        base = fixture([ruleset(1)], NO_GATE)  # only "a JSON object" is read from the branch body
+        results = self.walk(base, BRANCH, {"name": "main"},
+                            lambda p, g, j: "same" if p or isinstance(j, dict) else "invalid")
+        self.check(results, "WARN producer of 'Review Gate' (required on main) not verified: default branch")
+
+    def test_contents_file_body(self):
+        base = fixture([ruleset(1)], GATE)
+        body = base["api"][PROBE]["body"]
+        results = self.walk(base, PROBE, body, lambda p, g, j: "same" if p in (("name",), ("sha",)) else "invalid")
+        self.check(results, "WARN producer of 'Review Gate' (required on main) not verified")
+
+    def test_contents_404_body(self):
+        base = fixture([ruleset(1)], NO_GATE, extra={PROBE: {"status": 404, "body": {"message": "Not Found"}}})
+        results = self.walk(base, PROBE, {"message": "Not Found"},
+                            lambda p, g, j: "same" if p or isinstance(j, dict) else "invalid")
+        self.check(results, "WARN producer of 'Review Gate' (required on main) not verified")
+
+
+class NamedRegressions(unittest.TestCase):
+    """Codex high on 8170af0: each gave ruleset OK then producer FAIL, or a traceback."""
+
+    def run_detail(self, **over):
+        fx = fixture([ruleset(1)], NO_GATE, extra={DETAIL: {"status": 200, "body": {**WELL_FORMED, **over}}})
+        proc, _ = run_doctor(fx, FLAG)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(lines(proc, "FAIL"), [])
+        self.assertNotIn("OK ruleset 'rs1'", proc.stdout)
+        return proc
+
+    def test_falsey_exclude_and_empty_parameters_and_string_resolution(self):
+        rules = WELL_FORMED["rules"]
+        for over, needle in (
+                ({"conditions": {"ref_name": {"include": ["~ALL"], "exclude": 0}}}, "conditions.ref_name"),
+                ({"rules": [{**rules[0], "parameters": []}, rules[1]]}, "rule 'required_status_checks' parameters"),
+                ({"rules": [rules[0], {**rules[1], "parameters": {"required_review_thread_resolution": "true"}}]},
+                 "rule 'pull_request' parameters have no boolean required_review_thread_resolution")):
+            with self.subTest(needle=needle):
+                self.assertIn(f"WARN ruleset 'rs1' unverified: {needle}", self.run_detail(**over).stdout)
+
+    def test_target(self):
+        self.assertIn("WARN ruleset 'rs1' unverified: target [] is not one of", self.run_detail(target=[]).stdout)
+        self.assertIn("WARN ruleset 'rs1' targets tag, not branches; ignored", self.run_detail(target="tag").stdout)
+
+    def test_uncompilable_ref_pattern(self):
+        proc = self.run_detail(conditions={"ref_name": {"include": ["[z-a]"], "exclude": []}})
+        self.assertIn("WARN ruleset 'rs1' unverified: conditions.ref_name holds a pattern this doctor cannot read",
+                      proc.stdout)
+
+    def test_undecodable_gh_output_at_every_call_site(self):
+        for site in ("nameWithOwner", "label", "defaultBranchRef", LIST, DETAIL, BRANCH, PROBE,
+                     f"repos/{REPO}/contents/.github/workflows/review-gate.yaml?ref=main"):
+            fx = fixture([ruleset(1)], NO_GATE)  # well-formed, this FAILs; an undecodable byte must not
+            fx["ff"] = site
+            with self.subTest(site=site):
+                proc, _ = run_doctor(fx, FLAG)  # asserts no traceback
+                if site == "label":  # the label list feeds no FAIL
+                    self.assertIn("WARN label 'review:high' unverified", proc.stdout)
+                    self.assertEqual(proc.returncode, 1, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                    self.assertEqual(lines(proc, "FAIL"), [])
 
 
 class InstallerHint(unittest.TestCase):
