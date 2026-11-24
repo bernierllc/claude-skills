@@ -101,6 +101,8 @@ GATE = {".github/workflows/review-gate.yml": GATE_YML}
 NO_GATE = {".github/workflows/ci.yml": "name: CI\non: pull_request\n"}
 NO_TRIGGER = {".github/workflows/review-gate.yml": "name: Review Gate\non: pull_request\njobs: {}\n"}
 WORKFLOWS = f"repos/{REPO}/contents/.github/workflows?ref=main"
+INDENTED_GATE = "".join(f"  {ln}\n" for ln in GATE_YML.splitlines())  # valid YAML: a uniformly indented root
+JSON_GATE = '{"name": "Review Gate", "on": "pull_request_target", "jobs": {}}\n'
 
 
 class WithTheOption(unittest.TestCase):
@@ -190,6 +192,17 @@ class WithoutTheOption(unittest.TestCase):
 class EitherWay(unittest.TestCase):
     def both(self, fx):
         return [run_doctor(fx, *args) for args in ((), (FLAG,))]
+
+    def test_indented_or_json_style_gate_warns_instead_of_failing(self):
+        for text in (INDENTED_GATE, JSON_GATE):
+            fx = fixture([ruleset(1)], {".github/workflows/review-gate.yml": text})
+            for proc, _ in self.both(fx):
+                with self.subTest(text=text):
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                    self.assertEqual(lines(proc, "FAIL"), [])
+                    warn = lines(proc, "WARN producer of 'Review Gate'")
+                    self.assertEqual(len(warn), 1, proc.stdout)
+                    self.assertIn("could not read the on: triggers of .github/workflows/review-gate.yml", warn[0])
 
     def test_non_actions_integration_id_is_skipped(self):
         for proc, calls in self.both(fixture([ruleset(1, (("Review Gate", 99999),))], None)):
@@ -285,13 +298,16 @@ class TriggerParser(unittest.TestCase):
                      "'on':\n  - pull_request_target\n", "on:\n  push:\n  pull_request_target:\n    types: [opened]\n"):
             self.assertTrue(f(text), text)
         for text in ("on: pull_request\n", "on:\n  pull_request:\n    branches: [pull_request_target]\n",
-                     "jobs:\n  x:\n    on: pull_request_target\n", "# on: pull_request_target\non: push\n"):
+                     "# on: pull_request_target\non: push\n", "on: 'push'\n", "on: [push, pull_request]\n",
+                     "---\nname: x\non:\n  push:\njobs: {}\n"):
             self.assertFalse(f(text), text)
-        for text in ("on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n"):
+        for text in ("on:\n- push\n- pull_request_target\njobs: {}\n", "\ufeffon: pull_request_target\n",
+                     'on: "pull_request_target"\n', "%YAML 1.2\n---\non: [pull_request_target]\n"):
             self.assertTrue(f(text), repr(text))
         for text in ("on: {pull_request: {branches: [pull_request_target]}}\n", "on: [push,\n  pull_request_target]\n",
                      "on:\n  - pull_request_target: x\n", "on:\njobs: {}\n",
-                     "on:\n  push:\n  - pull_request_target\n"):
+                     "on:\n  push:\n  - pull_request_target\n", "jobs:\n  x:\n    on: pull_request_target\n",
+                     INDENTED_GATE, JSON_GATE, "{on: push}\n", "name: x\n"):
             self.assertIsNone(f(text), text)
         self.assertTrue(f("on:\n  push:\n    branches: [\"a\u2028b\"]\n  pull_request_target:\n"))
 

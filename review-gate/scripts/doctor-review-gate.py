@@ -331,17 +331,23 @@ def gh_api(path: str) -> tuple[int | None, object | None, str]:
 
 
 def declares_pull_request_target(text: str) -> bool | None:
-    """Does a workflow's top-level ``on:`` name ``pull_request_target``? None when ``on:`` has a form this
-    parser does not read, so an unread form is never taken as proof of absence (or presence)."""
+    """Does a workflow's top-level ``on:`` name ``pull_request_target``? False only when a column-0 block
+    mapping's ``on:`` was read and lacks it; None for any form this parser does not read (an indented or
+    flow-style root, no top-level ``on:``, an unread ``on:`` value), so an unread form never proves absence."""
     # shortcut: a line parser, not YAML: scalar, one-line [list], block list and block mapping forms only.
     lines = re.split(r"\r\n|\r|\n", text.lstrip("\ufeff"))  # YAML line breaks only, unlike splitlines()
+    content = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#") and not ln.startswith("%")
+               and ln.rstrip() != "---"]
+    if not content or content[0][0] in " \t{[-":
+        return None  # indented, flow-style or sequence root: not a block mapping this parser reads
     for i, line in enumerate(lines):
         m = re.match(r"""^(?:on|'on'|"on")\s*:(.*)$""", line)
         if not m:
             continue
         rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
-        if re.fullmatch(r"[\w-]+", rest):
-            return rest == "pull_request_target"
+        scalar = re.fullmatch(r"""(['"]?)([\w-]+)\1""", rest)
+        if scalar:
+            return scalar.group(2) == "pull_request_target"
         if re.fullmatch(r"\[[^\[\]{}]*\]", rest):
             return "pull_request_target" in [x.strip().strip("'\"") for x in rest[1:-1].split(",")]
         if rest:
@@ -366,7 +372,7 @@ def declares_pull_request_target(text: str) -> bool | None:
         if not events or len(dashes) > 1:
             return None  # "- x" beside "y:" is a list under the event above, not an event
         return "pull_request_target" in events
-    return False
+    return None  # no top-level on: key was read
 
 
 def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
