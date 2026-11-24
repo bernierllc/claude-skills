@@ -361,7 +361,7 @@ def gate_producer(full: str, default_branch: str) -> tuple[str, str]:
             return "unknown", f"could not read {path} on {default_branch!r} ({reason})"
         try:
             text = base64.b64decode(blob.get("content") or "").decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
+        except (TypeError, ValueError):  # TypeError: a non-string content; UnicodeDecodeError is a ValueError
             return "unknown", f"could not decode {path} on {default_branch!r}"
         # shortcut: a substring test, so the trigger and its branch filters are not analyzed; a parser was cut
         # after three review rounds of false OKs and false FAILs, so upgrade only with a real need

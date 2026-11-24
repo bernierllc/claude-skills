@@ -100,7 +100,7 @@ GATE = {".github/workflows/review-gate.yml": GATE_YML}
 NO_GATE = {".github/workflows/ci.yml": "name: CI\non: pull_request\n"}
 NO_TRIGGER = {".github/workflows/review-gate.yml": "name: Review Gate\non: pull_request\njobs: {}\n"}
 WORKFLOWS = f"repos/{REPO}/contents/.github/workflows?ref=main"
-DEEP = "on: pull_request_target\nx: " + "[" * 5000 + "]" * 5000 + "\n"  # crashed a YAML parser (RecursionError)
+DEEP = "on: pull_request_target\nx: " + "[" * 5000 + "]" * 5000 + "\n"  # any content, however nested, is only searched
 MALFORMED = "on: [pull_request_target\n\tjobs: {{{\n\0"
 
 class WithTheOption(unittest.TestCase):
@@ -253,6 +253,7 @@ class EitherWay(unittest.TestCase):
             "HTTP 429, rate limited": {gate: {"status": 429, "body": {"message": "slow down"}}},
             "could not read .github/workflows/review-gate.yml": {gate: {"status": 200, "body": {"encoding": "none"}}},
             "could not decode": {gate: {"status": 200, "body": {"encoding": "base64", "content": "//79"}}},
+            "could not decode .github": {gate: {"status": 200, "body": {"encoding": "base64", "content": 123}}},
             "is a symlink, not a file": {WORKFLOWS: {"status": 200, "body": [
                 {"path": ".github/workflows/review-gate.yml", "type": "symlink"}]}},
         }
