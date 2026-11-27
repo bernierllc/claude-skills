@@ -116,7 +116,11 @@ if (_repo_root / "skills-manifest.json").is_file():  # an installed skill has no
     # Every attestation example the skills print passes the checker for the head it names, and the skill says the
     # SHA is the full 40-hex OID, which is what the checker enforces (a 7+ hex prefix is only the P2 closing token).
     _review_gate_doc = (_repo_root / "review-gate" / "SKILL.md").read_text(encoding="utf-8")
-    assert "full 40-hex" in _adv and not re.search(r"7\+ ?hex|7 or more", _adv + _review_gate_doc), "stale prefix wording"
+    # Only attestation lines are checked; a line about the P2 closing token may say 7+ hex.
+    _stale = [_l for _d in (_adv, _review_gate_doc) for _l in _d.splitlines()
+              if re.search(r"attestation|Fallback review", _l, re.I) and "closing token" not in _l
+              and re.search(r"7\+ ?hex|7 or more", _l)]
+    assert "full 40-hex" in _adv and not _stale, ("stale prefix wording", _stale)
     _examples = [m.group(0) for doc in (_adv, _review_gate_doc)
                  for m in re.finditer(r"^Fallback review: [^<>\n]+$", doc, re.M)]  # skip the <placeholder> format line
     assert len(_examples) >= 3, _examples
