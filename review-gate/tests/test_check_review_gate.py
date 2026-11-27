@@ -113,6 +113,17 @@ if (_repo_root / "skills-manifest.json").is_file():  # an installed skill has no
                           ((_repo_root / "review-gate" / "SKILL.md").read_text(encoding="utf-8"), "- `reviewer`:")):
         _line = next(x for x in _doc.splitlines() if _marker in x).split(_marker, 1)[1].split("Allowed verdicts", 1)[0]
         assert tuple(re.findall(r"`([a-z-]+)`", _line)) == g.FALLBACK_REVIEWERS, (_marker, _line)
+    # Every attestation example the skills print passes the checker for the head it names, and the skill says the
+    # SHA is the full 40-hex OID, which is what the checker enforces (a 7+ hex prefix is only the P2 closing token).
+    _review_gate_doc = (_repo_root / "review-gate" / "SKILL.md").read_text(encoding="utf-8")
+    assert "full 40-hex" in _adv and not re.search(r"7\+ ?hex|7 or more", _adv + _review_gate_doc), "stale prefix wording"
+    _examples = [m.group(0) for doc in (_adv, _review_gate_doc)
+                 for m in re.finditer(r"^Fallback review: [^<>\n]+$", doc, re.M)]  # skip the <placeholder> format line
+    assert len(_examples) >= 3, _examples
+    for _line in _examples:
+        _example_sha = re.search(r" on ([0-9a-f]+) — verdict", _line).group(1)
+        _result = g.evaluate(pr(body=f"## Review\n\n{_line}\n", headRefOid=_example_sha, reviews={"nodes": []}))
+        assert _result == [], (_line, _result)
 
 # Clean Codex runs post no review, only a state marker in the summary PR comment.
 def codex_comment(sha, status="completed", unresolved=False, login="chatgpt-codex-connector"):
